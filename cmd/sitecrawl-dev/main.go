@@ -14,11 +14,20 @@ import (
 	"github.com/truthrive/technical-seo-audit/internal/sitecrawl"
 )
 
+type progressPrinter struct{}
+
+func (progressPrinter) OnProgress(data any) {
+	if p, ok := data.(sitecrawl.ProgressEvent); ok {
+		fmt.Fprintf(os.Stderr, "crawled=%d found=%d queued=%d rate=%.1f/s phase=%s\n",
+			p.Crawled, p.Found, p.Queued, p.Rate, p.Phase)
+	}
+}
+
 func main() {
 	dbPath := flag.String("db", "crawl.db", "Path to SQLite database file")
-	maxURLs := flag.Int("max-urls", 50, "Maximum URLs to crawl")
-	maxDepth := flag.Int("max-depth", 3, "Maximum crawl depth")
-	concurrency := flag.Int("concurrency", 4, "Number of concurrent workers")
+	maxURLs := flag.Int("max-urls", sitecrawl.DefaultMaxURLs, "Maximum URLs to crawl")
+	maxDepth := flag.Int("max-depth", sitecrawl.DefaultMaxDepth, "Maximum crawl depth")
+	concurrency := flag.Int("concurrency", sitecrawl.DefaultConcurrency, "Number of concurrent workers")
 	enableJS := flag.Bool("js", false, "Enable JavaScript rendering")
 	verbose := flag.Bool("v", false, "Enable verbose progress output")
 	flag.Parse()
@@ -40,8 +49,7 @@ func main() {
 	runner := sitecrawl.NewRunner(db)
 
 	if *verbose {
-		collector := standalone.NewEventCollector()
-		runner.Events = collector
+		runner.Progress = progressPrinter{}
 	}
 
 	opts := sitecrawl.Options{

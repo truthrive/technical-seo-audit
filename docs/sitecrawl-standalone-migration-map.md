@@ -871,12 +871,12 @@ page assembly & observation persistence
 Key Implementation & Decoupling Decisions:
 
 1. **Standalone Runtime Entrypoint (`Runner`)**: Created `sitecrawl.Runner` in `internal/sitecrawl/runner.go` providing `Crawl(ctx, seeds, opts)` with seed normalization, schema initialization, coordinator execution, terminal run state persistence, and read helpers (`Page`, `Pages`, `Links`, `URLs`, `LoadRun`, `ListRuns`).
-2. **Schema Migration Mechanism**: Implemented `standalone.Migrate` tracking applied steps in `_schema_migrations`. Safely executes ordered DDL migrations (including non-idempotent `ALTER TABLE` statements) exactly once per database. Repeated opens and schema checks are completely idempotent.
+2. **Schema Migration Mechanism**: Implemented `standalone.Migrate` with transactional step execution tracking applied steps in `_schema_migrations`. Safely executes ordered DDL migrations (including non-idempotent `ALTER TABLE` statements) inside atomic transactions, rolling back on failure. Repeated opens and schema checks are completely idempotent.
 3. **PageSpeed Compile-Time Decoupling**: Standalone coordinator has zero compile-time dependencies on `psiPump`, `PSIResult`, `newPSIPump`, `psiClient`, or `savePSI`. Explicit requests with `EnablePageSpeed=true` fail fast with `ErrCapabilityUnsupported`.
-4. **Legacy Issue Engine Acquisition Boundary**: Reconstructed `Page` assembly and projection to preserve raw transport/discovery observations (transport errors, redirect chains, robots directives, bot anomalies, canonical declarations, raw/rendered flags). Decoupled from `issues.go`, legacy issue verdicts, and `evaluate()`; `IssueCount` and `IssueMaxSev` default to neutral zero.
+4. **Legacy Issue Engine Acquisition Boundary & Bot Evidence**: Reconstructed `Page` assembly and projection to preserve raw transport/discovery observations (transport errors, redirect chains, robots directives, canonical declarations, raw/rendered flags, and bot-profile fallback evidence `BotBlocked`). Decoupled from `issues.go`, legacy issue verdicts, and `evaluate()`; `IssueCount` and `IssueMaxSev` default to neutral zero.
 5. **Acquisition-Only Finalization**: Post-crawl computation preserves inlink counts and unique inlink counts (`finalizeInlinks`), while legacy post-crawl issue generators (orphans, redirect sources, broken images, canonical issues, hreflang issues, duplicate-page issues) are excluded from acquisition core.
 6. **Duplicate Analysis Deferred**: Duplicate analysis remains deferred; explicit requests with `EnableDuplication=true` fail fast with `ErrCapabilityUnsupported`.
-7. **Developer CLI**: Added minimal standalone CLI in `cmd/sitecrawl-dev/main.go` for running crawls and outputting structured JSON summaries without UI dependencies.
+7. **Developer CLI**: Added minimal standalone CLI in `cmd/sitecrawl-dev/main.go` adhering to exported crawler defaults (`DefaultMaxURLs`, `DefaultMaxDepth`, `DefaultConcurrency`), printing live concise progress to stderr with `-v`, and outputting structured JSON summaries to stdout.
 
 **Acceptance Verification**:
 
@@ -884,6 +884,8 @@ Key Implementation & Decoupling Decisions:
 coordinator can start and finish a crawl (verified in TestEndToEndCrawl)
 local SQLite can persist one run (verified in TestEndToEndCrawl)
 context cancellation works through coordinator (verified in TestContextCancellation)
+bot-profile fallback evidence preserved across persistence and readback (verified in TestBotProfileFallbackEvidence)
+schema migrations are atomic, roll back on failure, and retry cleanly (verified in TestMigrateTransactionalRollbackAndRetry)
 progress/events observed during crawl (verified in TestEndToEndCrawl via standalone.EventCollector)
 fixture site crawled end-to-end (verified in TestEndToEndCrawl)
 results survive process-level database close and reopen (verified in TestProcessLevelReadback)

@@ -439,3 +439,111 @@ func TestContextCancellation(t *testing.T) {
 		t.Fatalf("expected buffered URLs to be saved, got 0")
 	}
 }
+
+func TestBotProfileFallbackEvidence(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var (
+		botRequests     int
+		browserRequests int
+		mu              sync.Mutex
+	)
+
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(w, "User-agent: *\nAllow: /\n")
+	})
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		ua := r.Header.Get("User-Agent")
+		if strings.Contains(ua, "Googlebot") || strings.Contains(ua, "1ScoutSiteCrawl") {
+			botRequests++
+			// 1. Refuse the configured bot-profile request.
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte("Forbidden to bots"))
+			return
+		}
+		// 2. Allow the existing browser fallback.
+		if strings.Contains(ua, "Chrome") {
+			browserRequests++
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("<!doctype html><html><head><title>Bot Protected</title></head><body>Content for browsers</body></html>"))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+	})
+
+	dbPath := filepath.Join(t.TempDir(), "bot_fallback.db")
+	db, err := standalone.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	runner := NewRunner(db)
+	opts := testOptions()
+	opts.UserAgent = "googlebot"
+
+	// 3. Completes page fetch & 4. Persists the Page.
+	summary, err := runner.Crawl(context.Background(), []string{srv.URL}, opts)
+	if err != nil {
+		t.Fatalf("crawl failed: %v", err)
+	}
+	if summary.State != StateCompleted {
+		t.Fatalf("expected state %q, got %q", StateCompleted, summary.State)
+	}
+
+	mu.Lock()
+	bots := botRequests
+	browsers := browserRequests
+	mu.Unlock()
+
+	if bots == 0 {
+		t.Fatalf("expected at least 1 bot request to be refused, got 0")
+	}
+	if browsers == 0 {
+		t.Fatalf("expected at least 1 browser fallback request, got 0")
+	}
+
+	// Close database to verify persistence across close/reopen.
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	reopenedDB, err := standalone.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer reopenedDB.Close()
+
+	// 5. Read back through Runner.
+	reopenedRunner := NewRunner(reopenedDB)
+	pages, err := reopenedRunner.Pages(summary.ID)
+	if err != nil {
+		t.Fatalf("load pages: %v", err)
+	}
+	if len(pages) != 1 {
+		t.Fatalf("expected 1 page, got %d", len(pages))
+	}
+
+	// 6. Confirm BotBlocked == true.
+	p := pages[0]
+	if !p.BotBlocked {
+		t.Fatalf("expected p.BotBlocked to be true, got false")
+	}
+	if p.Status != 200 {
+		t.Fatalf("expected status 200 from successful fallback, got %d", p.Status)
+	}
+
+	single, err := reopenedRunner.Page(summary.ID, 1)
+	if err != nil {
+		t.Fatalf("load single page: %v", err)
+	}
+	if !single.BotBlocked {
+		t.Fatalf("expected single.BotBlocked to be true, got false")
+	}
+}

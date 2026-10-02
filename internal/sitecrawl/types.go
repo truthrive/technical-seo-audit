@@ -409,6 +409,10 @@ type Page struct {
 	Redirects   []Hop  `json:"redirects"`
 	RedirectTo  string `json:"redirectTo,omitempty"`
 	LastMod     string `json:"lastMod,omitempty"`
+	// BotBlocked records that the selected bot-profile request was refused,
+	// but browser fallback succeeded. This is transport/profile evidence,
+	// not an SEO verdict or crawler blocking conclusion.
+	BotBlocked  bool   `json:"botBlocked"`
 
 	// head
 	Title       string   `json:"title"`

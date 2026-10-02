@@ -24,6 +24,7 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 		RedirectTo:  res.RedirectTo,
 		LastMod:     res.LastMod,
 		XRobotsTag:  res.XRobotsTag,
+		BotBlocked:  res.BotBlocked,
 		RobotsState: RobotsUnknown,
 		MetaTags:    map[string]string{},
 		OGTags:      map[string]string{},
