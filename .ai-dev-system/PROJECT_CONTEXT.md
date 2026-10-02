@@ -106,15 +106,17 @@ Clear separation of ownership is mandatory across all repository layers:
   - [`.ai-dev-system/gates/run.ps1`](gates/run.ps1) (deterministic read-only gates: `git.diff-check`, `docs.local-links`).
 - Verified commands:
   - Git inspection commands (`git status`, `git log`, `git tag`).
-  - Scoped Go commands verified at Checkpoint A2:
+  - Scoped Go commands verified at Checkpoint A2 & Coordinated A3/A4:
     - `go version` (observed `go version go1.27.0 windows/amd64`)
     - `go env GOMOD` (resolves to root `go.mod`)
     - `go list ./go/deps/...` (lists `github.com/truthrive/technical-seo-audit/go/deps/httpx` and `github.com/truthrive/technical-seo-audit/go/deps/safe`)
     - `go test ./go/deps/...` (passes cleanly for scoped stdlib-only deps)
-  - Full-tree Go build/test (`go list ./...`) remains unverified until package reconstruction across A3–A6.
+    - `go list ./internal/...` (lists `github.com/truthrive/technical-seo-audit/internal/platform/standalone` and `github.com/truthrive/technical-seo-audit/internal/sitecrawl`)
+    - `go test -v ./internal/...` (all tests in `internal/platform/standalone` and `internal/sitecrawl` pass cleanly)
+  - Full-tree Go build/test (`go list ./...`) remains unverified until package reconstruction across A5–A6.
 - Prerequisites:
   - Go toolchain: Verified installed (`go version go1.27.0 windows/amd64`; module directive specifies `go 1.22`).
-  - SQLite3 runtime / CGO environment if native driver is used (unverified).
+  - SQLite3 runtime / CGO environment: Pure-Go SQLite driver `modernc.org/sqlite` verified via `internal/platform/standalone`.
   - Chrome or Edge installation for `chromedp` rendering tests (unverified).
 
 ## Repository state at onboarding
@@ -130,8 +132,8 @@ Clear separation of ownership is mandatory across all repository layers:
   - Completed checkpoints:
     - Checkpoint A1 (Buildability Inventory) is completed and approved in [`docs/sitecrawl-standalone-buildability.md`](../docs/sitecrawl-standalone-buildability.md).
     - Checkpoint A2 (Scoped Go Module Bootstrap) is completed: root `go.mod` established (`github.com/truthrive/technical-seo-audit`, `go 1.22`, verified via scoped `go list ./go/deps/...` and `go test ./go/deps/...`).
-  - Next milestone: Coordinated Checkpoint A3/A4 (reconstruct `internal/sitecrawl/` engine mechanics + minimum host/platform primitives; `page.go` deferred to A5; no stubbing of `issue`/`severityOf`/`countMissingAlt`).
-  - Checkpoint A5: Coordinator, Persistence & Page Assembly (coordinator integration, SiteCrawl persistence, page assembly, and end-to-end fixture crawl).
+    - Coordinated Checkpoint A3/A4 (Standalone SiteCrawl Engine & Platform Primitives) is completed: `internal/sitecrawl/` reconstructed (13 engine mechanics files) without `onescout/...` imports, bundled `safe` and `httpx` linked, external dependencies added (`golang.org/x/net v0.28.0`, `github.com/temoto/robotstxt v1.1.2`, `github.com/chromedp/chromedp v0.10.0`, `modernc.org/sqlite v1.33.1`), and minimal real platform primitives created in `internal/platform/standalone/` (`runs.go`, `db.go`, `cancel.go`, `events.go`). All portable engine and platform tests pass.
+  - Next milestone: Checkpoint A5 — Coordinator, Persistence & Page Assembly (`storage/crawler.go`, `storage/persist.go`, `storage/runs.go`, `engine/page.go`, SiteCrawl persistence, schema initialization, page assembly, and end-to-end fixture crawl).
 - Audit V1 implementation constraint: Audit V1 rules (47 `AR-*` rules) must NOT be implemented yet.
 - Parity prerequisite: Standalone compilation, execution, and crawler behavioral parity must be fully established and verified before Audit V1 implementation begins.
 - Low-cost reintegration constraint: Code changes must preserve the ability to merge back into the main 1Scout application with minimal friction (avoid radical package fracturing; keep close to `internal/sitecrawl/` structure; adapt before replacing).
@@ -147,7 +149,7 @@ Clear separation of ownership is mandatory across all repository layers:
 
 - Baseline preservation: Tag `sitecrawl-pre-audit-v1` is immutable and marks the reference state (`82c610d433203374473e1ea76edf4e6c165a3161`) before any standalone migration edits.
 - Phased execution: Standalone extraction and buildability must precede Audit V1 domain implementation.
-- Checkpoint sequencing: Checkpoint A1 (Buildability Inventory) and Checkpoint A2 (Scoped Go Module Bootstrap) are completed. Checkpoint A2 established root `go.mod` (`github.com/truthrive/technical-seo-audit`, `go 1.22`, verified via scoped `go list ./go/deps/...` and `go test ./go/deps/...`) without temporary `replace` directives. Next, Checkpoints A3 and A4 are executed as one coordinated migration milestone (engine mechanics + minimum host/platform primitives), followed by Checkpoint A5 (coordinator + SiteCrawl persistence + page assembly + end-to-end crawl). Full module verification (`go list ./...`) is enforced at Checkpoint A6.
+- Checkpoint sequencing: Checkpoint A1 (Buildability Inventory), Checkpoint A2 (Scoped Go Module Bootstrap), and Coordinated Checkpoint A3/A4 (Standalone SiteCrawl Engine & Platform Primitives) are completed. Checkpoint A2 established root `go.mod` (`github.com/truthrive/technical-seo-audit`, `go 1.22`). Coordinated Checkpoint A3/A4 reconstructed `internal/sitecrawl/` and `internal/platform/standalone/` without 1Scout dependencies. Next milestone is Checkpoint A5 (coordinator + SiteCrawl persistence + page assembly + end-to-end crawl). Full module verification (`go list ./...`) is enforced at Checkpoint A6.
 - Package consolidation strategy: Prefer consolidating Go files into a unified `internal/sitecrawl/` package during standalone extraction to preserve package-private access rather than fracturing into multiple subpackages prematurely.
 - Evidence adapter pattern: The boundary between SiteCrawl acquisition and the Audit V1 engine will be an Evidence Adapter converting crawl observations into normalized evidence snapshots, preserving crawler stability.
 - Domain authority: All audit logic and rule definitions are governed exclusively by `/knowledge`.

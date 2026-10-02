@@ -1202,14 +1202,15 @@ At that point create a standalone-core freeze before beginning Audit V1 implemen
 
 ## 26. Migration Status & Next Task
 
-Checkpoints A1 (Buildability Inventory) and A2 (Scoped Go Module Bootstrap) are **completed**.
+Checkpoints A1 (Buildability Inventory), A2 (Scoped Go Module Bootstrap), and Coordinated Checkpoint A3/A4 (Reconstruct Standalone SiteCrawl Engine & Platform Primitives) are **completed**.
 
 - Checkpoint A1 approved in [`docs/sitecrawl-standalone-buildability.md`](sitecrawl-standalone-buildability.md).
 - Checkpoint A2 created root `go.mod` (`module github.com/truthrive/technical-seo-audit`, `go 1.22`) and verified scoped packages via `go list ./go/deps/...` and `go test ./go/deps/...`.
+- Coordinated Checkpoint A3/A4 reconstructed `internal/sitecrawl/` (13 engine mechanics files) and created `internal/platform/standalone/` (run-state constants, SQLite opener using `modernc.org/sqlite`, context cancellation, event/progress sink primitives). External dependencies added: `golang.org/x/net v0.28.0`, `github.com/temoto/robotstxt v1.1.2`, `github.com/chromedp/chromedp v0.10.0`, `modernc.org/sqlite v1.33.1`. Portable engine tests (`extract_test.go`, `frontier_test.go`, `frontier_cap_test.go`, `sitemap_test.go`, `similarity_test.go`) and platform tests passed cleanly under Go 1.22. Zero `onescout/...` imports remain in `internal/`.
 
-### Next Milestone: Coordinated Checkpoint A3/A4 — Reconstruct `sitecrawl` Package & Minimal Platform Contracts
+### Next Milestone: Checkpoint A5 — Port Coordinator, Persistence & Page Assembly
 
-Reconstruct `internal/sitecrawl/` engine mechanics together with minimal real platform contracts (run state constants, SQLite lifecycle opener, context cancellation, progress/events).
+Migrate coordinator and storage behavior (`storage/crawler.go`, `storage/persist.go`, `storage/runs.go`, `engine/page.go`), implement SiteCrawl persistence and schema initialization, assemble pages, and verify end-to-end fixture crawl execution without 1Scout.
 
 ---
 
