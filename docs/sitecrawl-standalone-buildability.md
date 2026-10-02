@@ -281,18 +281,17 @@ Because all non-utility files declare `package sitecrawl`, unexported symbols ar
 
 Reconciling the source code dependencies with [`sitecrawl-standalone-migration-map.md`](sitecrawl-standalone-migration-map.md):
 
-### 7.1 Checkpoint Sequence per Migration Map
-- **Checkpoint A3 — Reconstruct `sitecrawl` Package**:
+### 7.1 Checkpoint Sequence per Approved Migration Map
+- **Coordinated Checkpoint A3 / A4 — Reconstruct `sitecrawl` Engine & Minimal Platform Primitives**:
   - Target: `internal/sitecrawl/`
-  - Intended scope: Core acquisition engine (`normalize`, `frontier`, `politeness`, `robots`, `sitemap`, `fetch`, `extract`, `page`, `links`, `render`, `deps` + `exclusions`, `similarity`, `types`, `useragents`).
-  - Acceptance: Core package compiles; portable engine tests pass.
-- **Checkpoint A4 — Standalone Platform Adapters**:
-  - Implement standalone replacements for `runs`, `workspace/database`, `schema migration`, `jobs/events`.
-- **Checkpoint A5 — Port Coordinator + Persistence**:
-  - Port `storage/crawler.go`, `storage/persist.go`, `storage/runs.go`.
-  - Acceptance: Fixture site can be crawled end-to-end; results survive process-level readback.
-- **Checkpoint A6 — Regression Parity**:
-  - Port applicable tests, establish regression parity, create freeze tag `sitecrawl-standalone-core-v1`.
+  - Intended scope: 13 engine mechanics files (`normalize`, `frontier`, `politeness`, `robots`, `sitemap`, `fetch`, `extract`, `links`, `render`, `exclusions`, `similarity`, `types`, `useragents`), bundled `safe` and `httpx`, minimum run-state contract in `types.go`, standalone DB opener primitive, `context.Context` cancellation primitive, and minimal progress/event sink primitives.
+  - Acceptance: `internal/sitecrawl` engine package compiles; portable engine tests pass; bundled utilities resolve without 1Scout; minimal host primitives compile and are testable; no temporary issue stubs exist.
+- **Checkpoint A5 — Port Coordinator, Persistence & Page Assembly**:
+  - Target: `storage/crawler.go`, `storage/persist.go`, `storage/runs.go`, `engine/page.go`.
+  - Intended scope: Full crawl coordinator loop, run persistence, SiteCrawl schema migration (`schemaStmts`), page projection, fixture crawl execution, and cancellation/progress integration.
+  - Acceptance: Coordinator can start and finish a crawl; local SQLite can persist one run; context cancellation works through coordinator; progress/events can be observed during a crawl; fixture site can be crawled end-to-end; results survive process-level readback.
+- **Checkpoint A6 — Regression Parity & Full Module Gate**:
+  - Port applicable tests, establish regression parity, satisfy full module verification (`go list ./...`), create freeze tag `sitecrawl-standalone-core-v1`.
 - **Checkpoint A7 — Optional Compatibility Features**:
   - Migrate legacy issues (`issues.go`), post-crawl finalize (`finalize.go`), duplicates (`duplicates.go`), exports (`export.go`), query (`query.go`), graph (`graph.go`), and PageSpeed (`pagespeed/`). Post-core optional desktop UI integration remains excluded from the acquisition core.
 
@@ -411,12 +410,28 @@ Following Checkpoint A1 review, the sequencing decisions for Checkpoints A2–A4
 - **Temporary Scope**: Scoped verification is explicitly temporary. By Checkpoint A6 (Standalone Core Freeze), the active repository must satisfy full repository `go list ./...`.
 
 ### Approved Decision 2: Coordinated A3/A4 Migration Milestone
-- **Strategy**: A3 (`internal/sitecrawl/` reconstruction) and A4 (standalone platform adapters) retain their conceptual responsibilities but will be executed as **one coordinated migration milestone**. This ensures package reconstruction and minimal real platform contracts land together.
-- **No Fake Issue Stubs**: Do NOT introduce temporary fake/stub definitions for `issue`, `severityOf`, `countMissingAlt`, or legacy issue evaluation.
+- **Strategy**: A3 (`internal/sitecrawl/` reconstruction) and A4 (standalone platform adapters) retain their conceptual responsibilities but will be executed as **one coordinated migration milestone**. This ensures package reconstruction and minimal real platform contracts land together without broken intermediate states.
 - **Initial A3 Engine Boundary**: Prioritize the 13 engine mechanics files (`normalize.go`, `frontier.go`, `politeness.go`, `robots.go`, `sitemap.go`, `fetch.go`, `extract.go`, `links.go`, `render.go`, `exclusions.go`, `similarity.go`, `types.go`, `useragents.go`) plus bundled `safe` and `httpx`.
 - **`page.go` Deferred to A5**: `page.go` is deferred to Checkpoint A5 because current source couples page projection to `nowStamp()`, `issue`, `severityOf`, and `countMissingAlt`. This is a sequencing adjustment, not a redesign of `Page`.
-- **Minimal Real Platform Contracts**: Introduce only real contracts required by migrated code (minimal run-state constants in `types.go`, standalone run repository, SQLite DB lifecycle, schema migration, `context.Context` cancellation, and minimal progress/event observation).
-- **No Jobs Framework**: Do NOT port the 1Scout jobs framework.
+- **No Fake Issue Stubs**: Do NOT introduce temporary fake/stub definitions for `issue`, `severityOf`, `countMissingAlt`, or legacy issue evaluation.
+- **Minimal Real Platform Primitives (A4 Responsibility)**: Introduce only real contracts and primitives required by migrated code: minimal run-state constants in `types.go`, standalone SQLite database lifecycle/opener primitive, `context.Context` cancellation primitive, and minimal progress/event interfaces or sink primitives. External dependencies required by the engine (`golang.org/x/net/html`, `github.com/temoto/robotstxt`, `github.com/chromedp/chromedp`) are added. Do NOT port the 1Scout jobs framework.
+- **No Premature End-to-End Crawl**: A3/A4 must NOT require an end-to-end crawl, SiteCrawl run persistence, or `schemaStmts` execution yet (deferred to A5 with `storage/runs.go`).
+- **Coordinated A3/A4 Acceptance Criteria**:
+  1. `internal/sitecrawl` engine package compiles.
+  2. Migrated portable engine tests pass.
+  3. Local bundled dependencies resolve without 1Scout.
+  4. Minimal host/platform primitives compile and are independently testable.
+  5. No temporary legacy-issue stubs exist.
+
+### Approved Checkpoint A5 Scope & Acceptance (Coordinator, Persistence & Page Assembly)
+- **Scope**: Port `storage/crawler.go`, `storage/persist.go`, `storage/runs.go`, and `engine/page.go`. Owns SiteCrawl schema initialization (`schemaStmts`), run lifecycle persistence, coordinator integration, fixture crawl execution, and cancellation/progress integration through the A4 primitives.
+- **A5 Acceptance Criteria**:
+  1. Coordinator can start and finish a crawl.
+  2. Local SQLite can persist one run.
+  3. Context cancellation works through the coordinator.
+  4. Progress/events can be observed during a crawl.
+  5. Fixture site can be crawled end-to-end.
+  6. Results survive process-level readback.
 
 ### Full Module Gate by Checkpoint A6
 - Scoped verification is temporary and must not become a permanent exception.

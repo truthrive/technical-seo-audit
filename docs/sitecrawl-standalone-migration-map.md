@@ -819,25 +819,24 @@ go/deps/httpx/
 
 #### Minimal Real Platform Contracts (A4 Responsibility)
 
-During the coordinated milestone, introduce only the real contracts required by migrated code:
+During the coordinated milestone, introduce only the real primitives and contracts required by migrated code:
 
 - Run state string constants and timestamp generation required by `types.go`.
-- Minimal standalone run persistence.
-- Direct SQLite database lifecycle (`modernc.org/sqlite`).
-- Deterministic schema migration executing `schemaStmts`.
-- Coordinator cancellation via standard `context.Context`.
-- Minimal progress reporter and event sink to observe crawl lifecycle and cancellation.
+- Standalone SQLite database lifecycle/opener primitive (`modernc.org/sqlite`).
+- Cancellation primitive based on standard `context.Context`.
+- Minimal progress reporter and event sink primitives/interfaces.
+- External dependencies required by the migrated engine (`golang.org/x/net/html`, `github.com/temoto/robotstxt`, `github.com/chromedp/chromedp`).
 - Do NOT port the 1Scout jobs framework.
+- Does NOT require an end-to-end crawl, SiteCrawl run persistence, or `schemaStmts` execution yet (deferred to A5 with `storage/runs.go`).
 
 **Coordinated Milestone Acceptance**:
 
 ```text
-core package internal/sitecrawl compiles
-portable engine tests pass
-coordinator can start and finish a crawl
-local SQLite can persist one run
-context cancellation works
-progress/events can be observed
+internal/sitecrawl engine package compiles
+migrated portable engine tests pass
+local bundled dependencies resolve without 1Scout
+minimal host/platform primitives compile and are independently testable
+no temporary legacy-issue stubs exist
 ```
 
 ### Checkpoint A5 — Port Coordinator, Persistence & Page Assembly
@@ -862,11 +861,23 @@ crawl state
 page assembly and persistence projection
 ```
 
+Responsibilities:
+
+- Required SiteCrawl schema initialization (`schemaStmts`).
+- Run lifecycle persistence.
+- Coordinator integration.
+- Fixture crawl end-to-end.
+- Process-level readback.
+- Cancellation and progress integration through the A4 primitives.
 - **PageSpeed Decoupling Gate (Open Decision)**: Resolve whether to preserve PSI types inside `internal/sitecrawl/` temporarily (Option A) or decouple the coordinator via an internal interface / null object collector pattern (Option B).
 
 **Acceptance**:
 
 ```text
+coordinator can start and finish a crawl
+local SQLite can persist one run
+context cancellation works through the coordinator
+progress/events can be observed during a crawl
 fixture site can be crawled end-to-end
 results survive process-level readback
 ```
