@@ -1,0 +1,30 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Node / UI
+node_modules/
+dist/
+build/
+coverage/
+
+# Go
+bin/
+*.exe
+*.test
+*.out
+
+# Logs
+*.log
+
+# Cache / temp
+tmp/
+temp/
+.cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
