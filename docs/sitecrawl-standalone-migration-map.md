@@ -821,7 +821,7 @@ go/deps/httpx/
 
 During the coordinated milestone, introduce only the real primitives and contracts required by migrated code:
 
-- Run state string constants and timestamp generation required by `types.go`.
+- Run state string constants required by `types.go`.
 - Standalone SQLite database lifecycle/opener primitive (`modernc.org/sqlite`).
 - Cancellation primitive based on standard `context.Context`.
 - Minimal progress reporter and event sink primitives/interfaces.
@@ -865,6 +865,7 @@ Responsibilities:
 
 - Required SiteCrawl schema initialization (`schemaStmts`).
 - Run lifecycle persistence.
+- Timestamp generation (`nowStamp()` / `runs.Now()`) required by migrated run and page behavior.
 - Coordinator integration.
 - Fixture crawl end-to-end.
 - Process-level readback.
