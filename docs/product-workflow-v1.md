@@ -1,6 +1,6 @@
 # Technical Search & GEO Audit Tool — Product Workflow V1
 
-**Status:** Approved Product Workflow Specification
+**Status:** Review Candidate — V1 Product Workflow
 **Knowledge baseline:** v1.4
 **Scope:** V1 Desktop / Standalone Product Contract
 **Repository:** `truthrive/technical-seo-audit`
@@ -22,14 +22,14 @@ This document defines the product workflow and user journey for the first usable
 
 ## 2. Product Objective and Value Flow
 
-The tool is not merely a raw crawler data viewer or an internal table explorer. Its primary value is transforming raw web acquisitions into reproducible evidence, deterministic audit rule verdicts, and prioritized, actionable remediation.
+The tool is not merely a raw crawler data viewer or an internal table explorer. Its primary value is transforming raw web acquisitions into reproducible evidence, deterministic and assisted rule verdicts, and organized, severity-aware, actionable findings.
 
 ```text
 Crawl Website
       ↓
 Reproducible Technical Evidence
       ↓
-Frozen Atomic Rule Evaluation (47 AR-* Rules)
+Frozen Atomic Rule Evaluation (47 AR-* Rules: 30 Deterministic / 16 Assisted / 1 Manual)
       ↓
 Aggregated Findings
       ↓
@@ -39,11 +39,12 @@ Recommended Remediation Action
 ```
 
 ### Core Architecture Invariants
-Across all product surfaces, the workflow preserves the four foundational architectural invariants:
+Across all product surfaces, the workflow preserves five foundational architectural invariants:
 1. `OBSERVATION ≠ CONCLUSION`: Technical evidence collected by acquisition modules never contains audit verdicts or assumed defect labels.
 2. `PROJECT POLICY ≠ OBSERVED EVIDENCE`: Explicit user expectations (e.g. expected indexable, allowed origins) remain strictly separate from observed HTTP/HTML facts.
 3. `ATOMIC RULE RESULT ≠ AGGREGATED FINDING`: Machine-evaluated atomic rules (`AR-*`) evaluate individual technical conditions; human-facing findings aggregate one or more rule results for presentation.
-4. `RULE STATUS ≠ REPORT PRESENTATION`: Evaluated rule statuses (`PASS`, `WARNING`, `FAIL`, `MANUAL_REVIEW`, `UNKNOWN`, `NOT_APPLICABLE`) map into report presentation classes (`Issue`, `Warning`, `Manual Review`, `Information`) without erasing underlying machine states.
+4. `RULE STATUS ≠ REPORT PRESENTATION`: Evaluated rule statuses (`PASS`, `WARNING`, `FAIL`, `MANUAL_REVIEW`, `UNKNOWN`, `NOT_APPLICABLE`) map into report presentation classes (`ISSUE`, `WARNING`, `MANUAL_REVIEW`, `INFORMATION`) without erasing underlying machine states. There is no universal 1:1 hard mapping between rule status/severity and presentation class.
+5. `SEVERITY ≠ PRIORITY`: Frozen severity tiers (`P0` Critical, `P1` High, `P2` Medium, `P3` Low/Optional) reflect technical defect impact, not automated business priority. V1 does not introduce a numeric priority algorithm or rank-ordering score.
 
 ---
 
@@ -76,14 +77,16 @@ Audit Overview
 **Minimum Data Displayed:**
 - **Audit Run ID:** Unique identifier for the audit execution.
 - **Start URL / Target Domain:** Target website starting endpoint.
-- **Run Status:** Current lifecycle state (`CREATED`, `ACQUIRING`, `NORMALIZING`, `SNAPSHOT_FROZEN`, `EVALUATING`, `AGGREGATING`, `COMPLETED`, `FAILED`, `CANCELLED`).
+- **Run Status:** Current frozen workflow status:
+  `CREATED` | `ACQUIRING` | `NORMALIZING` | `SNAPSHOT_FROZEN` | `EVALUATING` | `AGGREGATING` | `COMPLETED` | `FAILED` | `CANCELLED`
 - **Timestamp:** Started at and completed at dates/times.
 - **Crawl Volume:** Total URLs discovered and total URLs crawled.
-- **Finding Summary Counts:** Categorized counts by presentation classification:
-  - Issues (`FAIL` results on critical/high rules)
-  - Warnings (`WARNING` results or advisory failures)
-  - Manual Review (`MANUAL_REVIEW` conditions or assisted reviews)
-  - Information (`PASS` confirmations or structural observations)
+- **Finding Summary Counts:** Summary counts grouped strictly by `Finding.presentation_classification`:
+  - Issues (`ISSUE`)
+  - Warnings (`WARNING`)
+  - Manual Review (`MANUAL_REVIEW`)
+  - Information (`INFORMATION`)
+  *(Note: Finding summary counts are sourced directly from the aggregated Finding entity, never inferred on-the-fly by the UI).*
 - **Primary Actions:** `New Audit`, `Open Audit`, `Delete Audit`.
 
 **V1 Boundary Constraints:**
@@ -101,25 +104,33 @@ Audit Overview
 - **Start URL:** Full seed URL (e.g., `https://example.com/`). Normalization validates scheme and host.
 
 #### B. Advanced Crawl Settings
-- **Max Crawl URLs:** Upper bound on crawled URLs (default: 500 for initial tests; up to 10,000 for standard site audits).
-- **Max Crawl Depth:** Maximum link distance from seed URL (default: 5).
+Configured within supported SiteCrawl engine parameters (authoritative constants from `go/engine/types.go`):
+- **Max Crawl URLs:** Upper bound on crawled URLs (`DefaultMaxURLs = 50000`, `MaxMaxURLs = 500000`).
+- **Max Crawl Depth:** Maximum link distance from seed URL (`DefaultMaxDepth = 3`, `MaxMaxDepth = 30`).
 - **Respect robots.txt:** Toggle whether crawler strictly honors robots directives (default: `true`).
 - **Sitemap Discovery:** Toggle automatic detection and parsing of `/sitemap.xml` and robots-declared sitemaps (default: `true`).
 - **Rendering Mode:** Selection between:
   - `HTTP Only` (fast, raw HTML extraction, standard mode)
-  - `Headless Chrome / Edge` (executes client JavaScript where browser environment is available)
-- **Politeness / Concurrency:** Request delay (ms) per host and maximum concurrent worker threads.
+  - `Headless Chrome / Edge` (client JavaScript rendering where supported)
+- **Politeness / Concurrency:** Maximum concurrent worker threads (`DefaultConcurrency = 5`) and per-host crawl delay (ms).
 
 #### C. Explicit Project Policy Inputs
-Explicit expectations supplied by the user. The engine **never** infers business policy from page content or URL paths.
-- **Preferred Origin:** Canonical host/protocol expectation (e.g. `https://example.com`).
-- **Expected Indexability Policy:** Default assumption for discovered content (`All URLs Expected Indexable` vs `Seed Only` vs `Manual`).
-- **Sitemap Invariant Expected:** Expectation that all canonical live URLs should exist in XML sitemaps (default: `true`).
-- **Snippet Policy:** Expected snippet restriction policy (`ALLOW_SNIPPET` vs restricted).
-- **Googlebot Access Policy:** Target policy for Googlebot (`ALLOW` vs `DISALLOW`).
-- **OAI-SearchBot Access Policy:** Target policy for OpenAI SearchBot (`ALLOW` vs `DISALLOW`).
-- **GPTBot Training Policy:** Target policy for OpenAI training scraper (`ALLOW` vs `DISALLOW`).
-- **Priority URLs (Optional):** Explicit list of business-critical URLs where failures trigger elevated review.
+Explicit expectations supplied by the user via `ProjectPolicyAssignment`. The engine **never** infers business policy from page content, URL paths, or crawl observations.
+
+##### 1. SITE-Scoped Policies
+- `preferred_origin`: Target canonical origin (e.g., `https://example.com`).
+- `sitemap_expected`: Boolean flag defining whether XML sitemap presence is expected for the site. *(Note: This controls whether sitemap absence is an issue; it does NOT assert that every live URL must appear in a sitemap).*
+- `snippet_policy`: Expected snippet restriction policy (`allow_unrestricted` | `restrict` | `unspecified`).
+- `googlebot_access_policy`: Expected crawler access for Googlebot (`allow` | `block` | `unspecified`).
+- `oai_searchbot_access_policy`: Expected access policy for OpenAI SearchBot (`allow` | `block` | `unspecified`).
+- `gptbot_training_policy`: Expected training scraper policy for GPTBot (`allow` | `block` | `unspecified`).
+
+##### 2. URL-Scoped Policies
+Explicit policy assignments mapped to specific supplied URLs:
+- `expected_url_state`: Expected response state (`live` | `redirect` | `missing` | `unspecified`).
+- `expected_crawlable`: Boolean flag defining whether specific URLs are explicitly expected to be crawlable.
+- `expected_indexable`: Boolean flag defining whether specific URLs are explicitly intended for indexation.
+- `priority_page`: Boolean flag marking high-value priority URLs for focused audit attention.
 
 **Forbidden in V1 Configuration:**
 - No cloud proxy network settings.
@@ -133,12 +144,7 @@ Explicit expectations supplied by the user. The engine **never** infers business
 **Purpose:** Provide real-time observability of evidence acquisition without blocking the user interface or making premature audit judgments.
 
 **Live Metrics & State Displayed:**
-- **Execution Phase:** Current pipeline stage:
-  - `ACQUIRING` (HTTP requests, robots parsing, sitemap discovery, frontier expansion)
-  - `NORMALIZING` (URL normalization, directive resolution, canonical mapping, graph metrics derivation)
-  - `SNAPSHOT_FROZEN` (Evidence immutability lock)
-  - `EVALUATING` (Rule engine evaluating 47 `AR-*` rules against snapshot)
-  - `AGGREGATING` (Synthesizing findings and report presentation)
+- **Execution Phase:** Current frozen pipeline stage (`ACQUIRING`, `NORMALIZING`, `SNAPSHOT_FROZEN`, `EVALUATING`, `AGGREGATING`).
 - **Frontier Status:**
   - Crawled URLs count
   - Queued / Discovered URLs count
@@ -149,11 +155,11 @@ Explicit expectations supplied by the user. The engine **never** infers business
 - **Rate & Performance:**
   - Current crawl rate (URLs/sec)
   - Elapsed run time
-  - Estimated time remaining (heuristic based on frontier queue)
 - **Run Controls:**
-  - `Pause`: Pauses frontier dispatch and permits active buffers to drain.
+  - `Pause`: Pauses frontier dispatch and permits active worker buffers to drain.
   - `Resume`: Resumes frontier scheduling.
   - `Cancel`: Immediately halts acquisition, persisting partial data up to the last clean buffer.
+  *(Note: Pause and resume are operational crawler controls and do not alter the frozen AuditRun workflow status set).*
 
 ---
 
@@ -170,10 +176,12 @@ The V1 Overview must **never** calculate or display:
 
 **Presentation Summary (Four Report Classes):**
 Audit findings are organized strictly into the frozen report presentation classifications:
-1. **Issues:** Deterministic and critical failures requiring immediate technical remediation (e.g., broken links, 5xx server errors, canonical targets failing, accidental `noindex`).
-2. **Warnings:** Advisory anomalies, non-optimal implementations, or crawl friction that do not constitute fatal access failures (e.g., trailing slash inconsistencies, redirect chains, missing meta descriptions, unoptimized snippet directives).
-3. **Manual Review:** Findings where technical evidence was verified but conclusive evaluation requires human business context or template intent (e.g., soft-404 patterns, ambiguous canonical consolidation, client-rendered content discrepancies).
-4. **Information:** Verified structural architecture, successful crawl confirmations, and neutral configuration facts (e.g., sitemap discovered, HTTPS enforced, robots.txt valid).
+1. **Issues (`ISSUE`):** Report items highlighting significant technical defects or non-compliant states (e.g., 5xx server responses, broken internal links, canonical target errors, contradictory robots directives, or explicit-policy noindex conflicts).
+2. **Warnings (`WARNING`):** Report items highlighting advisory anomalies, sub-optimal technical configurations, or crawl friction (e.g., redirect chains, sitemap non-200 entries, render field discrepancies, or snippet restrictions without explicit policy).
+3. **Manual Review (`MANUAL_REVIEW`):** Report items highlighting conditions where technical evidence was verified but conclusive evaluation requires human business context, page intent, or template interpretation (e.g., block-level `data-nosnippet` tags, complex navigation candidates lacking `<a href>`, or assisted render inspections).
+4. **Information (`INFORMATION`):** Report items documenting verified configurations, structural architecture, and policy alignment confirmations (e.g., HTTPS endpoint verified, robots access matching explicit policy, sitemap discovered).
+
+*(Note: Evaluated `RuleResult.status` remains distinct. A `FAIL` on an advisory rule may be classified as a Warning in presentation, and an assisted rule may generate a Manual Review presentation regardless of underlying status).*
 
 **Separation of Crawler Metrics:**
 Crawler metrics are displayed in an adjacent summary block, clearly separated from findings:
@@ -186,51 +194,54 @@ Crawler metrics are displayed in an adjacent summary block, clearly separated fr
 ---
 
 ### Surface 5: Findings (List & Detail)
-**Purpose:** The central analytical surface of the product, organizing evaluated rule results into understandable, prioritized technical findings.
+**Purpose:** The central analytical surface of the product, organizing evaluated rule results into understandable, actionable technical findings.
 
 **Finding Record Contract:**
 Each finding card/row in the list and detail view exposes:
-- **Finding Title:** Clear, human-readable summary of the condition (e.g., *"Canonical target returns 404 Not Found"*).
-- **Relevant Rule ID(s):** Exact atomic identifier(s) from the frozen manifest (e.g., `AR-CANON-002`).
-- **Parent Catalog Check:** Broader domain category reference (e.g., `CANON-003`).
+- **Finding Title:** Clear, human-readable summary of the condition (e.g., *"Internal link targets 4xx client error"*).
+- **Relevant Rule ID:** Singular atomic identifier from the frozen manifest (e.g., `AR-LINK-003`).
+- **Parent Catalog Check:** Broader domain category reference (e.g., `LINK-002`).
 - **Rule Result Status:** Underlying machine evaluation status:
-  - `FAIL` | `WARNING` | `MANUAL_REVIEW` | `PASS` | `UNKNOWN` | `NOT_APPLICABLE`
-- **Default Severity:** Frozen severity tier: `P0` (Critical blocker), `P1` (Major defect), `P2` (Moderate issue), `P3` (Minor advisory).
-- **Presentation Classification:** `Issue` | `Warning` | `Manual Review` | `Information`.
+  `PASS` | `WARNING` | `FAIL` | `MANUAL_REVIEW` | `NOT_APPLICABLE` | `UNKNOWN`
+- **Default Severity:** Frozen severity tier: `P0` (Critical), `P1` (High), `P2` (Medium), `P3` (Low / Optional).
+- **Presentation Classification:** `ISSUE` | `WARNING` | `MANUAL_REVIEW` | `INFORMATION`.
 - **Automation Class:** `deterministic` | `assisted` | `manual`.
-- **Affected URL Count:** Number of unique URLs exhibiting this exact result.
+- **Affected Subject Count:** Number of unique URLs or subjects exhibiting this exact result.
 - **Sample Affected URLs:** Quick-reference sample list of affected endpoints.
 - **Observed Evidence Summary:** Concise factual statement of what was measured.
 - **Expected State:** Normative technical baseline or explicit project policy expectation.
 - **Recommended Action:** Clear, plain-language engineering guidance for remediation.
 
 **Aggregation Rule:**
-- Findings aggregate atomic `RuleResult` instances across URLs sharing the same `rule_id`, `status`, and `severity`.
-- Aggregations **never** guess root causes (e.g., *"This is caused by WordPress plugin X"*) unless explicitly verified by deterministic rule evidence.
+- Safe V1 aggregation is centered on a single atomic rule: Findings aggregate `RuleResult` instances sharing the same `rule_id`, `status`, and `severity`.
+- `Finding` stores a singular `rule_id`, with `FindingMember` connecting individual `RuleResult` instances to the parent Finding.
+- One Finding represents one atomic condition across multiple affected URLs; unrelated rules are never merged into a single Finding.
+- Higher-level UI categorization represents report grouping, not a single Finding entity.
+- Aggregations **never** guess root causes (e.g., attributing defects to CMS plugins or hosting providers) unless explicitly verified by deterministic rule evidence.
 
 ---
 
 ### Surface 6: URL / Evidence Inspector
-**Purpose:** Deep technical inspection of an individual URL, displaying every piece of normalized evidence collected alongside every evaluated rule verdict.
+**Purpose:** Deep technical inspection of an individual URL, displaying normalized evidence collected alongside evaluated rule verdicts.
 
 **Foundational Rule:**
 `OBSERVATION ≠ CONCLUSION`. The inspector renders observed facts and rule conclusions in separate, distinct UI panels.
 
 **Ten Evidence Domains Displayed:**
-1. **HTTP Response:** Fetch status code, protocol (HTTP/1.1, HTTP/2), TLS certificate validity, response time (ms), server headers (Content-Type, Cache-Control, Date).
-2. **Redirects & Hops:** Full ordered redirect chain (`RedirectHop[]`), HTTP status per hop, `Location` header targets, redirect loop flag, final destination URL.
-3. **Robots Directives & Decisions:** Document fetch status for `/robots.txt`, effective line matched, allow/disallow decisions evaluated across specific bot profiles (`Default`, `Googlebot`, `OAI-SearchBot`, `GPTBot`).
-4. **Page Index Directives:** Raw `<meta name="robots">` tags and `X-Robots-Tag` HTTP headers, parsed token list, unsupported tokens, and calculated `effective_noindex` / `effective_nofollow` flags.
-5. **Canonical Configuration:** Raw `<link rel="canonical">` tag values, resolved absolute URL, canonical target fetch status, target indexability state, and self-canonical determination.
-6. **Title, Meta Description & Headings:** Raw title text, meta description text, array of `<h1>` values, character/pixel length metrics, duplicate heading detections.
-7. **Internal Link Graph:** Inbound link count (`crawl_inlink_count`), discovered crawl depth (`crawl_depth`), list of source inlinks with anchor text and DOM location context (`MAIN`, `NAV`, `FOOTER`, `HEADER`), list of outbound internal links.
-8. **Sitemap Presence:** Presence in XML sitemaps, sitemap document URL, raw and normalized `<lastmod>` values.
-9. **Structured Data:** Extracted blocks by format (`JSON_LD`, `MICRODATA`, `RDFA`), schema types declared, syntax validation state, and JSON parsing error messages.
-10. **Raw vs Rendered DOM Comparison:** When rendered HTML is available, visual diff of normalized fields: raw vs rendered title, raw vs rendered canonical, raw vs rendered meta robots, and JavaScript-injected internal links.
+1. **HTTP Response:** Fetch status code, TLS certificate validity, response time (ms), fetch error type, and optional raw response header references (`FetchObservation`).
+2. **Redirects & Hops:** Full ordered redirect chain (`RedirectHop[]`), HTTP status per hop, `Location` header targets, redirect loop flag, resolved final destination URL.
+3. **Robots Directives & Decisions:** Document fetch status for `/robots.txt`, effective line matched, allow/disallow decisions evaluated across specific bot profiles (`DEFAULT`, `GOOGLEBOT`, `OAI_SEARCHBOT`, `GPTBOT`) (`RobotsDecision`).
+4. **Page Index Directives:** Raw `<meta name="robots">` tags and `X-Robots-Tag` HTTP headers, parsed token list, unsupported tokens, and calculated `effective_noindex` / `effective_nofollow` flags (`RobotsDirectiveObservation`).
+5. **Canonical Configuration:** Raw `<link rel="canonical">` tag values, resolved absolute URL, canonical target fetch status, target indexability state, and self-canonical determination (`CanonicalObservation`).
+6. **Title, Meta Description & Headings:** Raw title text, meta description text, array of `<h1>` values, and main text presence indicator (`HtmlObservation`). *(Note: Pixel length calculations and duplicate heading detection are excluded from V1).*
+7. **Internal Link Graph:** Inbound link count (`crawl_inlink_count`), discovered crawl depth (`crawl_depth`), list of source inlinks with anchor text and DOM location context (`MAIN`, `NAV`, `FOOTER`, `HEADER`), list of outbound internal links (`LinkObservation`).
+8. **Sitemap Presence:** Presence in XML sitemaps, sitemap document URL, raw and normalized `<lastmod>` values (`SitemapEntry`).
+9. **Structured Data:** Extracted blocks by format (`JSON_LD`, `MICRODATA`, `RDFA`), raw block value/artifact ref, syntax parse status, and parse error messages (`StructuredDataBlock`). *(Note: Schema type appropriateness and GEO quality judgments are excluded from V1).*
+10. **Normalized Raw-vs-Rendered Field Comparison:** When JavaScript rendering is enabled, normalized comparisons across the frozen `RenderFieldComparison` fields: `TITLE`, `CANONICAL`, `META_ROBOTS`, `H1`, `MAIN_TEXT_PRESENCE`, `INTERNAL_LINK_SET` (`RenderObservation`, `RenderFieldComparison`). *(Note: Pixel/screenshot visual diffs are excluded).*
 
 **Evaluated Rule Results Panel:**
 A dedicated panel showing all atomic rules evaluated for this URL:
-- Table listing `rule_id`, rule name, `status`, `severity`, primary evidence reference, and link back to the parent finding.
+- Table listing `rule_id`, rule name, `status`, `severity`, primary/supporting evidence references (`RuleEvidenceRef`), and link back to the parent finding.
 
 ---
 
@@ -242,135 +253,165 @@ The following flows illustrate how raw technical observations translate into rep
 - **Observed Evidence:**
   - Crawler fetches `https://example.com/about`.
   - HTML parser discovers `<a href="/team-bios">` located in `MAIN` content.
-  - Discovery frontier schedules `https://example.com/team-bios` (`FetchObservation`).
+  - Discovery frontier schedules fetch for `https://example.com/team-bios` (`FetchObservation`).
   - Fetch attempt returns HTTP response status `404 Not Found`.
 - **Rule Evaluation:**
-  - Evaluator executes `AR-LINK-001` (Broken internal link destination).
-  - Condition: internal link target returns 4xx/5xx status.
-  - Result: `RuleResult` status `FAIL`, severity `P1`, subject `https://example.com/team-bios`.
+  - Evaluator executes `AR-LINK-003` (Internal link targets 4xx).
+  - Parent: `LINK-002`.
+  - Automation: `deterministic`.
+  - Precondition: resolved target is internal and fetchable.
+  - Condition: target status is 4xx.
+  - Result: `RuleResult` status `FAIL`, default severity `P1`, subject `https://example.com/team-bios`.
   - Evidence Ref: Primary = `FetchObservation(status=404)`, Supporting = `LinkObservation(source=/about, anchor="Meet the Team")`.
 - **Finding Model:**
-  - Title: *"Internal link points to broken page (404 Not Found)"*
-  - Rule ID: `AR-LINK-001` (Parent: `LINK-001`)
-  - Classification: `Issue`
+  - Title: *"Internal link targets 4xx client error"*
+  - Rule ID: `AR-LINK-003` (Parent: `LINK-002`)
+  - Classification: `ISSUE`
   - Severity: `P1`
-  - Affected URLs: 1 link target (`/team-bios`), referenced by 3 source pages.
+  - Affected Subjects: 1 link target (`/team-bios`), referenced by 3 source pages.
 - **Affected URL Inspector:**
-  - User inspects `/team-bios`: Sees HTTP status 404, zero content length.
-  - User reviews inlinks: Identifies exact source pages (`/about`, `/company`, `/careers`) and anchor text.
+  - User inspects `/team-bios`: Under HTTP Response, sees status `404 Not Found`.
+  - Under Internal Link Graph, identifies exact source referring pages (`/about`, `/company`, `/careers`) and anchor text.
 - **Recommended Action:**
-  - *"Update or remove broken internal links pointing to `/team-bios` across 3 referring pages, or restore the destination URL with a 200 OK response."*
+  - *"Update or remove internal link(s) pointing to `/team-bios` across referring pages, or restore the destination URL to return 200 OK."*
 
 ---
 
-### Flow 2: Canonical Target Failure
+### Flow 2: Canonical Target Returns Non-200 Status
 - **Observed Evidence:**
   - Page `https://example.com/products/widget-blue` returns `200 OK`.
   - HTML contains `<link rel="canonical" href="https://example.com/products/widget-all">`.
   - Evidence planner schedules probe fetch for canonical target `https://example.com/products/widget-all`.
   - Canonical target returns `404 Not Found`.
 - **Rule Evaluation:**
-  - Evaluator executes `AR-CANON-002` (Canonical target status failure).
-  - Precondition: canonical declared and target fetched.
-  - Condition: target status is 4xx.
-  - Result: `RuleResult` status `FAIL`, severity `P0`, subject `/products/widget-blue`.
-  - Evidence Ref: Primary = `CanonicalObservation(target=/products/widget-all)`, Supporting = `FetchObservation(status=404)`.
+  - Evaluator executes `AR-CANON-006` (Canonical target returns final 200).
+  - Parent: `CANON-003`.
+  - Automation: `deterministic`.
+  - Preconditions: exactly one valid canonical target and target fetch attempted.
+  - Condition: valid single canonical target was fetched and target does not directly return 200 (returns 404).
+  - Result: `RuleResult` status `FAIL`, default severity `P1`, subject `/products/widget-blue`.
+  - Evidence Ref: Primary = `CanonicalObservation(resolved_url=https://example.com/products/widget-all)`, Supporting = `FetchObservation(url=/products/widget-all, status=404)`.
 - **Finding Model:**
-  - Title: *"Canonical URL target does not exist (returns 404)"*
-  - Rule ID: `AR-CANON-002` (Parent: `CANON-003`)
-  - Classification: `Issue`
-  - Severity: `P0`
-  - Affected URLs: 12 product variant pages declaring `/products/widget-all`.
+  - Title: *"Canonical target does not return 200 OK"*
+  - Rule ID: `AR-CANON-006` (Parent: `CANON-003`)
+  - Classification: `ISSUE`
+  - Severity: `P1`
+  - Affected Subjects: 12 product variant pages declaring `/products/widget-all`.
 - **Affected URL Inspector:**
-  - User inspects `/products/widget-blue`: Under Canonical Domain, sees raw declared canonical URL, resolved URL, and red target fetch badge `404 Not Found`.
+  - User inspects `/products/widget-blue`: Under Canonical Configuration, sees declared canonical URL, resolved URL, and red target fetch badge `404 Not Found`.
 - **Recommended Action:**
-  - *"Correct the canonical link tag on affected pages to point to an accessible, valid 200 OK canonical URL, or recreate the canonical destination page."*
+  - *"Update canonical link tag on affected page(s) to reference an existing 200 OK destination, or restore the canonical target URL."*
 
 ---
 
 ### Flow 3: Conflicting Robots Index Directives
 - **Observed Evidence:**
   - URL `https://example.com/checkout/confirmation` is crawled.
-  - HTTP response header includes: `X-Robots-Tag: noindex, nofollow`.
-  - HTML `<head>` includes: `<meta name="robots" content="index, follow">`.
-  - Project policy: `expected_indexable` is not specified.
+  - HTTP response header includes: `X-Robots-Tag: noindex`.
+  - HTML `<head>` includes: `<meta name="robots" content="index">`.
 - **Rule Evaluation:**
-  - Normalizer calculates: `effective_noindex = true` (strictest restriction prevails in search engine processing), but detects directive conflict.
-  - Evaluator executes `AR-INDEX-003` (Conflicting robots directives).
-  - Condition: contradictory index/noindex signals across meta and headers.
-  - Result: `RuleResult` status `WARNING`, severity `P2`.
+  - Normalizer extracts parsed tokens: `robots_meta_tokens=[index]`, `x_robots_tokens=[noindex]`.
+  - Evaluator executes `AR-INDEX-002` (Conflicting robots directives).
+  - Parent: `INDEX-001`.
+  - Automation: `deterministic`.
+  - Precondition: at least one applicable directive parsed.
+  - Condition: contradictory `index` and `noindex` directives explicitly present in the same applicable scope.
+  - Result: `RuleResult` status `FAIL`, default severity `P1`.
+  - Evidence Ref: `RobotsDirectiveObservation(meta=[index], header=[noindex])`.
 - **Finding Model:**
-  - Title: *"Conflicting robots directives between HTTP header and HTML meta tag"*
-  - Rule ID: `AR-INDEX-003` (Parent: `INDEX-001`)
-  - Classification: `Warning`
-  - Severity: `P2`
-  - Affected URLs: 1 URL.
+  - Title: *"Contradictory index and noindex directives in same scope"*
+  - Rule ID: `AR-INDEX-002` (Parent: `INDEX-001`)
+  - Classification: `ISSUE`
+  - Severity: `P1`
+  - Affected Subjects: 1 URL.
 - **Affected URL Inspector:**
-  - Page Directives section shows:
-    - `X-Robots-Tag`: `noindex, nofollow` (HTTP Header)
-    - `meta robots`: `index, follow` (HTML `<head>`)
-    - Effective calculated state: `noindex` (Search engines prioritize restriction).
+  - Page Index Directives section displays:
+    - Raw `X-Robots-Tag`: `noindex` (HTTP Header)
+    - Raw `meta robots`: `index` (HTML `<head>`)
+    - Directive tokens and contradictory conflict indicator.
 - **Recommended Action:**
-  - *"Align index directives between the server HTTP header and the HTML `<head>`. Remove contradictory directives to ensure predictable indexing behavior."*
+  - *"Align robots index directives across HTTP response headers and HTML `<head>`. Remove contradictory index and noindex directives to ensure consistent indexing signals."*
 
 ---
 
-### Flow 4: Assisted / Contextual Review (Snippet Restrictions on Core Content)
+### Flow 4: Snippet Restriction Conflicts With Snippet Policy (Assisted)
 - **Observed Evidence:**
   - URL `https://example.com/guide/pricing` returns `200 OK`.
-  - HTML contains: `<meta name="robots" content="max-snippet:20">`.
-  - Page is identified in sitemap and has 25 internal inlinks.
-  - Project policy supplies: `snippet_policy = ALLOW_SNIPPET`.
+  - HTML contains `<meta name="robots" content="max-snippet:20">`.
+  - Explicit project policy supplies: `snippet_policy = allow_unrestricted`.
 - **Rule Evaluation:**
-  - Evaluator executes `AR-INDEX-007` (Snippet restrictions restrict quotation on expected snippet-eligible page).
+  - Evaluator executes `AR-INDEX-005` (Snippet restriction conflicts with snippet policy).
+  - Parent: `INDEX-007`.
   - Automation: `assisted`.
-  - Precondition: explicit snippet policy supplied.
-  - Condition: `max-snippet:20` severely truncates textual snippet extraction in search and AI answer engines.
-  - Result: `RuleResult` status `WARNING`, severity `P2`.
+  - Precondition: snippet directives extracted.
+  - Condition: explicit `snippet_policy=allow_unrestricted` and snippet restriction (`max-snippet:20`) is present.
+  - Result: `RuleResult` status `FAIL`, default severity `P1`.
+    *(Note: If policy had been unspecified, status would be `WARNING`. If block-level `data-nosnippet` required contextual interpretation, status would be `MANUAL_REVIEW`).*
+  - Evidence Ref: `RobotsDirectiveObservation(max_snippet=20)`, `ProjectPolicyAssignment(snippet_policy=allow_unrestricted)`.
 - **Finding Model:**
-  - Title: *"Severe snippet length restriction on key content page"*
-  - Rule ID: `AR-INDEX-007` (Parent: `INDEX-007`)
-  - Classification: `Warning`
-  - Severity: `P2`
+  - Title: *"Snippet restriction conflicts with explicit unrestricted snippet policy"*
+  - Rule ID: `AR-INDEX-005` (Parent: `INDEX-007`)
+  - Classification: `ISSUE`
+  - Severity: `P1`
+  - Affected Subjects: 1 URL.
 - **Affected URL Inspector:**
-  - Inspector displays exact meta tag content: `max-snippet:20`.
-  - Displays context note: *"Page is configured with a 20-character snippet limit, preventing search engines and AI assistants from generating informative preview text."*
+  - Page Index Directives section displays extracted snippet directive: `max-snippet:20`.
+  - Rule evaluation panel notes policy conflict against supplied `snippet_policy = allow_unrestricted`.
 - **Recommended Action:**
-  - *"Review whether the 20-character snippet limit is intentional for this guide page. Remove `max-snippet:20` or increase the character threshold to allow standard search previews and AI citations."*
+  - *"Review the `max-snippet:20` directive against project snippet policy. If full text previews and quotations are intended, remove or adjust the restriction."*
+  *(Guardrail: Relaxing snippet controls permits snippet quotation but does NOT guarantee search or AI citation).*
 
 ---
 
-### Flow 5: AI Search Crawler Policy Evaluation
-- **Observed Evidence:**
-  - Site `/robots.txt` contains:
-    ```text
-    User-agent: GPTBot
-    Disallow: /
+### Flow 5: AI Search Crawler Policy Evaluations (Two Separate Atomic Findings)
 
+#### 5A. OAI-SearchBot Access Policy
+- **Observed Evidence:**
+  - `/robots.txt` contains:
+    ```text
     User-agent: OAI-SearchBot
     Allow: /
     ```
-  - Project policy supplies:
-    - `oai_searchbot_access_policy = ALLOW`
-    - `gptbot_training_policy = DISALLOW`
+  - Explicit project policy supplies: `oai_searchbot_access_policy = allow`.
 - **Rule Evaluation:**
-  - Evaluator executes `AR-AI-001` (OAI-SearchBot access allowed when AI Search visibility expected).
-    - Condition: `OAI-SearchBot` decision is `ALLOWED` matching policy `ALLOW`.
-    - Result: `RuleResult` status `PASS`.
-  - Evaluator executes `AR-AI-002` (GPTBot access aligns with explicit AI training policy).
-    - Condition: `GPTBot` decision is `DISALLOWED` matching policy `DISALLOW`.
-    - Result: `RuleResult` status `PASS`.
+  - Evaluator executes `AR-AI-001` (OAI-SearchBot robots access matches project policy).
+  - Parent: `AI-001`.
+  - Automation: `assisted`.
+  - Precondition: OAI-SearchBot robots policy can be evaluated.
+  - Condition: explicit `allow` policy matches effective robots behavior (`ALLOWED`).
+  - Result: `RuleResult` status `PASS`, default severity `P2`.
 - **Finding Model:**
-  - Title: *"OpenAI search crawler allowed while training bot restricted"*
-  - Rule IDs: `AR-AI-001`, `AR-AI-002` (Parent: `AI-001`)
-  - Classification: `Information`
-  - Severity: `P3`
-- **Affected URL Inspector:**
-  - Robots decision panel displays:
-    - `OAI-SearchBot`: `Allowed` (matches intent to appear in ChatGPT Search).
-    - `GPTBot`: `Disallowed` (matches intent to prevent model training scraping).
+  - Title: *"OAI-SearchBot robots access matches project policy"*
+  - Rule ID: `AR-AI-001` (Parent: `AI-001`)
+  - Classification: `INFORMATION`
+  - Severity: `P2`
 - **Recommended Action:**
-  - *"Configuration is consistent with project policy: content is accessible for search retrieval while protected from generative model training."*
+  - *"OAI-SearchBot access matches explicit project policy: search crawler is permitted to crawl and retrieve content for ChatGPT Search."*
+  *(Guardrail: Crawler access permits retrieval eligibility; it does not guarantee ChatGPT inclusion or ranking).*
+
+#### 5B. GPTBot Training Scraper Policy
+- **Observed Evidence:**
+  - `/robots.txt` contains:
+    ```text
+    User-agent: GPTBot
+    Disallow: /
+    ```
+  - Explicit project policy supplies: `gptbot_training_policy = block`.
+- **Rule Evaluation:**
+  - Evaluator executes `AR-AI-003` (GPTBot configuration matches explicit training policy).
+  - Parent: `AI-002`.
+  - Automation: `assisted`.
+  - Precondition: GPTBot robots state can be evaluated.
+  - Condition: explicit `block` training policy matches effective GPTBot robots behavior (`DISALLOWED`).
+  - Result: `RuleResult` status `PASS`, default severity `P2`.
+- **Finding Model:**
+  - Title: *"GPTBot robots configuration matches training policy"*
+  - Rule ID: `AR-AI-003` (Parent: `AI-002`)
+  - Classification: `INFORMATION`
+  - Severity: `P2`
+- **Recommended Action:**
+  - *"GPTBot access matches explicit project training policy: AI training scraper is restricted from extracting site content."*
+  *(Guardrail: GPTBot blocked is an intentional training protection policy; it does NOT mean ChatGPT Search is blocked).*
 
 ---
 
@@ -385,10 +426,12 @@ V1 implements rigorous domain guardrails for AI Search and Generative Engine Opt
 2. **Access ≠ Citation Guarantee:**
    - Permitting crawler access to AI bots guarantees only retrieval eligibility.
    - The UI and findings must explicitly state that crawler accessibility does not guarantee AI answer inclusion, quotation, or citation ranking.
-3. **No Universal "GEO Score":**
+3. **Bot Profile ≠ Verified Identity:**
+   - Simulated bot request profiles in tests do not represent cryptographically verified crawler identity.
+4. **No Universal "GEO Score":**
    - V1 strictly rejects arbitrary composite metrics (e.g. *"GEO Readiness: 64%"*).
    - Findings in this domain are strictly factual: access availability, snippet quotation permissions, machine text extractability, and valid schema syntax.
-4. **No Unsupported Probability Claims:**
+5. **No Unsupported Probability Claims:**
    - Do not claim predictive likelihood of LLM citation (e.g. *"90% probability of citation"*).
 
 ---
@@ -405,7 +448,7 @@ The product maintains standard raw crawler data views, but places them in a seco
 - **Internal Link Matrix:** Full directional link edge ledger with anchor texts.
 - **Sitemap Index & Entries:** Listed URLs vs crawled URLs reconciliation table.
 - **Structured Data Ledger:** JSON-LD/Microdata block inventories.
-- **DOM Render Comparisons:** Raw vs rendered extraction diff ledger.
+- **DOM Render Comparisons:** Normalized raw vs rendered field diff ledger.
 
 ### Product Positioning
 - Raw crawler views are accessible via the `Raw Crawl Data` tab.
@@ -420,7 +463,7 @@ The product surfaces map directly to the frozen logical entities defined in `kno
 
 | Product Surface | Required Logical Entities / Data Elements | Produced By Layer / Module |
 |---|---|---|
-| **1. Projects / Audits** | `AuditRun`, finding counts by presentation classification, crawl counters | Orchestrator & Persistence Repository |
+| **1. Projects / Audits** | `AuditRun`, finding counts by `presentation_classification`, crawl counters | Orchestrator & Persistence Repository |
 | **2. New Audit Config** | `AuditRun`, `ProjectPolicyAssignment` | UI Configuration & Orchestrator |
 | **3. Crawl Progress** | `AuditRun.run_status`, live crawl metrics, frontier queue counters, buffer stats | Discovery Frontier, HTTP Fetcher, Buffer Sink |
 | **4. Audit Overview** | `Finding` summary, presentation class rollups, `AuditRun` crawl summary | Result Aggregator & Normalizer |
@@ -447,6 +490,7 @@ To fulfill this product workflow, subsequent implementation phases must respect 
 │ - Normalization into EvidenceSnapshot                  │
 │ - Freeze snapshot immutability                         │
 │ - Evaluate 47 AR-* atomic rules                        │
+│   (30 deterministic / 16 assisted / 1 manual)          │
 │ - Synthesize RuleResults into Findings                 │
 │ - Generate ManualReviewTasks                           │
 └───────────────────────────▲────────────────────────────┘
@@ -468,9 +512,13 @@ To fulfill this product workflow, subsequent implementation phases must respect 
 
 ### 2. Audit Normalization & Rule Engine Boundary
 - Operates strictly on a frozen `EvidenceSnapshot`.
-- Rule evaluation logic is deterministic, reproducible, and self-contained.
-- Evaluators output `RuleResult` instances linked to `RuleEvidenceRef`.
+- The Rule Engine executes the 47 frozen atomic rules (`AR-*`):
+  - **30 Deterministic rules:** evaluate normalized evidence against frozen conditions without external inference.
+  - **16 Assisted rules:** evaluate technical conditions combined with explicit `ProjectPolicy` or structured contextual preconditions.
+  - **1 Manual rule:** collects structured evidence for guided human evaluation.
+- Evaluators output immutable `RuleResult` instances linked to `RuleEvidenceRef`.
 - Result aggregation synthesizes findings without altering atomic rule statuses.
+- LLM-only verdicts are strictly forbidden.
 
 ### 3. UI Presentation Boundary
 - The UI renders data models supplied by the backend.
@@ -494,13 +542,28 @@ To maintain disciplined MVP delivery, the following capabilities are explicitly 
 
 ---
 
-## 11. Verification Checklist
+## 11. V1 Product Decisions on Open Questions
+
+### 1. Manual Review Task Persistence
+- In V1, `ManualReviewTask` is scoped strictly to `audit_run_id`.
+- Manual review resolutions (`OPEN` vs `RESOLVED` with reviewer notes) remain run-scoped in V1.
+- Re-crawling a site initiates a new `AuditRun`, and previously resolved manual review decisions are **not** automatically carried forward.
+- Cross-run resolution carry-forward is a candidate for future versions once explicit entity-identity and policy-versioning semantics are established.
+
+### 2. Headless Execution Output
+- Product-level export (CSV, Excel, formatted PDF reports) is not required for the initial V1 workflow and is deferred.
+- The standalone development harness (`cmd/sitecrawl-dev`) emits structured JSON / debug log output sufficient for automated verification, regression testing, and CI parity validation during Checkpoints A3–A6.
+- Headless output formatting must not block engineering milestones A3–A6.
+
+---
+
+## 12. Verification Checklist
 
 Before accepting this workflow specification into the project documentation:
 - [x] Verified consistency with MVP scope in `knowledge/05-mvp-scope.md`.
 - [x] Verified terminology matches frozen contracts in `knowledge/08-system-architecture.md` and `knowledge/09-data-model.md`.
-- [x] Confirmed all rule references align with `knowledge/07-v1-atomic-rule-manifest.md`.
-- [x] Confirmed absolute exclusion of score models (SEO score, GEO score, health grade).
-- [x] Confirmed strict separation of Observation vs Conclusion and Rule Status vs Report Presentation.
+- [x] Confirmed all rule references align with `knowledge/07-v1-atomic-rule-manifest.md` (exact 47 rules: 30 deterministic, 16 assisted, 1 manual).
+- [x] Confirmed absolute exclusion of score models (SEO score, GEO score, health grade, priority score).
+- [x] Confirmed strict separation of Observation vs Conclusion, Rule Status vs Report Presentation, and Severity vs Priority.
 - [x] Confirmed AI Search guardrails (OAI-SearchBot vs GPTBot distinction, no citation guarantee).
 - [x] Confirmed that current engineering migration sequencing (A2 -> A3/A4 -> A5 -> A6 -> A7) is completely preserved.
