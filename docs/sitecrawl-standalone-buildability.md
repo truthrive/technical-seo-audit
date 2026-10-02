@@ -29,14 +29,14 @@ This inventory evaluates the compile-time reality, dependency graph, and standal
    - Crucially, files cannot be arbitrarily moved or excluded without breaking compile-time symbol closure:
      - `storage/crawler.go` relies on symbols in `go/pagespeed/` (`psiPump`, `PSIResult`, `newPSIPump`, `psiClient`, `savePSI`).
      - `engine/issues.go`, `storage/query.go`, `storage/export.go`, `storage/graph.go`, and `go/pagespeed/*.go` define methods on `(s *Service)`, which is declared in `go/app-glue/service.go`.
-     - `engine/page.go` relies on `nowStamp()` (in `storage/runs.go`) and `issue`, `severityOf()`, `countMissingAlt()` (in `engine/issues.go`).
+     - `engine/page.go` relies on `nowStamp()` (in `storage/runs.go`) and `issue`, `severityOf`, `countMissingAlt` (in `engine/issues.go`).
 4. **Toolchain & Runtime Reality**:
    - **Minimum Go Version**: **Go 1.22+** is strictly required, proven by standard library imports of `math/rand/v2` in `go/deps/httpx/httpx.go` and `log/slog` (Go 1.21+).
    - **Zero CGO**: The codebase contains zero `import "C"` calls. Tests use `modernc.org/sqlite` (pure Go). CGO is not required.
    - **Zero Build Tags**: Verified zero `//go:build` or `// +build` directives across all 58 files.
-5. **Checkpoint A2 / A3 Sequencing Conflict**:
-   - Checkpoint A2 specifies running `go list ./...` against `go.mod` before source files are reorganized in Checkpoint A3.
-   - Because existing source files contain unresolved `onescout/...` imports, running `go list ./...` on the current raw directory structure will fail. Decision options are documented for review before A2 begins.
+5. **Sequencing Conflicts Documented**:
+   - **A2 Verification Conflict**: Checkpoint A2 specifies running `go list ./...` with a bare `go.mod` against the current extracted tree before A3 file moves. This fails because existing source files contain unresolvable `onescout/...` imports.
+   - **A3/A4 Package Closure Conflict**: Checkpoint A3 specifies that the core acquisition package compiles, yet prioritized A3 files (`types.go`, `page.go`) have unresolved dependencies on `core/runs` (A4), `storage/runs.go` (A5), and `engine/issues.go` (A7).
 
 ---
 
@@ -82,7 +82,7 @@ Programmatically verified from workspace source code:
 | [`extract.go`](../go/engine/extract.go) | `sitecrawl` | `golang.org/x/net/html` | None | `extractDocument`, `extractedDoc`, `SchemaItem`, `Image`, `Hreflang`, `LinkEdge` (used by `page.go`, `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
 | [`fetch.go`](../go/engine/fetch.go) | `sitecrawl` | None | `core/httpx` (bundled) | `newFetcher`, `fetcher`, `fetchResult`, `fetchOutcome` (used by `crawler.go`, `page.go`) | Checkpoint A3 (Engine Core) | Low |
 | [`frontier.go`](../go/engine/frontier.go) | `sitecrawl` | None | None | `newFrontier`, `frontier`, `frontierItem`, `admit`, `peekReady`, `snapshot`, `restore` (used by `crawler.go`, `runs.go`) | Checkpoint A3 (Engine Core) | Low |
-| [`issues.go`](../go/engine/issues.go) | `sitecrawl` | None | None | Defines `evaluate(p *Page)`, `indexabilityOf(p *Page)`, `issue`, `severityOf`, `countMissingAlt`. Defines method `(s *Service) IssueCatalog()` | Checkpoint A7 (Legacy Compatibility) / Compile dependency for `page.go` | Medium (depends on `Service`) |
+| [`issues.go`](../go/engine/issues.go) | `sitecrawl` | None | None | Defines `evaluate(p *Page)`, `indexabilityOf(p *Page)`, `issue`, `severityOf`, `countMissingAlt`. Defines method `(s *Service) IssueCatalog()` | Checkpoint A7 (Optional Compatibility Features) | Medium (depends on `Service`) |
 | [`links.go`](../go/engine/links.go) | `sitecrawl` | None | None | `collectLinks`, `linkEdge`, `classifyRel` (used by `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
 | [`normalize.go`](../go/engine/normalize.go) | `sitecrawl` | None | None | `normalizeURL`, `frontierKey`, `isSameSite`, `rootDomain`, `stripTracking` (used across all crawler modules) | Checkpoint A3 (Engine Core) | Low |
 | [`page.go`](../go/engine/page.go) | `sitecrawl` | None | None | Defines `buildPage`, `Page`, `pageRow`. Calls `nowStamp()` (in `storage/runs.go`), uses `issue`, `severityOf`, `countMissingAlt` (in `engine/issues.go`) | Checkpoint A3 (Engine Core) | Medium (cross-file symbol dependencies) |
@@ -126,7 +126,7 @@ Programmatically verified from workspace source code:
 
 | File | Package | External Imports | 1Scout Imports | Important Package-Private Symbol Coupling | Checkpoint Mapping | Migration Risk |
 |---|---|---|---|---|---|---|
-| [`service.go`](../go/app-glue/service.go) | `sitecrawl` | `github.com/wailsapp/wails/v3` | `core/credset`, `core/httpx`, `core/jobs`, `core/license`, `core/runs`, `core/schema`, `core/workspace`, `tools` | Defines `Service`, `FilePicker`, `handle`. Declares 24 methods on `(s *Service)`. Connects desktop UI to coordinator | Checkpoint A8 (UI / Service Bridge) | High (heavy 1Scout platform coupling; not needed for standalone core) |
+| [`service.go`](../go/app-glue/service.go) | `sitecrawl` | `github.com/wailsapp/wails/v3` | `core/credset`, `core/httpx`, `core/jobs`, `core/license`, `core/runs`, `core/schema`, `core/workspace`, `tools` | Defines `Service`, `FilePicker`, `handle`. Declares 24 methods on `(s *Service)`. Connects desktop UI to coordinator | Post-core optional / Excluded from standalone core | High (heavy 1Scout platform coupling; not needed for standalone core) |
 
 ---
 
@@ -142,58 +142,79 @@ Programmatically verified from workspace source code:
 
 ### 3.6 `go/tests/` (27 Files)
 
-| Test File | Package | External Imports | 1Scout Imports | Test Focus & Coupling | Checkpoint Mapping |
+| Test File | Package | External Imports | 1Scout Direct Imports | Test Harness & Runtime Coupling | Test Classification | Checkpoint Mapping |
+|---|---|---|---|---|---|---|
+| [`agent_local_test.go`](../go/tests/agent_local_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | In-memory SQLite search test and AST import validation | Pure/near-pure engine test | Checkpoint A6 |
+| [`cancel_test.go`](../go/tests/cancel_test.go) | `sitecrawl` | None | `core/runs` (`runs.Terminal`) | Crawl cancellation lifecycle; uses `newTestService`; contains `t.Skip` | Transitive test-harness dependency + direct import | Checkpoint A6 |
+| [`crawler_test.go`](../go/tests/crawler_test.go) | `sitecrawl` | None | `core/runs` (`runs.BOMUTF8`) | Core fixture crawl: facets, status codes, canonicals; uses `newTestService` | Transitive test-harness dependency + direct import | Checkpoint A6 |
+| [`credentials_test.go`](../go/tests/credentials_test.go) | `sitecrawl` | None | `core/credset`, `core/httpx` | PageSpeed API key storage vault tests | Direct import dependency (PageSpeed) | Checkpoint A7 |
+| [`customheaders_test.go`](../go/tests/customheaders_test.go) | `sitecrawl` | None | None | Custom HTTP headers forwarding during crawl; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`deferred_test.go`](../go/tests/deferred_test.go) | `sitecrawl` | None | None | 429 Too Many Requests & 503 retry/deferral loop; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`extract_test.go`](../go/tests/extract_test.go) | `sitecrawl` | None | None | HTML extraction: title, meta, canonical, hreflang, schema (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
+| [`fixture_test.go`](../go/tests/fixture_test.go) | `sitecrawl` | None | None | Synthetic site fixture with redirect chains, loops, canonicals | Test fixture helper | Checkpoint A3 / A6 |
+| [`frontier_cap_test.go`](../go/tests/frontier_cap_test.go) | `sitecrawl` | None | None | `MaxURLs` admission boundary enforcement (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
+| [`frontier_test.go`](../go/tests/frontier_test.go) | `sitecrawl` | None | None | FIFO queue, BFS depth order, tracking param stripping (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
+| [`fts_trigger_test.go`](../go/tests/fts_trigger_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | SQLite FTS5 index update triggers; contains `t.Skip` if FTS5 missing | Pure/near-pure engine test | Checkpoint A6 |
+| [`history_test.go`](../go/tests/history_test.go) | `sitecrawl` | None | `core/jobs`, `core/workspace`, `testutil` | Defines `newTestService`; tests run history queries | Transitive test-harness definition + direct import | Checkpoint A6 |
+| [`inspectdb_test.go`](../go/tests/inspectdb_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | Manual crawl DB inspection utility; contains `t.Skip` (`CRAWL_DB=<path>`) | Environment-gated utility | Checkpoint A6 |
+| [`inspectopts_test.go`](../go/tests/inspectopts_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | Manual options inspection utility; contains `t.Skip` (`CRAWL_DB=<path>`) | Environment-gated utility | Checkpoint A6 |
+| [`live_test.go`](../go/tests/live_test.go) | `sitecrawl` | None | `core/jobs`, `core/workspace` | Live web crawl test against external sites; contains `t.Skip` (`CRAWL_LIVE`) | Environment-gated + direct import | Checkpoint A6 |
+| [`pagespeed_test.go`](../go/tests/pagespeed_test.go) | `sitecrawl` | None | `core/credset`, `core/httpx` | PageSpeed pump, concurrency pacing, error handling; uses `newTestService` | Transitive test-harness dependency + direct import | Checkpoint A7 |
+| [`pause_test.go`](../go/tests/pause_test.go) | `sitecrawl` | None | None | Pause and resume lifecycle, frontier preservation; uses `newTestService`; contains `t.Skip` | Transitive test-harness dependency | Checkpoint A6 |
+| [`perf_test.go`](../go/tests/perf_test.go) | `sitecrawl` | None | None | High-concurrency synthetic crawl benchmark; uses `newTestService`; contains `t.Skip` (`CRAWL_PERF=1`) | Transitive test-harness dependency + environment-gated | Checkpoint A6 |
+| [`politeness_test.go`](../go/tests/politeness_test.go) | `sitecrawl` | None | None | Per-host pacing, backoff upon error, `Crawl-delay`; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`psi_live_test.go`](../go/tests/psi_live_test.go) | `sitecrawl` | None | None | Live Google PSI API request test; contains `t.Skip` (`PSI_LIVE_KEY=<key>`) | Environment-gated (PageSpeed) | Checkpoint A7 |
+| [`query_test.go`](../go/tests/query_test.go) | `sitecrawl` | None | None | Grid query SQL construction and SQL injection safety; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`render_test.go`](../go/tests/render_test.go) | `sitecrawl` | None | None | Chrome/Edge headless rendering; uses `newTestService`; contains `t.Skip` if no browser | Transitive test-harness dependency + environment-gated | Checkpoint A6 |
+| [`resume_ids_test.go`](../go/tests/resume_ids_test.go) | `sitecrawl` | None | None | URL ID stability across crawl pause and restart; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`schema_golden_test.go`](../go/tests/schema_golden_test.go) | `sitecrawl` | None | `testutil` (`SchemaGolden`) | SQLite schema migration regression test against golden file | Direct import dependency | Checkpoint A6 |
+| [`seedredirect_test.go`](../go/tests/seedredirect_test.go) | `sitecrawl` | None | None | Initial seed URL 301/302 redirect resolution; uses `newTestService`; contains `t.Skip` | Transitive test-harness dependency | Checkpoint A6 |
+| [`similarity_test.go`](../go/tests/similarity_test.go) | `sitecrawl` | None | None | SimHash duplicate detection tests; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`sitemap_test.go`](../go/tests/sitemap_test.go) | `sitecrawl` | None | None | Sitemap index, gzip sitemaps, invalid XML tolerance (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
+
+#### Summary of Test Classifications (27 Files Total)
+- **Pure / Near-Pure Engine & Fixture Unit Tests (8 files)**: `agent_local_test.go`, `extract_test.go`, `fixture_test.go`, `frontier_cap_test.go`, `frontier_test.go`, `fts_trigger_test.go`, `psi_live_test.go`, `sitemap_test.go`.
+- **Transitive Test-Harness Dependencies without Direct 1Scout Imports (10 files)**: `customheaders_test.go`, `deferred_test.go`, `pause_test.go`, `perf_test.go`, `politeness_test.go`, `query_test.go`, `render_test.go`, `resume_ids_test.go`, `seedredirect_test.go`, `similarity_test.go`.
+- **Direct 1Scout Import Dependencies with Transitive Test-Harness (5 files)**: `cancel_test.go`, `crawler_test.go`, `history_test.go`, `live_test.go`, `pagespeed_test.go`.
+- **Direct 1Scout Import Dependencies without Test-Harness (2 files)**: `credentials_test.go`, `schema_golden_test.go`.
+- **Manual DB Inspection Utilities (2 files)**: `inspectdb_test.go`, `inspectopts_test.go`.
+*(Note: 8 test files contain `t.Skip` directives making them conditionally environment-gated).*
+
+---
+
+## 4. 1Scout Platform Dependency Contracts (Observable Requirements Only)
+
+This section records the exact symbols used from unbundled 1Scout packages and the concrete behavior observable from SiteCrawl source code, without inventing unverified adapter implementations or internal details:
+
+| Package | Importing Files | Exact Symbols / Types Used | Observable Behavior Required by SiteCrawl | Standalone Equivalent Needed? | Implementation Status |
 |---|---|---|---|---|---|
-| [`agent_local_test.go`](../go/tests/agent_local_test.go) | `sitecrawl` | `modernc.org/sqlite` | None (AST check only) | AST import validation, local HTML-only search | Checkpoint A6 |
-| [`cancel_test.go`](../go/tests/cancel_test.go) | `sitecrawl` | None | `core/runs` (`runs.Terminal`) | Crawl cancellation lifecycle (uses `newTestService`) | Checkpoint A6 |
-| [`crawler_test.go`](../go/tests/crawler_test.go) | `sitecrawl` | None | `core/runs` (`runs.BOMUTF8`) | Core fixture crawl: facets, status codes, canonicals (uses `newTestService`) | Checkpoint A6 |
-| [`credentials_test.go`](../go/tests/credentials_test.go) | `sitecrawl` | None | `core/credset`, `core/httpx` | PageSpeed API key storage vault | Checkpoint A7 |
-| [`customheaders_test.go`](../go/tests/customheaders_test.go) | `sitecrawl` | None | None | Custom HTTP headers forwarding during crawl | Checkpoint A6 |
-| [`deferred_test.go`](../go/tests/deferred_test.go) | `sitecrawl` | None | None | 429 Too Many Requests & 503 retry/deferral loop | Checkpoint A6 |
-| [`extract_test.go`](../go/tests/extract_test.go) | `sitecrawl` | None | None | HTML extraction: title, meta, canonical, hreflang, schema (pure stdlib unit test) | Checkpoint A3 / A6 |
-| [`fixture_test.go`](../go/tests/fixture_test.go) | `sitecrawl` | None | None | Synthetic site fixture with redirect chains, loops, canonicals | Checkpoint A3 / A6 |
-| [`frontier_cap_test.go`](../go/tests/frontier_cap_test.go) | `sitecrawl` | None | None | `MaxURLs` admission boundary enforcement (pure stdlib unit test) | Checkpoint A3 / A6 |
-| [`frontier_test.go`](../go/tests/frontier_test.go) | `sitecrawl` | None | None | FIFO queue, BFS depth order, tracking param stripping (pure stdlib unit test) | Checkpoint A3 / A6 |
-| [`fts_trigger_test.go`](../go/tests/fts_trigger_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | SQLite FTS5 index update triggers | Checkpoint A6 |
-| [`history_test.go`](../go/tests/history_test.go) | `sitecrawl` | None | `core/jobs`, `core/workspace`, `testutil` | Defines `newTestService`, tests run history queries | Checkpoint A6 |
-| [`inspectdb_test.go`](../go/tests/inspectdb_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | Manual crawl DB inspection utility (`CRAWL_DB=<path>`) | Checkpoint A6 |
-| [`inspectopts_test.go`](../go/tests/inspectopts_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | Manual options inspection utility (`CRAWL_DB=<path>`) | Checkpoint A6 |
-| [`live_test.go`](../go/tests/live_test.go) | `sitecrawl` | None | `core/jobs`, `core/workspace` | Live web crawl test against external sites (`CRAWL_LIVE=<url>`) | Checkpoint A6 |
-| [`pagespeed_test.go`](../go/tests/pagespeed_test.go) | `sitecrawl` | None | `core/credset`, `core/httpx` | PageSpeed pump, concurrency pacing, error handling | Checkpoint A7 |
-| [`pause_test.go`](../go/tests/pause_test.go) | `sitecrawl` | None | None | Pause and resume lifecycle, frontier preservation | Checkpoint A6 |
-| [`perf_test.go`](../go/tests/perf_test.go) | `sitecrawl` | None | None | High-concurrency synthetic crawl benchmark (`CRAWL_PERF=1`) | Checkpoint A6 |
-| [`politeness_test.go`](../go/tests/politeness_test.go) | `sitecrawl` | None | None | Per-host pacing, backoff upon error, `Crawl-delay` | Checkpoint A6 |
-| [`psi_live_test.go`](../go/tests/psi_live_test.go) | `sitecrawl` | None | None | Live Google PSI API request test (`PSI_LIVE_KEY=<key>`) | Checkpoint A7 |
-| [`query_test.go`](../go/tests/query_test.go) | `sitecrawl` | None | None | Grid query SQL construction and SQL injection safety (pure unit test) | Checkpoint A6 |
-| [`render_test.go`](../go/tests/render_test.go) | `sitecrawl` | None | None | Chrome/Edge headless rendering of JS content (skips if no browser) | Checkpoint A6 |
-| [`resume_ids_test.go`](../go/tests/resume_ids_test.go) | `sitecrawl` | None | None | URL ID stability across crawl pause and restart | Checkpoint A6 |
-| [`schema_golden_test.go`](../go/tests/schema_golden_test.go) | `sitecrawl` | None | `testutil` (`SchemaGolden`) | SQLite schema migration regression test against golden file | Checkpoint A6 |
-| [`seedredirect_test.go`](../go/tests/seedredirect_test.go) | `sitecrawl` | None | None | Initial seed URL 301/302 redirect resolution | Checkpoint A6 |
-| [`similarity_test.go`](../go/tests/similarity_test.go) | `sitecrawl` | None | None | SimHash duplicate detection and content ratio tests (pure unit test) | Checkpoint A3 / A6 |
-| [`sitemap_test.go`](../go/tests/sitemap_test.go) | `sitecrawl` | None | None | Sitemap index, gzip sitemaps, invalid XML tolerance (pure unit test) | Checkpoint A3 / A6 |
+| **`core/runs`** | `types.go`, `runs.go`, `export.go`, `service.go`, `cancel_test.go`, `crawler_test.go` | `runs.StateRunning`, `runs.StatePaused`, `runs.StateCompleted`, `runs.StateCancelled`, `runs.StateStopped`, `runs.StateFailed`, `runs.StateInterrupted`, `runs.Now()`, `runs.BOMUTF8`, `runs.CSVGuard(string)`, `runs.Gate`, `runs.Terminal(string)` | - Run state string constants.<br>- RFC3339 formatted UTC timestamp string.<br>- UTF-8 BOM byte sequence `[]byte{0xEF, 0xBB, 0xBF}` for CSV output.<br>- CSV formula character escaping.<br>- Boolean check whether a run state string is terminal.<br>- Per-workspace run synchronization gate in `service.go`. | **Yes (for acquisition core & persistence)** | Standalone equivalents needed for constants, timestamps, CSV helpers, and terminal state checks. Implementation details = TBD. `runs.Gate` excluded with `service.go`. |
+| **`core/schema`** | `runs.go`, `service.go` | `schema.Migrate(db *sql.DB, tool string, stmts []string) error`, `schema.Ready` | - In `runs.go`: Executes sequential SQLite DDL migration statements (`schemaStmts`) against `*sql.DB` ensuring statements are applied once.<br>- In `service.go`: Synchronization gate (`ready.Do(...)`) to avoid replaying DDL checks on every read action. | **Yes (for standalone persistence)** | Standalone mechanism needed in Checkpoint A4 to execute `schemaStmts` against `*sql.DB`. Implementation details = TBD. `schema.Ready` excluded with `service.go`. |
+| **`core/workspace`** | `service.go`, `pagespeed.go`, `history_test.go`, `live_test.go` | `workspace.Manager`, `workspace.NewManager()`, `workspace.WithTx(ctx, db, ...)` | - In `service.go`: Resolves workspace directory and opens SQLite DB handle.<br>- In `pagespeed.go`: Wraps SQLite operations in transactions with backoff retry.<br>- In tests: Initializes a test workspace database. | **No (for standalone acquisition core)** | Excluded from acquisition core. The core crawler operates on standard `database/sql` handles (`*sql.DB`). Standalone tests require equivalent isolated database opener behavior (exact implementation = TBD). |
+| **`core/jobs`** | `service.go`, `cancel_test.go`, `history_test.go`, `live_test.go` | `jobs.Runner`, `jobs.NewRunner(...)`, `Jobs.Start(...)`, `Jobs.Emit(...)`, `Jobs.Cancel(...)`, `jobs.EventName`, `jobs.Progress` | - In `service.go`: Desktop supervisor for background goroutines and Wails event emission.<br>- In tests: Used to construct test `Service` instances. | **No (for crawler core)** | Excluded. Do NOT port the 1Scout jobs framework. Coordinator cancellation uses standard `context.Context`. However, Checkpoint A4 acceptance requires progress/events to be observable, which requires an equivalent minimal event sink. |
+| **`core/credset`** | `service.go`, `pagespeed.go`, `credentials_test.go`, `pagespeed_test.go` | `credset.Store`, `credset.First(...)`, `credset.Add(...)`, `credset.Save(...)` | - In `service.go` & `pagespeed.go`: Reads encrypted API keys for Google PageSpeed Insights and proxy configuration. | **No (for acquisition core)** | Excluded with `service.go` and `pagespeed/`. See Section 5 for the proxy boundary. |
+| **`core/license`** | `service.go` | `license.Gate` | - Verifies commercial application license. | **No** | Excluded completely. Has zero function in the audit tool. |
+| **`tools`** | `service.go` | `tools.Register(...)`, `tools.Factory`, `tools.Starter` | - 1Scout desktop plugin registry hook (`tools.Register(tools.Factory{...})`). | **No** | Excluded with `service.go`. Standalone tool uses CLI or Go API. |
+| **`testutil`** | `history_test.go`, `schema_golden_test.go` | `testutil.RedirectConfigDir(t *testing.T)`, `testutil.SchemaGolden(t *testing.T, tool string, stmts []string)` | - `RedirectConfigDir`: Redirects config directory to temporary directory.<br>- `SchemaGolden`: Asserts that DDL output matches golden schema file. | **No** | Standalone tests require equivalent isolated configuration-directory behavior and schema regression verification (exact implementation = TBD). |
+| **`core/safe`** *(bundled)* | `sitemap.go`, `crawler.go`, `pagespeed.go`, `pagespeed_pump.go` | `safe.Do()`, `safe.Call()`, `safe.Go()` | - Panic recovery wrapper for worker goroutines. | **Yes (Preserved)** | Source code is bundled in `go/deps/safe/safe.go`. |
+| **`core/httpx`** *(bundled)* | `fetch.go`, `crawler.go`, `service.go`, `pagespeed.go`, `credentials_test.go`, `pagespeed_test.go` | `httpx.NewFiltered(...)`, `httpx.ProxyFunc`, `httpx.IsLocalName`, `httpx.AllowPrivate` | - HTTP client with safe dialing, DNS checks, and proxy rotation hooks. | **Yes (Preserved)** | Source code is bundled in `go/deps/httpx/`. |
 
 ---
 
-## 4. 1Scout Platform Dependency Analysis (Observable Requirements)
+## 5. Source Proxy Boundary Reality
 
-This section documents the exact symbols used from unbundled 1Scout platform packages and the concrete behavior observable from SiteCrawl source code:
-
-| Package | Importing Files | Exact Symbols / Types Used | Observable Requirement in SiteCrawl Source | Standalone Replacement Needed? |
-|---|---|---|---|---|
-| **`core/runs`** | `types.go`, `runs.go`, `export.go`, `service.go`, `cancel_test.go`, `crawler_test.go` | `runs.StateRunning`, `runs.StatePaused`, `runs.StateCompleted`, `runs.StateCancelled`, `runs.StateStopped`, `runs.StateFailed`, `runs.StateInterrupted`, `runs.Now()`, `runs.BOMUTF8`, `runs.CSVGuard(string)`, `runs.Gate`, `runs.Terminal(string)` | - Provides run state string constants.<br>- Provides RFC3339 formatted UTC timestamp string.<br>- Provides byte sequence `[]byte{0xEF, 0xBB, 0xBF}` for CSV output.<br>- Provides CSV cell formula escaping.<br>- Checks if a state string is terminal.<br>- Provides per-workspace run gate in `service.go`. | **Yes (for standalone acquisition core)**: Replace constants, timestamp helper, and CSV helpers with native Go definitions in `internal/sitecrawl/`. `runs.Gate` is excluded with `service.go`. |
-| **`core/schema`** | `runs.go`, `service.go` | `schema.Migrate(db *sql.DB, tool string, stmts []string) error`, `schema.Ready` | - In `runs.go`: Executes sequential SQLite DDL statements (`schemaStmts`) and tracks execution so statements are applied once.<br>- In `service.go`: Provides a synchronization gate (`ready.Do(...)`) to avoid replaying migrations on every user action. | **Yes (for standalone persistence)**: A standalone migration runner executing `schemaStmts` against `*sql.DB`. `schema.Ready` is excluded with `service.go`. |
-| **`core/workspace`** | `service.go`, `pagespeed.go`, `history_test.go`, `live_test.go` | `workspace.Manager`, `workspace.NewManager()`, `workspace.WithTx(ctx, db, ...)` | - In `service.go`: Resolves workspace directory and opens SQLite DB handle.<br>- In `pagespeed.go`: Wraps SQLite transactions with backoff retry.<br>- In tests: Initializes a test workspace database. | **No (for acquisition core)**: The core crawler operates on standard `*sql.DB`. Desktop workspace management is excluded. Tests can open SQLite files directly via standard `database/sql` and `modernc.org/sqlite`. |
-| **`core/jobs`** | `service.go`, `cancel_test.go`, `history_test.go`, `live_test.go` | `jobs.Runner`, `jobs.NewRunner(...)`, `Jobs.Start(...)`, `Jobs.Emit(...)`, `Jobs.Cancel(...)`, `jobs.EventName`, `jobs.Progress` | - In `service.go`: Desktop supervisor for background goroutines and Wails event emission.<br>- In tests: Used to construct `Service` instances. | **No**: Excluded with `service.go`. Crawler worker concurrency is natively managed via standard goroutines, channels, and `context.Context`. |
-| **`core/credset`** | `service.go`, `pagespeed.go`, `credentials_test.go`, `pagespeed_test.go` | `credset.Store`, `credset.First(...)`, `credset.Add(...)`, `credset.Save(...)` | - In `service.go` & `pagespeed.go`: Reads encrypted API keys for Google PageSpeed Insights and proxy configuration. | **No**: Excluded with `service.go` and `pagespeed/`. Crawler proxy settings can be passed directly via `Options.UseProxy`. |
-| **`core/license`** | `service.go` | `license.Gate` | - Verifies commercial application license. | **No**: Excluded completely. Has zero function in the audit tool. |
-| **`tools`** | `service.go` | `tools.Register(...)`, `tools.Factory`, `tools.Starter` | - 1Scout desktop plugin registry hook (`tools.Register(tools.Factory{...})`). | **No**: Excluded with `service.go`. Standalone tool uses CLI or Go API. |
-| **`testutil`** | `history_test.go`, `schema_golden_test.go` | `testutil.RedirectConfigDir(t *testing.T)`, `testutil.SchemaGolden(t *testing.T, tool string, stmts []string)` | - `RedirectConfigDir`: Redirects config directory to temporary directory.<br>- `SchemaGolden`: Asserts that DDL output matches golden schema file. | **No**: Replace `RedirectConfigDir` with `t.TempDir()`. `SchemaGolden` can be adapted or deferred. |
-| **`core/safe`** *(bundled)* | `sitemap.go`, `crawler.go`, `pagespeed.go`, `pagespeed_pump.go` | `safe.Do()`, `safe.Call()`, `safe.Go()` | - Panic recovery wrapper for worker goroutines. | **Yes (Preserved)**: Source code is bundled in `go/deps/safe/safe.go`. |
-| **`core/httpx`** *(bundled)* | `fetch.go`, `crawler.go`, `service.go`, `pagespeed.go`, `credentials_test.go`, `pagespeed_test.go` | `httpx.NewFiltered(...)`, `httpx.ProxyFunc`, `httpx.IsLocalName`, `httpx.AllowPrivate` | - HTTP client with safe dialing, DNS checks, and proxy rotation hooks. | **Yes (Preserved)**: Source code is bundled in `go/deps/httpx/`. |
+Inspection of `go/storage/crawler.go` (lines 198–200) and `go/app-glue/service.go` (lines 109–158) confirms:
+1. `Options.UseProxy` is purely a boolean flag indicating whether proxying is enabled for the run.
+2. `newCoordinator(...)` receives the actual proxy implementation as an argument of type:
+   ```go
+   proxy httpx.ProxyFunc
+   ```
+3. In 1Scout, `service.go` queries `credset.Store` for saved proxy settings and constructs the `httpx.ProxyFunc` callback passed into `newCoordinator`.
+4. Therefore, `credset` is properly excluded from the crawler core; however, preserving proxy capabilities in standalone mode requires an optional standalone host/provider capable of supplying `httpx.ProxyFunc` (e.g. from environment variables `HTTP_PROXY`/`HTTPS_PROXY` or CLI flags). `Options.UseProxy` alone does not supply proxy resolution.
 
 ---
 
-## 5. Compile-Time Symbol Dependency Closures & Cross-File Knots
+## 6. Compile-Time Symbol Dependency Closures & Cross-File Knots
 
 Because all non-utility files declare `package sitecrawl`, unexported symbols are freely shared across the current directories. This creates several tight compile-time dependency closures that prevent arbitrary file partitioning:
 
@@ -254,133 +275,54 @@ Because all non-utility files declare `package sitecrawl`, unexported symbols ar
 
 ---
 
-## 6. Migration Checkpoint Reconciliation & Package Proposals
+## 7. Migration Checkpoint Reconciliation & Sequencing Conflicts
 
 Reconciling the source code dependencies with [`sitecrawl-standalone-migration-map.md`](sitecrawl-standalone-migration-map.md):
 
-### 6.1 Checkpoint Sequence per Migration Map
+### 7.1 Checkpoint Sequence per Migration Map
 - **Checkpoint A3 — Reconstruct `sitecrawl` Package**:
   - Target: `internal/sitecrawl/`
   - Intended scope: Core acquisition engine (`normalize`, `frontier`, `politeness`, `robots`, `sitemap`, `fetch`, `extract`, `page`, `links`, `render`, `deps` + `exclusions`, `similarity`, `types`, `useragents`).
   - Acceptance: Core package compiles; portable engine tests pass.
 - **Checkpoint A4 — Standalone Platform Adapters**:
-  - Implement standalone replacements for `runs`, `schema`, `workspace/database`, `jobs/events`.
+  - Implement standalone replacements for `runs`, `workspace/database`, `schema migration`, `jobs/events`.
 - **Checkpoint A5 — Port Coordinator + Persistence**:
   - Port `storage/crawler.go`, `storage/persist.go`, `storage/runs.go`.
   - Acceptance: Fixture site can be crawled end-to-end; results survive process-level readback.
 - **Checkpoint A6 — Regression Parity**:
   - Port applicable tests, establish regression parity, create freeze tag `sitecrawl-standalone-core-v1`.
 - **Checkpoint A7 — Optional Compatibility Features**:
-  - Migrate legacy issues (`issues.go`), post-crawl finalize (`finalize.go`), duplicates (`duplicates.go`), exports (`export.go`), query (`query.go`), graph (`graph.go`), and PageSpeed (`pagespeed/`).
+  - Migrate legacy issues (`issues.go`), post-crawl finalize (`finalize.go`), duplicates (`duplicates.go`), exports (`export.go`), query (`query.go`), graph (`graph.go`), and PageSpeed (`pagespeed/`). Post-core optional desktop UI integration remains excluded from the acquisition core.
 
-### 6.2 The Cross-Checkpoint Compile Conflicts
-The compile-time dependencies identified in Section 5 create specific conflicts across the planned checkpoints:
+### 7.2 The Explicit Sequencing Conflicts
 
-1. **A3 Engine Core depends on A5 and A7 symbols**:
-   - `page.go` (A3) requires `nowStamp()` (in `runs.go` — A5) and `issue`, `severityOf`, `countMissingAlt` (in `issues.go` — A7).
-   - *Conflict*: A3 cannot compile purely from the prioritized A3 file list without resolving these four symbols.
-2. **A5 Coordinator depends on A7 symbols**:
-   - `crawler.go` (A5) requires `psiPump`, `PSIResult`, `newPSIPump`, `psiClient`, `savePSI` (in `pagespeed/` — A7) and `c.finalize()` (in `finalize.go` — A7).
-   - *Conflict*: A5 cannot compile without either including `pagespeed/` and `finalize.go`, or introducing stubs/interfaces for them.
-3. **A7 Compatibility files depend on A8 Desktop `Service`**:
-   - `issues.go`, `query.go`, `export.go`, `graph.go`, and `pagespeed/*.go` define methods on `(s *Service)`.
-   - *Conflict*: If `service.go` is deferred or excluded, these A7 files cannot compile in their current form.
-
-### 6.3 Reconciled Checkpoint File Placement
-
-| File Path | Original Group | Planned Checkpoint | Compile-Time Blockers to Resolve at that Checkpoint |
-|---|---|---|---|
-| `go/engine/exclusions.go` | engine | **A3** | None |
-| `go/engine/extract.go` | engine | **A3** | None (requires `golang.org/x/net/html`) |
-| `go/engine/fetch.go` | engine | **A3** | Redirect import from `onescout/.../core/httpx` to local `httpx` |
-| `go/engine/frontier.go` | engine | **A3** | None |
-| `go/engine/links.go` | engine | **A3** | None |
-| `go/engine/normalize.go` | engine | **A3** | None |
-| `go/engine/politeness.go` | engine | **A3** | None |
-| `go/engine/render.go` | engine | **A3** | None (requires `github.com/chromedp/chromedp`) |
-| `go/engine/robots.go` | engine | **A3** | None (requires `github.com/temoto/robotstxt`) |
-| `go/engine/similarity.go` | engine | **A3** | None |
-| `go/engine/sitemap.go` | engine | **A3** | Redirect import from `onescout/.../core/safe` to local `safe` |
-| `go/engine/types.go` | engine | **A3** | Decouple `runs.State*` constants (replace with local constants or A4 adapter) |
-| `go/engine/useragents.go` | engine | **A3** | None |
-| `go/deps/safe/safe.go` | deps | **A3** | None |
-| `go/deps/httpx/httpx.go` | deps | **A3** | None |
-| `go/deps/httpx/delivery.go` | deps | **A3** | None |
-| `go/engine/page.go` | engine | **A3** | **Knot 3**: Needs resolution of `nowStamp` (A5) and `issue`/`severityOf`/`countMissingAlt` (A7) |
-| `go/engine/issues.go` | engine | **A7** (or pull stub to A3) | **Knot 4**: Method `IssueCatalog()` requires `Service` |
-| `go/storage/persist.go` | storage | **A5** | Uses `issue` type from `issues.go` |
-| `go/storage/runs.go` | storage | **A5** | Requires `core/schema` and `core/runs` adapters (from A4) |
-| `go/storage/crawler.go` | storage | **A5** | **Knots 1 & 2**: Requires PSI symbols (`pagespeed/`) and `c.finalize()` (`finalize.go`) |
-| `go/storage/finalize.go` | storage | **A7** (or pull to A5) | Requires `coordinator` and `issues.go` |
-| `go/storage/duplicates.go` | storage | **A7** | None (uses `similarity.go` and `*sql.DB`) |
-| `go/storage/query.go` | storage | **A7** | **Knot 4**: 9 methods on `*Service` |
-| `go/storage/export.go` | storage | **A7** | **Knot 4**: 5 methods on `*Service`, `FilePicker`, and `core/runs` helpers |
-| `go/storage/graph.go` | storage | **A7** | **Knot 4**: Method on `*Service` |
-| `go/storage/agent_local.go` | storage | **A7** | None |
-| `go/pagespeed/pagespeed.go` | pagespeed | **A7** | **Knot 4**: 7 methods on `*Service`, `credset`, `workspace` |
-| `go/pagespeed/pagespeed_pump.go` | pagespeed | **A7** | **Knot 4**: Method on `*Service` |
-| `go/pagespeed/pagespeed_opps.go` | pagespeed | **A7** | **Knot 4**: 2 methods on `*Service` |
-| `go/app-glue/service.go` | app-glue | **A8 / Exclude** | 1Scout platform framework coupling |
-| `go/tests/*` (27 files) | tests | **A3 / A6 / A7** | 20 unit tests portable; 4 need test harness (A6); 3 PSI deferred (A7) |
-
----
-
-## 7. Re-evaluation of PageSpeed and Service Decisions
-
-### 7.1 PageSpeed Coupling in Coordinator
-In `storage/crawler.go`, PageSpeed is not merely an optional flag evaluated at runtime; it is baked into the `coordinator` struct definition, channel loops, and flush cycles:
-- Fields: `c.psi *psiPump`, `c.psiOut chan PSIResult`, `c.psiRows []PSIResult`.
-- Methods called: `newPSIPump(...)`, `c.psi.Start(...)`, `c.psi.Stop()`, `c.psi.Seal()`, `c.drainPSI(ctx)`, `savePSI(c.db, c.runID, r)`.
-
-**Decision Options for A5**:
-1. **Option A (Preserve PSI Types in A5)**: Move `pagespeed_pump.go` and `pagespeed.go` into `internal/sitecrawl/` along with `crawler.go` in Checkpoint A5, providing no-op/mock credentials when PageSpeed is disabled.
-2. **Option B (Coordinator Interface / Null Object Pattern)**: In Checkpoint A5, define a clean internal interface on `coordinator` (e.g. `type psiCollector interface { ... }`) with a no-op implementation, decoupling the coordinator from concrete PageSpeed code.
-3. **Option C (Postpone Coordinator Extraction to A5 with Decision Gate)**: Do not attempt to separate PageSpeed in A3; keep analysis read-only and select Option A or B as an explicit design task at the start of Checkpoint A5.
-
-### 7.2 Service Coupling in Storage & Issues
-`Service` is the central desktop facade from 1Scout. Attaching methods to `(s *Service)` across `issues.go`, `query.go`, `export.go`, `graph.go`, and `pagespeed/*.go` binds these storage and catalog features directly to the desktop UI glue.
-
-**Decision Options for Later Checkpoints**:
-1. **Option A (Decouple Receiver Methods)**: In Checkpoint A7, refactor query and export methods from `func (s *Service) QueryPages(...)` into standalone functions taking an `*sql.DB` or repository struct (e.g. `func QueryPages(db *sql.DB, q RowQuery) ...`), and decouple `IssueCatalog()` from `Service`.
-2. **Option B (Standalone Service Struct)**: Define a minimal standalone `type Service struct { DB *sql.DB }` in `internal/sitecrawl/` that provides the receiver target without importing Wails or 1Scout platform packages.
-
----
-
-## 8. Checkpoint A2 Feasibility Analysis & Sequencing Conflict
-
-### 8.1 The Conflict
-`sitecrawl-standalone-migration-map.md` defines Checkpoint A2 as:
-> **Checkpoint A2 — Create Standalone Go Module**
-> Create: `go.mod`
-> Introduce only the dependencies required by the acquisition core.
-> Acceptance: `go list ./...` must enumerate intended standalone packages without relying on the 1Scout repository.
+#### Conflict 1: Checkpoint A2 Feasibility Conflict
+`sitecrawl-standalone-migration-map.md` defines Checkpoint A2 acceptance as:
+> `go list ./...` must enumerate intended standalone packages without relying on the 1Scout repository.
 
 However, in the current repository:
-1. All 58 Go files reside in subdirectories under `go/` (`go/engine/`, `go/storage/`, `go/app-glue/`, etc.).
+1. All 58 Go files reside in subdirectories under `go/`.
 2. 16 of these files contain import statements pointing to `onescout/desktop/internal/...`.
 3. If `go.mod` is created at the repository root and `go list ./...` is executed:
    - Go attempts to load every package in every subdirectory.
-   - Go fails immediately with errors such as:
-     `cannot find module providing package onescout/desktop/internal/core/httpx`
-     `cannot find module providing package onescout/desktop/internal/core/runs`
-     `cannot find module providing package onescout/desktop/internal/core/schema`
+   - Go fails immediately with unresolvable package errors for `onescout/desktop/internal/...`.
+   - Therefore, `go.mod` + external dependencies alone cannot satisfy `go list ./...` against the current un-migrated source tree.
 
-Therefore, `go.mod` + external dependencies alone **cannot satisfy `go list ./...` against the current un-migrated source tree**.
+#### Conflict 2: Checkpoint A3 / A4 Packaging Conflict
+Checkpoint A3 acceptance states:
+> Core package compiles; portable engine tests pass.
 
-### 8.2 Decision Options for Review Before A2
-Before proceeding to Checkpoint A2, one of the following approaches must be selected:
-
-- **Option 1 (Scoped Package Verification)**:
-  - In Checkpoint A2, create `go.mod` at the repository root.
-  - Evaluate `go list` not with `./...` (which scans un-migrated legacy directories), but specifically against the intended standalone target directory or bundled dependencies (e.g. `go list ./go/deps/...` or once `internal/sitecrawl` is created).
-- **Option 2 (Combine A2 and A3 into a Single Atomic Transition)**:
-  - Initialize `go.mod` and populate `internal/sitecrawl/` with the reconstructed package and updated import paths in one coordinated step, ensuring `go list ./internal/...` immediately resolves cleanly.
-- **Option 3 (Temporary Local Module Shims in A2)**:
-  - In Checkpoint A2, add `replace onescout/desktop/internal/... => ./go/deps/...` directives or minimal stub packages in a temporary directory so `go list ./...` succeeds across all legacy files.
+However, the prioritized A3 file set contains compile-time dependencies that cross into later checkpoints:
+1. `engine/types.go` (A3) directly imports unbundled `onescout/desktop/internal/core/runs` (scheduled for adapter replacement in A4).
+2. `engine/page.go` (A3) requires `nowStamp()` (located in `storage/runs.go` — A5) and `issue`, `severityOf`, `countMissingAlt` (located in `engine/issues.go` — A7).
+3. Therefore, A3 cannot compile in isolation without either:
+   - bringing forward minimal adapter/compatibility definitions into A3;
+   - combining selected A3/A4 work; or
+   - revising the A3 package boundary.
 
 ---
 
-## 9. Build Metadata & Runtime Constraints
+## 8. Build Metadata & Runtime Constraints
 
 - **Minimum Go Version**: **Go 1.22+**. Proven by standard library import `"math/rand/v2"` in `go/deps/httpx/httpx.go` line 11.
 - **Pure Go / Zero CGO**: Verified zero `import "C"` calls. Tests use `modernc.org/sqlite`, allowing compilation and testing with `CGO_ENABLED=0`.
@@ -400,7 +342,7 @@ Before proceeding to Checkpoint A2, one of the following approaches must be sele
 
 ---
 
-## 10. Required Conclusions
+## 9. Required Conclusions
 
 ### 1. What prevents the extracted repository from building standalone today?
 - Absence of a `go.mod` file defining module boundaries and external dependency versions.
@@ -410,7 +352,7 @@ Before proceeding to Checkpoint A2, one of the following approaches must be sele
 
 ### 2. Which files form the smallest useful acquisition core?
 - Per Checkpoint A3 of the migration map: the core engine mechanics files in `go/engine/` (`normalize.go`, `frontier.go`, `politeness.go`, `robots.go`, `sitemap.go`, `fetch.go`, `extract.go`, `page.go`, `links.go`, `render.go`, `exclusions.go`, `similarity.go`, `types.go`, `useragents.go`) plus the bundled dependencies in `go/deps/` (`safe.go`, `httpx.go`, `delivery.go`).
-- *Note*: To achieve complete compile-time symbol closure, the four cross-file symbols required by `page.go` (`nowStamp`, `issue`, `severityOf`, `countMissingAlt`) must be resolved (either by defining local shims or pulling in the required definitions).
+- *Note*: To achieve complete compile-time symbol closure, the cross-file symbols required by `page.go` (`nowStamp`, `issue`, `severityOf`, `countMissingAlt`) and `types.go` (`runs.State*`) must be resolved.
 
 ### 3. Which 1Scout dependencies block that core?
 - For the A3 engine core: only `core/runs` (status string constants in `types.go`). `core/httpx` and `core/safe` are already bundled in `go/deps/`.
@@ -418,13 +360,14 @@ Before proceeding to Checkpoint A2, one of the following approaches must be sele
 - All other platform dependencies (`core/workspace`, `core/jobs`, `core/credset`, `core/license`, `tools`) belong to `service.go` and `pagespeed/`, which are outside the acquisition core.
 
 ### 4. What minimal standalone adapters will eventually be required?
-- **Run Constants & Timestamp Adapter (A4)**: Local definitions for run states (`StateRunning = "running"`, etc.), UTC RFC3339 timestamp helper (`nowStamp()`), and CSV export helpers (`BOMUTF8`, formula escaping).
+- **Run Constants & Timestamp Adapter (A4)**: Standalone equivalents for run states, timestamp generation, and CSV export helpers.
 - **Schema Migration Adapter (A4)**: A standalone migration runner executing `schemaStmts` against `*sql.DB`.
+- **Database & Event Host Adapter (A4)**: Minimal isolated database opener for tests and event sink for observing crawl progress/cancellation.
 - **Internal Module Path Redirects (A3)**: Updating imports for `safe` and `httpx` from `onescout/desktop/internal/core/...` to local module paths.
 
 ### 5. Which dependencies/features can be deferred?
-- **Google PageSpeed Insights (`pagespeed/`)**: Can be deferred to Checkpoint A7.
-- **Wails Desktop Service (`app-glue/service.go`)**: Excluded from the standalone core (deferred to A8 or replaced by a CLI harness in A7).
+- **Google PageSpeed Insights (`pagespeed/`)**: Deferred to Checkpoint A7.
+- **Wails Desktop Service (`app-glue/service.go`)**: Excluded from the standalone core (post-core optional).
 - **Platform Licensing & Jobs (`license`, `jobs`, `tools`, `credset`)**: Excluded completely.
 
 ### 6. Which package-private dependencies make early package splitting unsafe?
@@ -434,7 +377,7 @@ Before proceeding to Checkpoint A2, one of the following approaches must be sele
 - Declare the standalone module path (e.g. `truthrive/technical-seo-audit`).
 - Declare `go 1.22`.
 - Require the 4 verified external packages (`golang.org/x/net`, `github.com/temoto/robotstxt`, `github.com/chromedp/chromedp`, `modernc.org/sqlite`).
-- Resolve the A2/A3 sequencing conflict (e.g. verify `go list` against scoped targets).
+- Resolve the A2 verification gate conflict.
 
 ### 8. What should explicitly NOT be done in A2/A3?
 - Do NOT implement any of the 47 `AR-*` Audit V1 rules.
@@ -443,3 +386,29 @@ Before proceeding to Checkpoint A2, one of the following approaches must be sele
 - Do NOT split `sitecrawl` into multiple subpackages.
 - Do NOT attempt to port 1Scout desktop frameworks (`jobs.Runner`, `license.Gate`, `tools.Register`, Wails v3).
 - Do NOT delete legacy issues logic (`issues.go`) prematurely.
+
+---
+
+## 10. Explicit Unresolved Decision Gates
+
+Before implementation begins, the following four architectural and sequencing decisions must be explicitly resolved by operator review:
+
+### Decision 1: Checkpoint A2 Verification Strategy
+How should `go list` verification be scoped when `go.mod` is created?
+- **Option 1A (Scoped Verification)**: Evaluate `go list` against scoped targets (e.g. `go list ./go/deps/...` or the newly created `internal/...` package) rather than `./...` across the entire un-migrated legacy tree.
+- **Option 1B (Combined A2/A3 Execution)**: Initialize `go.mod` and populate `internal/sitecrawl/` with the reconstructed package and updated import paths in one coordinated transition so `go list ./internal/...` resolves immediately.
+
+### Decision 2: Checkpoint A3 / A4 Sequencing Adjustment
+How should the compile-time dependencies of `types.go` and `page.go` be handled during Checkpoint A3?
+- **Option 2A (Bring Minimal Shims into A3)**: Introduce minimal local definitions for `runs.State*`, `nowStamp()`, and unexported stubs for `issue`/`severityOf`/`countMissingAlt` directly within A3 so `internal/sitecrawl/` compiles independently.
+- **Option 2B (Combine A3 and A4)**: Execute the package reconstruction (A3) and platform adapters (A4) in a combined milestone, ensuring both engine mechanics and their required adapters land together.
+
+### Decision 3: Checkpoint A5 PageSpeed Compile-Time Decoupling Strategy
+How should the coordinator's compile-time coupling to `go/pagespeed/` be handled when porting `crawler.go` in Checkpoint A5?
+- **Option 3A (Preserve PSI Types in A5)**: Move `pagespeed_pump.go` and `pagespeed.go` into `internal/sitecrawl/` along with `crawler.go` in Checkpoint A5, providing no-op/mock credentials when PageSpeed is disabled.
+- **Option 3B (Coordinator Interface / Null Object Pattern)**: In Checkpoint A5, define an internal interface on `coordinator` (e.g. `type psiCollector interface { ... }`) with a no-op implementation, cleanly decoupling the coordinator from concrete PageSpeed code.
+
+### Decision 4: Later Service Receiver Decoupling Strategy
+How should the methods attached to `(s *Service)` in `issues.go`, `query.go`, `export.go`, and `graph.go` be handled?
+- **Option 4A (Decouple Receiver Methods)**: Refactor query and export methods from `func (s *Service) QueryPages(...)` into standalone functions taking an `*sql.DB` or repository struct (e.g. `func QueryPages(db *sql.DB, q RowQuery) ...`), and decouple `IssueCatalog()` from `Service`.
+- **Option 4B (Standalone Service Struct)**: Define a minimal standalone `type Service struct { DB *sql.DB }` in `internal/sitecrawl/` that provides the receiver target without importing Wails or 1Scout platform packages.
