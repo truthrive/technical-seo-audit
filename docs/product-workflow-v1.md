@@ -1,6 +1,6 @@
 # Technical Search & GEO Audit Tool — Product Workflow V1
 
-**Status:** Review Candidate — V1 Product Workflow
+**Status:** Approved Product Workflow V1
 **Knowledge baseline:** v1.4
 **Scope:** V1 Desktop / Standalone Product Contract
 **Repository:** `truthrive/technical-seo-audit`
@@ -231,7 +231,7 @@ Each finding card/row in the list and detail view exposes:
 1. **HTTP Response:** Fetch status code, TLS certificate validity, response time (ms), fetch error type, and optional raw response header references (`FetchObservation`).
 2. **Redirects & Hops:** Full ordered redirect chain (`RedirectHop[]`), HTTP status per hop, `Location` header targets, redirect loop flag, resolved final destination URL.
 3. **Robots Directives & Decisions:** Document fetch status for `/robots.txt`, effective line matched, allow/disallow decisions evaluated across specific bot profiles (`DEFAULT`, `GOOGLEBOT`, `OAI_SEARCHBOT`, `GPTBOT`) (`RobotsDecision`).
-4. **Page Index Directives:** Raw `<meta name="robots">` tags and `X-Robots-Tag` HTTP headers, parsed token list, unsupported tokens, and calculated `effective_noindex` / `effective_nofollow` flags (`RobotsDirectiveObservation`).
+4. **Page Index Directives:** Raw `<meta name="robots">` tags and `X-Robots-Tag` HTTP headers, parsed token list (including any `nofollow` tokens), unsupported tokens, parse errors, and calculated `effective_noindex` flag (`RobotsDirectiveObservation`).
 5. **Canonical Configuration:** Raw `<link rel="canonical">` tag values, resolved absolute URL, canonical target fetch status, target indexability state, and self-canonical determination (`CanonicalObservation`).
 6. **Title, Meta Description & Headings:** Raw title text, meta description text, array of `<h1>` values, and main text presence indicator (`HtmlObservation`). *(Note: Pixel length calculations and duplicate heading detection are excluded from V1).*
 7. **Internal Link Graph:** Inbound link count (`crawl_inlink_count`), discovered crawl depth (`crawl_depth`), list of source inlinks with anchor text and DOM location context (`MAIN`, `NAV`, `FOOTER`, `HEADER`), list of outbound internal links (`LinkObservation`).
@@ -386,8 +386,8 @@ The following flows illustrate how raw technical observations translate into rep
   - Classification: `INFORMATION`
   - Severity: `P2`
 - **Recommended Action:**
-  - *"OAI-SearchBot access matches explicit project policy: search crawler is permitted to crawl and retrieve content for ChatGPT Search."*
-  *(Guardrail: Crawler access permits retrieval eligibility; it does not guarantee ChatGPT inclusion or ranking).*
+  - *"OAI-SearchBot robots policy matches the explicit project policy and does not disallow this crawler."*
+  *(Guardrail: Robots allow is policy/access evidence; actual HTTP/profile accessibility may require separate evidence. Accessibility does not guarantee ChatGPT inclusion, ranking, quotation, or citation).*
 
 #### 5B. GPTBot Training Scraper Policy
 - **Observed Evidence:**
@@ -410,7 +410,7 @@ The following flows illustrate how raw technical observations translate into rep
   - Classification: `INFORMATION`
   - Severity: `P2`
 - **Recommended Action:**
-  - *"GPTBot access matches explicit project training policy: AI training scraper is restricted from extracting site content."*
+  - *"GPTBot robots policy matches the explicit project training policy and disallows GPTBot crawling under robots.txt."*
   *(Guardrail: GPTBot blocked is an intentional training protection policy; it does NOT mean ChatGPT Search is blocked).*
 
 ---
@@ -545,8 +545,9 @@ To maintain disciplined MVP delivery, the following capabilities are explicitly 
 ## 11. V1 Product Decisions on Open Questions
 
 ### 1. Manual Review Task Persistence
-- In V1, `ManualReviewTask` is scoped strictly to `audit_run_id`.
-- Manual review resolutions (`OPEN` vs `RESOLVED` with reviewer notes) remain run-scoped in V1.
+- In V1, `ManualReviewTask` is scoped strictly to `audit_run_id` with statuses `OPEN` and `RESOLVED`.
+- Optional human resolution is stored separately and does not rewrite the original `RuleResult`.
+- Manual review resolution remains run-scoped in V1.
 - Re-crawling a site initiates a new `AuditRun`, and previously resolved manual review decisions are **not** automatically carried forward.
 - Cross-run resolution carry-forward is a candidate for future versions once explicit entity-identity and policy-versioning semantics are established.
 
