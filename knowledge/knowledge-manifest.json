@@ -1,0 +1,56 @@
+{
+  "generated_at": "2026-10-01",
+  "rules": 100,
+  "files": [
+    "00-product-principles.md",
+    "01-audit-framework.md",
+    "02-audit-check-catalog.md",
+    "03-rule-engine-spec.md",
+    "04-ai-search-geo.md",
+    "05-mvp-scope.md",
+    "06-research-sources.md",
+    "07-v1-atomic-rule-manifest.md",
+    "08-system-architecture.md",
+    "09-data-model.md",
+    "10-implementation-plan.md",
+    "INDEX.md"
+  ],
+  "rule_prefix_counts": {
+    "ACC": 9,
+    "INDEX": 7,
+    "CANON": 9,
+    "LINK": 7,
+    "DISC": 7,
+    "RETR": 9,
+    "ENTITY": 6,
+    "RENDER": 7,
+    "PERF": 8,
+    "MEDIA": 6,
+    "INTL": 4,
+    "AI": 10,
+    "OBS": 11
+  },
+  "revision": "v1.4",
+  "notes": "V1 specification freeze updated for SiteCrawl-based implementation: existing SiteCrawl is the evidence-acquisition foundation; legacy issue semantics remain non-authoritative; 47-rule contract unchanged.",
+  "atomic_rules_v1": {
+    "total_executable": 47,
+    "deterministic": 30,
+    "assisted": 16,
+    "manual": 1,
+    "fully_deferred_selected_catalog_checks": 5,
+    "represented_parent_checks": 26,
+    "selected_parent_checks": 31
+  },
+  "specification": {
+    "atomic_rule_manifest": "07-v1-atomic-rule-manifest.md",
+    "system_architecture": "08-system-architecture.md",
+    "logical_data_model": "09-data-model.md",
+    "implementation_plan": "10-implementation-plan.md"
+  },
+  "implementation_strategy": {
+    "baseline": "existing SiteCrawl codebase",
+    "approach": "incremental migration via audit domain and evidence adapter",
+    "legacy_issue_engine": "non-authoritative for V1 audit verdicts",
+    "crawler_rebuild_required": false
+  }
+}
