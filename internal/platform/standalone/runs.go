@@ -1,5 +1,7 @@
 package standalone
 
+import "time"
+
 // Run states. Preserves the serialized run-state values established by SiteCrawl.
 const (
 	StateRunning     = "running"
@@ -20,4 +22,9 @@ func IsTerminal(state string) bool {
 	default:
 		return false
 	}
+}
+
+// Now returns the current UTC timestamp formatted as RFC3339.
+func Now() string {
+	return time.Now().UTC().Format(time.RFC3339)
 }

@@ -842,48 +842,51 @@ minimal host/platform primitives compile and are independently testable
 no temporary legacy-issue stubs exist
 ```
 
-### Checkpoint A5 — Port Coordinator, Persistence & Page Assembly
+### Checkpoint A5 — Port Coordinator, Persistence & Page Assembly (Completed)
 
-Migrate the high-value coordinator and storage behavior:
+Migrated the high-value coordinator and storage behavior into `internal/sitecrawl/`:
 
 ```text
-storage/crawler.go
-storage/persist.go
-storage/runs.go
-engine/page.go
+internal/sitecrawl/page.go       (from go/engine/page.go)
+internal/sitecrawl/persist.go    (from go/storage/persist.go)
+internal/sitecrawl/runs.go       (from go/storage/runs.go)
+internal/sitecrawl/crawler.go    (from go/storage/crawler.go)
+internal/sitecrawl/runner.go     (minimal standalone runtime entrypoint)
+internal/platform/standalone/migrate.go (ordered, idempotent schema migrations)
 ```
 
-Preserve:
+Preserved:
 
 ```text
 single-writer coordinator
-buffers
-retry/defer behavior
-checkpoint concepts
-crawl state
-page assembly and persistence projection
+worker pool & frontier dispatch
+buffers & batch persistence (URLs, pages, links)
+retry/defer behavior (429/503)
+adaptive politeness & robots delay
+checkpoint concepts & frontier snapshot/restore
+crawl state & stop reasons
+page assembly & observation persistence
 ```
 
-Responsibilities:
+Key Implementation & Decoupling Decisions:
 
-- Required SiteCrawl schema initialization (`schemaStmts`).
-- Run lifecycle persistence.
-- Timestamp generation (`nowStamp()` / `runs.Now()`) required by migrated run and page behavior.
-- Coordinator integration.
-- Fixture crawl end-to-end.
-- Process-level readback.
-- Cancellation and progress integration through the A4 primitives.
-- **PageSpeed Decoupling Gate (Open Decision)**: Resolve whether to preserve PSI types inside `internal/sitecrawl/` temporarily (Option A) or decouple the coordinator via an internal interface / null object collector pattern (Option B).
+1. **Standalone Runtime Entrypoint (`Runner`)**: Created `sitecrawl.Runner` in `internal/sitecrawl/runner.go` providing `Crawl(ctx, seeds, opts)` with seed normalization, schema initialization, coordinator execution, terminal run state persistence, and read helpers (`Page`, `Pages`, `Links`, `URLs`, `LoadRun`, `ListRuns`).
+2. **Schema Migration Mechanism**: Implemented `standalone.Migrate` tracking applied steps in `_schema_migrations`. Safely executes ordered DDL migrations (including non-idempotent `ALTER TABLE` statements) exactly once per database. Repeated opens and schema checks are completely idempotent.
+3. **PageSpeed Compile-Time Decoupling**: Standalone coordinator has zero compile-time dependencies on `psiPump`, `PSIResult`, `newPSIPump`, `psiClient`, or `savePSI`. Explicit requests with `EnablePageSpeed=true` fail fast with `ErrCapabilityUnsupported`.
+4. **Legacy Issue Engine Acquisition Boundary**: Reconstructed `Page` assembly and projection to preserve raw transport/discovery observations (transport errors, redirect chains, robots directives, bot anomalies, canonical declarations, raw/rendered flags). Decoupled from `issues.go`, legacy issue verdicts, and `evaluate()`; `IssueCount` and `IssueMaxSev` default to neutral zero.
+5. **Acquisition-Only Finalization**: Post-crawl computation preserves inlink counts and unique inlink counts (`finalizeInlinks`), while legacy post-crawl issue generators (orphans, redirect sources, broken images, canonical issues, hreflang issues, duplicate-page issues) are excluded from acquisition core.
+6. **Duplicate Analysis Deferred**: Duplicate analysis remains deferred; explicit requests with `EnableDuplication=true` fail fast with `ErrCapabilityUnsupported`.
+7. **Developer CLI**: Added minimal standalone CLI in `cmd/sitecrawl-dev/main.go` for running crawls and outputting structured JSON summaries without UI dependencies.
 
-**Acceptance**:
+**Acceptance Verification**:
 
 ```text
-coordinator can start and finish a crawl
-local SQLite can persist one run
-context cancellation works through the coordinator
-progress/events can be observed during a crawl
-fixture site can be crawled end-to-end
-results survive process-level readback
+coordinator can start and finish a crawl (verified in TestEndToEndCrawl)
+local SQLite can persist one run (verified in TestEndToEndCrawl)
+context cancellation works through coordinator (verified in TestContextCancellation)
+progress/events observed during crawl (verified in TestEndToEndCrawl via standalone.EventCollector)
+fixture site crawled end-to-end (verified in TestEndToEndCrawl)
+results survive process-level database close and reopen (verified in TestProcessLevelReadback)
 ```
 
 ### Checkpoint A6 — Regression Parity & Full Module Gate
@@ -1202,15 +1205,16 @@ At that point create a standalone-core freeze before beginning Audit V1 implemen
 
 ## 26. Migration Status & Next Task
 
-Checkpoints A1 (Buildability Inventory), A2 (Scoped Go Module Bootstrap), and Coordinated Checkpoint A3/A4 (Reconstruct Standalone SiteCrawl Engine & Platform Primitives) are **completed**.
+Checkpoints A1 (Buildability Inventory), A2 (Scoped Go Module Bootstrap), Coordinated Checkpoint A3/A4 (Reconstruct Standalone SiteCrawl Engine & Platform Primitives), and Checkpoint A5 (Standalone End-to-End SiteCrawl) are **completed**.
 
 - Checkpoint A1 approved in [`docs/sitecrawl-standalone-buildability.md`](sitecrawl-standalone-buildability.md).
 - Checkpoint A2 created root `go.mod` (`module github.com/truthrive/technical-seo-audit`, `go 1.22`) and verified scoped packages via `go list ./go/deps/...` and `go test ./go/deps/...`.
-- Coordinated Checkpoint A3/A4 reconstructed `internal/sitecrawl/` (13 engine mechanics files) and created `internal/platform/standalone/` (run-state constants, SQLite opener using `modernc.org/sqlite`, context cancellation, event/progress sink primitives). External dependencies added: `golang.org/x/net v0.28.0`, `github.com/temoto/robotstxt v1.1.2`, `github.com/chromedp/chromedp v0.10.0`, `modernc.org/sqlite v1.33.1`. Portable engine tests (`extract_test.go`, `frontier_test.go`, `frontier_cap_test.go`, `sitemap_test.go`, `similarity_test.go`) and platform tests passed cleanly under Go 1.22. Zero `onescout/...` imports remain in `internal/`.
+- Coordinated Checkpoint A3/A4 reconstructed `internal/sitecrawl/` (13 engine mechanics files) and created `internal/platform/standalone/` (run-state constants, SQLite opener using `modernc.org/sqlite`, context cancellation, event/progress sink primitives). External dependencies added: `golang.org/x/net v0.28.0`, `github.com/temoto/robotstxt v1.1.2`, `github.com/chromedp/chromedp v0.10.0`, `modernc.org/sqlite v1.33.1`.
+- Checkpoint A5 implemented single-writer coordinator (`internal/sitecrawl/crawler.go`), batch persistence (`persist.go`), run lifecycle and schema migrations (`runs.go`, `internal/platform/standalone/migrate.go`), page assembly (`page.go`), runtime entrypoint `sitecrawl.Runner` (`runner.go`), and developer CLI (`cmd/sitecrawl-dev/main.go`). PageSpeed is decoupled at compile-time (`EnablePageSpeed` rejects with `ErrCapabilityUnsupported`), legacy SEO issue evaluation is decoupled from acquisition core, duplicate analysis is deferred, and acquisition-only graph finalization computes inlinks. All E2E fixture crawl, process-level database reopen/readback, and cancellation tests pass cleanly.
 
-### Next Milestone: Checkpoint A5 — Port Coordinator, Persistence & Page Assembly
+### Next Milestone: Checkpoint A6 — Regression Parity & Full Module Gate
 
-Migrate coordinator and storage behavior (`storage/crawler.go`, `storage/persist.go`, `storage/runs.go`, `engine/page.go`), implement SiteCrawl persistence and schema initialization, assemble pages, and verify end-to-end fixture crawl execution without 1Scout.
+Execute full crawler regression parity against legacy reference tests, verify all remaining non-gated test suites, ensure zero missing engine behaviors, and enforce the full module gate (`go list ./...`).
 
 ---
 
