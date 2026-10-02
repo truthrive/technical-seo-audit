@@ -1,6 +1,6 @@
 # SiteCrawl Standalone Migration Map
 
-**Status:** Proposed for approval  
+**Status:** Approved (Sequencing updated post-A1)
 **Repository:** `truthrive/technical-seo-audit`  
 **Baseline tag:** `sitecrawl-pre-audit-v1`  
 **Knowledge baseline:** v1.4  
@@ -753,14 +753,7 @@ No baseline history rewriting.
 
 ### Checkpoint A1 — Buildability Inventory
 
-Before moving source files, document:
-
-- all 1Scout-only imports;
-- package-private cross-file dependencies;
-- build tags;
-- generated-code dependencies;
-- external Go modules;
-- test helper dependencies.
+**Status:** Completed and Approved.
 
 Deliverable:
 
@@ -768,102 +761,94 @@ Deliverable:
 docs/sitecrawl-standalone-buildability.md
 ```
 
-This may be merged into this migration map if sufficiently detailed.
+Inventory completed with zero code changes: 58 Go files cataloged, 16 files with `onescout/...` imports, compile-time coupling knots documented, proxy boundary corrected, behavioral contracts defined, and sequencing conflicts resolved into approved execution decisions.
 
-No production behavior change.
+### Checkpoint A2 — Create Standalone Go Module (Scoped Bootstrap)
 
-### Checkpoint A2 — Create Standalone Go Module
-
-Create:
+Create root:
 
 ```text
 go.mod
 ```
 
-Choose the standalone module path.
+- **Module Path**: `github.com/truthrive/technical-seo-audit`
+- **Go Version**: `go 1.22`
+- **Scoped Verification Strategy**: Initial acceptance verifies only genuinely standalone packages without failing on un-migrated legacy directories:
+  ```text
+  go list ./go/deps/...
+  ```
+- **No Temporary Replace Directives**: Avoid `replace onescout/desktop/internal/... => ...` directives or stub modules.
+- **No Premature Dependency Predeclaration**: Do not require `go mod tidy` across legacy files, and do not predeclare external modules (`x/net/html`, `robotstxt`, `chromedp`, `modernc.org/sqlite`) before migrated active packages actually require them.
+- **Temporary Scope**: Scoped verification is explicitly temporary. Full module verification (`go list ./...`) is enforced at Checkpoint A6.
 
-Introduce only the dependencies required by the acquisition core.
+### Coordinated Checkpoint A3 / A4 — Reconstruct `sitecrawl` Package & Minimal Platform Contracts
 
-Acceptance:
+Checkpoints A3 and A4 retain their conceptual responsibilities but are executed as **one coordinated migration milestone** so package reconstruction and minimal real platform contracts land together without broken intermediate states.
 
-```text
-go list ./...
-```
-
-must enumerate intended standalone packages without relying on the 1Scout repository.
-
-### Checkpoint A3 — Reconstruct `sitecrawl` Package
-
-Move/copy the required existing files into one buildable package while preserving their implementation as closely as practical.
-
-Initial target:
+**Target Package**:
 
 ```text
 internal/sitecrawl/
 ```
 
-Prioritize:
+#### Initial A3 Engine Boundary
+
+Move and adapt the core engine mechanics files that have clean boundaries:
 
 ```text
-normalize
-frontier
-politeness
-robots
-sitemap
-fetch
-extract
-page
-links
-render
-included deps
+normalize.go
+frontier.go
+politeness.go
+robots.go
+sitemap.go
+fetch.go
+extract.go
+links.go
+render.go
+exclusions.go
+similarity.go
+types.go
+useragents.go
+go/deps/safe/
+go/deps/httpx/
 ```
 
-Do not redesign APIs merely to make the directory tree prettier.
+- **`page.go` Deferred to A5**: `page.go` is intentionally deferred to Checkpoint A5 because current source couples page projection to `nowStamp()` (in `runs.go`) and legacy issue semantics (`issue`, `severityOf`, `countMissingAlt` in `issues.go`). This is a sequencing adjustment, not a redesign of `Page`.
+- **No Fake Issue Stubs**: Do NOT introduce temporary fake/stub definitions for `issue`, `severityOf`, `countMissingAlt`, or legacy issue evaluation.
+- **External Dependencies**: Introduce `golang.org/x/net/html`, `github.com/temoto/robotstxt`, and `github.com/chromedp/chromedp` as required by the migrated engine files.
 
-Acceptance:
+#### Minimal Real Platform Contracts (A4 Responsibility)
+
+During the coordinated milestone, introduce only the real contracts required by migrated code:
+
+- Run state string constants and timestamp generation required by `types.go`.
+- Minimal standalone run persistence.
+- Direct SQLite database lifecycle (`modernc.org/sqlite`).
+- Deterministic schema migration executing `schemaStmts`.
+- Coordinator cancellation via standard `context.Context`.
+- Minimal progress reporter and event sink to observe crawl lifecycle and cancellation.
+- Do NOT port the 1Scout jobs framework.
+
+**Coordinated Milestone Acceptance**:
 
 ```text
-core package compiles
+core package internal/sitecrawl compiles
 portable engine tests pass
-```
-
-### Checkpoint A4 — Standalone Platform Adapters
-
-Implement minimal replacements for:
-
-```text
-runs
-workspace/database
-schema migration
-jobs/events
-```
-
-Do not port:
-
-```text
-license system
-tool registry
-global workspace framework
-unrelated credentials
-```
-
-Acceptance:
-
-```text
 coordinator can start and finish a crawl
 local SQLite can persist one run
 context cancellation works
 progress/events can be observed
 ```
 
-### Checkpoint A5 — Port Coordinator + Persistence
+### Checkpoint A5 — Port Coordinator, Persistence & Page Assembly
 
-Migrate the high-value behavior from:
+Migrate the high-value coordinator and storage behavior:
 
 ```text
 storage/crawler.go
 storage/persist.go
 storage/runs.go
+engine/page.go
 ```
 
 Preserve:
@@ -874,20 +859,21 @@ buffers
 retry/defer behavior
 checkpoint concepts
 crawl state
+page assembly and persistence projection
 ```
 
-Acceptance:
+- **PageSpeed Decoupling Gate (Open Decision)**: Resolve whether to preserve PSI types inside `internal/sitecrawl/` temporarily (Option A) or decouple the coordinator via an internal interface / null object collector pattern (Option B).
+
+**Acceptance**:
 
 ```text
 fixture site can be crawled end-to-end
 results survive process-level readback
 ```
 
-### Checkpoint A6 — Regression Parity
+### Checkpoint A6 — Regression Parity & Full Module Gate
 
-Port applicable existing tests.
-
-Focus on acquisition behavior rather than UI parity.
+Port applicable existing tests to establish behavioral parity.
 
 Required regression families:
 
@@ -905,16 +891,22 @@ render
 crawl limits
 ```
 
-Acceptance:
+- **Full Module Gate**: By Checkpoint A6, the active repository module must support full module verification:
+  ```text
+  go list ./...
+  ```
+  Legacy extracted Go reference directories under `go/` must not permanently poison module traversal. Once their required behavior and source have been preserved into `internal/sitecrawl/`, they may be migrated, removed after parity, or isolated from active module traversal.
+- The immutable Git tag `sitecrawl-pre-audit-v1` remains the permanent, recoverable reference.
+
+**Acceptance**:
 
 ```text
 all migrated core tests green
+go list ./... succeeds across the active repository module
 no intentional crawler behavior change remains undocumented
 ```
 
-This is the **Standalone SiteCrawl Core Freeze**.
-
-Create a tag such as:
+This is the **Standalone SiteCrawl Core Freeze**. Create the freeze tag:
 
 ```text
 sitecrawl-standalone-core-v1
@@ -926,14 +918,15 @@ only after this gate passes.
 
 Only after core freeze:
 
-- legacy issue engine;
-- duplicate analysis;
-- PageSpeed;
-- exports;
-- graph UI data;
-- full standalone UI.
+- legacy issue engine (`issues.go`);
+- duplicate analysis (`duplicates.go`);
+- PageSpeed integration (`pagespeed/`);
+- query grid (`query.go`);
+- exports (`export.go`);
+- graph UI data (`graph.go`);
+- post-core optional desktop UI integration (`service.go` and `ui/`).
 
-These may be migrated selectively according to Technical Audit needs.
+Receiver decoupling strategy on `(s *Service)` remains an open decision (functional/repository signatures vs minimal standalone `Service` facade). These may be migrated selectively according to Technical Audit needs.
 
 ---
 
@@ -1192,46 +1185,26 @@ At that point create a standalone-core freeze before beginning Audit V1 implemen
 
 ---
 
-## 26. Recommended Next Task
+## 26. Migration Status & Next Task
 
-The next Codex task should be **read-only planning**, not source migration yet.
+Checkpoint A1 (Buildability Inventory) is **completed and approved** in [`docs/sitecrawl-standalone-buildability.md`](sitecrawl-standalone-buildability.md).
 
-### Task
+### Next Task: Checkpoint A2 — Scoped Go Module Bootstrap
 
-Produce:
-
-```text
-docs/sitecrawl-standalone-buildability.md
-```
-
-by inspecting every Go file and listing:
+Create root `go.mod` using:
 
 ```text
-file
-current package
-imports
-1Scout-only dependency
-cross-file dependency
-portable as-is?
-required adapter
-recommended migration checkpoint
-risk
+module github.com/truthrive/technical-seo-audit
+go 1.22
 ```
 
-It must also propose the exact minimal set of source files needed for the first buildable acquisition package.
-
-### Constraints
-
-Codex must not:
-
-- move files;
-- rewrite imports;
-- create `go.mod`;
-- change tests;
-- change SiteCrawl runtime behavior;
-- implement Audit modules.
-
-Review and approve that inventory before the first migration commit.
+- Verify genuine standalone packages using scoped verification target:
+  ```text
+  go list ./go/deps/...
+  ```
+- Avoid temporary `replace` directives or stub modules.
+- Introduce external dependencies just-in-time when migrated active packages require them.
+- Followed by coordinated Checkpoint A3/A4 milestone (`internal/sitecrawl/` reconstruction + minimal real platform contracts).
 
 ---
 
