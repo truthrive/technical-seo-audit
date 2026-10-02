@@ -765,6 +765,8 @@ Inventory completed with zero code changes: 58 Go files cataloged, 16 files with
 
 ### Checkpoint A2 — Create Standalone Go Module (Scoped Bootstrap)
 
+**Status:** Completed.
+
 Create root:
 
 ```text
@@ -776,6 +778,7 @@ go.mod
 - **Scoped Verification Strategy**: Initial acceptance verifies only genuinely standalone packages without failing on un-migrated legacy directories:
   ```text
   go list ./go/deps/...
+  go test ./go/deps/...
   ```
 - **No Temporary Replace Directives**: Avoid `replace onescout/desktop/internal/... => ...` directives or stub modules.
 - **No Premature Dependency Predeclaration**: Do not require `go mod tidy` across legacy files, and do not predeclare external modules (`x/net/html`, `robotstxt`, `chromedp`, `modernc.org/sqlite`) before migrated active packages actually require them.
@@ -1199,24 +1202,14 @@ At that point create a standalone-core freeze before beginning Audit V1 implemen
 
 ## 26. Migration Status & Next Task
 
-Checkpoint A1 (Buildability Inventory) is **completed and approved** in [`docs/sitecrawl-standalone-buildability.md`](sitecrawl-standalone-buildability.md).
+Checkpoints A1 (Buildability Inventory) and A2 (Scoped Go Module Bootstrap) are **completed**.
 
-### Next Task: Checkpoint A2 — Scoped Go Module Bootstrap
+- Checkpoint A1 approved in [`docs/sitecrawl-standalone-buildability.md`](sitecrawl-standalone-buildability.md).
+- Checkpoint A2 created root `go.mod` (`module github.com/truthrive/technical-seo-audit`, `go 1.22`) and verified scoped packages via `go list ./go/deps/...` and `go test ./go/deps/...`.
 
-Create root `go.mod` using:
+### Next Milestone: Coordinated Checkpoint A3/A4 — Reconstruct `sitecrawl` Package & Minimal Platform Contracts
 
-```text
-module github.com/truthrive/technical-seo-audit
-go 1.22
-```
-
-- Verify genuine standalone packages using scoped verification target:
-  ```text
-  go list ./go/deps/...
-  ```
-- Avoid temporary `replace` directives or stub modules.
-- Introduce external dependencies just-in-time when migrated active packages require them.
-- Followed by coordinated Checkpoint A3/A4 milestone (`internal/sitecrawl/` reconstruction + minimal real platform contracts).
+Reconstruct `internal/sitecrawl/` engine mechanics together with minimal real platform contracts (run state constants, SQLite lifecycle opener, context cancellation, progress/events).
 
 ---
 
