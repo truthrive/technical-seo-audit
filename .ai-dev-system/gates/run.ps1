@@ -1,0 +1,214 @@
+[CmdletBinding()]
+param(
+    [string]$ProjectRoot = (Get-Location).Path,
+    [ValidateSet('Text', 'Json')]
+    [string]$OutputFormat = 'Text'
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '../onboarding/discovery.ps1')
+
+function New-GateResult {
+    param(
+        [string]$Id,
+        [ValidateSet('PASS', 'FAIL', 'BLOCKED', 'SKIP')]
+        [string]$Status,
+        [string]$Summary,
+        [string[]]$Details = @()
+    )
+
+    [pscustomobject][ordered]@{
+        id      = $Id
+        status  = $Status
+        summary = $Summary
+        details = @($Details)
+    }
+}
+
+function Write-GateReport {
+    param(
+        [object[]]$Results,
+        [string]$Format
+    )
+
+    $overall = if ($Results.Status -contains 'FAIL') {
+        'FAIL'
+    } elseif ($Results.Status -contains 'BLOCKED') {
+        'BLOCKED'
+    } else {
+        'PASS'
+    }
+
+    if ($Format -eq 'Json') {
+        [pscustomobject][ordered]@{
+            result = $overall
+            gates  = @($Results)
+        } | ConvertTo-Json -Depth 5
+    } else {
+        foreach ($result in $Results) {
+            "[$($result.status)] $($result.id) - $($result.summary)"
+            foreach ($detail in $result.details) {
+                "  $detail"
+            }
+        }
+        "RESULT: $overall"
+    }
+
+}
+
+function Get-GateExitCode {
+    param([object[]]$Results)
+
+    if ($Results.Status -contains 'FAIL') { return 1 }
+    if ($Results.Status -contains 'BLOCKED') { return 2 }
+    return 0
+}
+
+$results = [System.Collections.Generic.List[object]]::new()
+
+try {
+    $resolvedRoot = [System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\', '/')
+} catch {
+    $results.Add((New-GateResult -Id 'input.project-root' -Status 'BLOCKED' -Summary 'Project root is invalid.' -Details @($_.Exception.Message)))
+    Write-GateReport -Results $results.ToArray() -Format $OutputFormat
+    exit (Get-GateExitCode -Results $results.ToArray())
+}
+
+if (-not (Test-Path -LiteralPath $resolvedRoot -PathType Container)) {
+    $results.Add((New-GateResult -Id 'input.project-root' -Status 'BLOCKED' -Summary 'Project root does not exist.' -Details @($resolvedRoot)))
+    Write-GateReport -Results $results.ToArray() -Format $OutputFormat
+    exit (Get-GateExitCode -Results $results.ToArray())
+}
+
+$git = Get-Command git -ErrorAction SilentlyContinue
+$isGitWorkTree = $false
+$gitRoot = $null
+$hasGitMetadata = Test-Path -LiteralPath (Join-Path $resolvedRoot '.git')
+$gitRootOutput = @('Git is unavailable.')
+
+if ($null -ne $git) {
+    $previousEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $gitRootOutput = @(& $git.Source -C $resolvedRoot rev-parse --show-toplevel 2>&1 | ForEach-Object { [string]$_ })
+    } finally {
+        $ErrorActionPreference = $previousEAP
+    }
+    if ($LASTEXITCODE -eq 0 -and $gitRootOutput.Count -gt 0) {
+        $isGitWorkTree = $true
+        $gitRoot = [System.IO.Path]::GetFullPath([string]$gitRootOutput[0]).TrimEnd('\', '/')
+    }
+}
+
+$gitAccessBlocked = -not $isGitWorkTree -and ($hasGitMetadata -or
+    ($null -ne $git -and ($gitRootOutput -join ' ') -notmatch 'not a git repository'))
+
+if ($isGitWorkTree) {
+    $previousEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $unstagedOutput = @(& $git.Source -C $gitRoot diff --check -- 2>&1 | ForEach-Object { [string]$_ })
+        $unstagedExit = $LASTEXITCODE
+        $stagedOutput = @(& $git.Source -C $gitRoot diff --cached --check -- 2>&1 | ForEach-Object { [string]$_ })
+        $stagedExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousEAP
+    }
+    $details = @($unstagedOutput + $stagedOutput | Where-Object { $_.Length -gt 0 })
+
+    if ($unstagedExit -eq 0 -and $stagedExit -eq 0) {
+        $results.Add((New-GateResult -Id 'git.diff-check' -Status 'PASS' -Summary 'Tracked staged and unstaged changes contain no whitespace errors.'))
+    } else {
+        $results.Add((New-GateResult -Id 'git.diff-check' -Status 'FAIL' -Summary 'Git reported whitespace errors.' -Details $details))
+    }
+} elseif ($gitAccessBlocked) {
+    $summary = if ($null -eq $git) {
+        'Git metadata exists but Git is unavailable.'
+    } else {
+        'Git metadata exists but repository detection failed.'
+    }
+    $results.Add((New-GateResult -Id 'git.diff-check' -Status 'BLOCKED' -Summary $summary -Details @($gitRootOutput | ForEach-Object { [string]$_ })))
+} else {
+    $results.Add((New-GateResult -Id 'git.diff-check' -Status 'SKIP' -Summary 'Target is not a Git work tree.'))
+}
+
+$markdownFiles = @()
+$discoveryBlocked = $null
+
+try {
+    if ($gitAccessBlocked) { throw ($gitRootOutput -join "`n") }
+    if ($isGitWorkTree) {
+        $previousEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $relativeMarkdown = @(& $git.Source -c core.quotePath=false -C $gitRoot ls-files --cached --others --exclude-standard -- '*.md' 2>&1 | ForEach-Object { [string]$_ })
+            $lsExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousEAP
+        }
+        if ($lsExit -ne 0) {
+            throw "Git could not enumerate Markdown files: $($relativeMarkdown -join ' ')"
+        }
+        $markdownFiles = @($relativeMarkdown | Where-Object { Test-DiscoveryFile $gitRoot ([string]$_) } | ForEach-Object { Join-Path $gitRoot ([string]$_) })
+    } else {
+        $markdownFiles = @(Get-DiscoveryFiles $resolvedRoot |
+            Where-Object Extension -eq '.md' |
+            Select-Object -ExpandProperty FullName)
+    }
+} catch {
+    $discoveryBlocked = $_.Exception.Message
+}
+
+if ($null -ne $discoveryBlocked) {
+    $results.Add((New-GateResult -Id 'docs.local-links' -Status 'BLOCKED' -Summary 'Markdown files could not be enumerated.' -Details @($discoveryBlocked)))
+} else {
+    $brokenLinks = [System.Collections.Generic.List[string]]::new()
+    $readErrors = [System.Collections.Generic.List[string]]::new()
+    $linkPattern = '\[[^\]]*\]\(([^)]+)\)'
+
+    foreach ($markdownFile in $markdownFiles) {
+        try {
+            $content = [System.IO.File]::ReadAllText($markdownFile)
+            foreach ($match in [regex]::Matches($content, $linkPattern)) {
+                $rawTarget = $match.Groups[1].Value.Trim()
+                if ($rawTarget.StartsWith('<') -and $rawTarget.Contains('>')) {
+                    $rawTarget = $rawTarget.Substring(1, $rawTarget.IndexOf('>') - 1)
+                } else {
+                    $rawTarget = ($rawTarget -split '\s+', 2)[0]
+                }
+
+                if ([string]::IsNullOrWhiteSpace($rawTarget) -or
+                    $rawTarget.StartsWith('#') -or
+                    $rawTarget.StartsWith('/') -or
+                    $rawTarget.StartsWith('//') -or
+                    $rawTarget -match '^[A-Za-z][A-Za-z0-9+.-]*:') {
+                    continue
+                }
+
+                $pathOnly = ($rawTarget -split '[#?]', 2)[0]
+                if ([string]::IsNullOrWhiteSpace($pathOnly)) { continue }
+
+                $decodedPath = [System.Uri]::UnescapeDataString($pathOnly)
+                $candidate = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $markdownFile) $decodedPath))
+                if (-not (Test-Path -LiteralPath $candidate)) {
+                    $displayFile = (Get-RelativePathCompat $resolvedRoot $markdownFile).Replace('\', '/')
+                    $brokenLinks.Add("$displayFile -> $rawTarget")
+                }
+            }
+        } catch {
+            $readErrors.Add("${markdownFile}: $($_.Exception.Message)")
+        }
+    }
+
+    if ($readErrors.Count -gt 0) {
+        $results.Add((New-GateResult -Id 'docs.local-links' -Status 'BLOCKED' -Summary 'One or more Markdown files could not be inspected.' -Details $readErrors.ToArray()))
+    } elseif ($brokenLinks.Count -gt 0) {
+        $results.Add((New-GateResult -Id 'docs.local-links' -Status 'FAIL' -Summary 'One or more relative local links do not resolve.' -Details $brokenLinks.ToArray()))
+    } else {
+        $results.Add((New-GateResult -Id 'docs.local-links' -Status 'PASS' -Summary "Validated relative local links in $($markdownFiles.Count) Markdown file(s)."))
+    }
+}
+
+Write-GateReport -Results $results.ToArray() -Format $OutputFormat
+exit (Get-GateExitCode -Results $results.ToArray())
