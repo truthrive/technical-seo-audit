@@ -312,13 +312,18 @@ func claimRun(db *sql.DB, runID string) error {
 	return nil
 }
 
-func recoverStaleRuns(db *sql.DB) {
+// RecoverStaleRuns inspects the database for runs left in 'running' state from
+// a previous session. Runs with a saved frontier checkpoint become StatePaused
+// and resumable; runs without saved frontier become StateInterrupted.
+func RecoverStaleRuns(db *sql.DB) error {
 	rows, err := db.Query(`
 		SELECT r.id, EXISTS(SELECT 1 FROM sitecrawl_frontier f WHERE f.run_id = r.id)
 		  FROM sitecrawl_runs r WHERE r.state = ?`, StateRunning)
 	if err != nil {
-		return
+		return err
 	}
+	defer rows.Close()
+
 	type stale struct {
 		id       string
 		hasQueue bool
@@ -327,29 +332,32 @@ func recoverStaleRuns(db *sql.DB) {
 	for rows.Next() {
 		var s stale
 		if err := rows.Scan(&s.id, &s.hasQueue); err != nil {
-			slog.Error("sitecrawl: scan stale run", "err", err)
-			break
+			return err
 		}
 		list = append(list, s)
 	}
 	if err := rows.Err(); err != nil {
-		slog.Error("sitecrawl: find stale runs", "err", err)
+		return err
 	}
-	rows.Close()
 
 	for _, s := range list {
 		if s.hasQueue {
 			if _, err := db.Exec(`UPDATE sitecrawl_runs SET state = ?, resumable = 1 WHERE id = ?`,
 				StatePaused, s.id); err != nil {
-				slog.Error("sitecrawl: mark stale run resumable", "run", s.id, "err", err)
+				return err
 			}
 			continue
 		}
 		if _, err := db.Exec(`UPDATE sitecrawl_runs SET state = ?, phase = ?, finished_at = ? WHERE id = ?`,
 			StateInterrupted, PhaseDone, nowStamp(), s.id); err != nil {
-			slog.Error("sitecrawl: close stale run", "run", s.id, "err", err)
+			return err
 		}
 	}
+	return nil
+}
+
+func recoverStaleRuns(db *sql.DB) {
+	_ = RecoverStaleRuns(db)
 }
 
 func loadRun(db *sql.DB, runID string) (RunSummary, error) {

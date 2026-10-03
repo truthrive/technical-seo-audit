@@ -19,6 +19,9 @@ func OpenDB(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
+	if path == ":memory:" {
+		db.SetMaxOpenConns(1)
+	}
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping sqlite db: %w", err)

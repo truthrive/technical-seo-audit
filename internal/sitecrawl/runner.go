@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/truthrive/technical-seo-audit/go/deps/httpx"
@@ -24,6 +25,70 @@ var (
 	ErrProxyUnavailable = errors.New("sitecrawl: proxy requested but no proxy function configured")
 )
 
+// CrawlHandle represents an active or completed crawl execution.
+type CrawlHandle struct {
+	runID   string
+	cancel  context.CancelFunc
+	coord   *coordinator
+	done    chan struct{}
+	summary *RunSummary
+	err     error
+	mu      sync.Mutex
+}
+
+// RunID returns the crawl run ID.
+func (h *CrawlHandle) RunID() string {
+	return h.runID
+}
+
+// Pause pauses the running crawl, checkpointing current progress to SQLite.
+func (h *CrawlHandle) Pause() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	select {
+	case <-h.done:
+		return errors.New("sitecrawl: crawl is not running")
+	default:
+	}
+	h.coord.gate.Pause()
+	return nil
+}
+
+// Resume lifts the in-process pause and continues the crawl.
+func (h *CrawlHandle) Resume() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	select {
+	case <-h.done:
+		return errors.New("sitecrawl: crawl is not running")
+	default:
+	}
+	h.coord.gate.Resume()
+	return nil
+}
+
+// Stop stops the active crawl, flushing completed pages and checkpointing remaining frontier.
+func (h *CrawlHandle) Stop() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	select {
+	case <-h.done:
+		return nil
+	default:
+	}
+	h.coord.gate.Resume() // lift pause so loop unblocks from select
+	h.cancel()
+	return nil
+}
+
+// Wait blocks until the crawl reaches a terminal state and returns the RunSummary.
+func (h *CrawlHandle) Wait() (*RunSummary, error) {
+	<-h.done
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.summary, h.err
+}
+
 // Runner is a lightweight standalone host entrypoint that coordinates crawling,
 // database persistence, and optional event/progress sinks.
 type Runner struct {
@@ -31,11 +96,71 @@ type Runner struct {
 	Events   standalone.EventSink
 	Progress standalone.ProgressSink
 	Proxy    httpx.ProxyFunc
+
+	mu      sync.Mutex
+	handles map[string]*CrawlHandle
 }
 
 // NewRunner creates a new Runner bound to db.
 func NewRunner(db *sql.DB) *Runner {
-	return &Runner{DB: db}
+	return &Runner{
+		DB:      db,
+		handles: make(map[string]*CrawlHandle),
+	}
+}
+
+func (r *Runner) registerHandle(runID string, h *CrawlHandle) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.handles == nil {
+		r.handles = make(map[string]*CrawlHandle)
+	}
+	r.handles[runID] = h
+}
+
+func (r *Runner) unregisterHandle(runID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.handles, runID)
+}
+
+func (r *Runner) handleFor(runID string) *CrawlHandle {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.handles[runID]
+}
+
+// Handle returns the active in-process handle for runID, or nil if none.
+func (r *Runner) Handle(runID string) *CrawlHandle {
+	return r.handleFor(runID)
+}
+
+// Pause pauses an active crawl by run ID.
+func (r *Runner) Pause(runID string) error {
+	h := r.handleFor(runID)
+	if h == nil {
+		return errors.New("sitecrawl: this crawl is not running")
+	}
+	return h.Pause()
+}
+
+// Stop stops an active crawl by run ID.
+func (r *Runner) Stop(runID string) error {
+	h := r.handleFor(runID)
+	if h == nil {
+		return nil
+	}
+	return h.Stop()
+}
+
+// Status retrieves the current summary/status for a run by ID (alias to LoadRun).
+func (r *Runner) Status(runID string) (RunSummary, error) {
+	return r.LoadRun(runID)
+}
+
+// RecoverStaleRuns inspects the database and recovers any interrupted runs.
+func (r *Runner) RecoverStaleRuns() error {
+	return RecoverStaleRuns(r.DB)
 }
 
 // EnsureSchema initializes or updates the SiteCrawl database schema.
@@ -47,8 +172,8 @@ func (r *Runner) EnsureSchema() error {
 	return nil
 }
 
-// Crawl executes an end-to-end crawl for the given seeds and options.
-func (r *Runner) Crawl(ctx context.Context, seeds []string, opts Options) (*RunSummary, error) {
+// Start begins an asynchronous crawl, returning a lightweight CrawlHandle immediately.
+func (r *Runner) Start(ctx context.Context, seeds []string, opts Options) (*CrawlHandle, error) {
 	if opts.EnablePageSpeed {
 		return nil, fmt.Errorf("%w: PageSpeed is not part of acquisition core", ErrCapabilityUnsupported)
 	}
@@ -84,6 +209,8 @@ func (r *Runner) Crawl(ctx context.Context, seeds []string, opts Options) (*RunS
 		return nil, fmt.Errorf("sitecrawl: insert run: %w", err)
 	}
 
+	crawlCtx, cancel := context.WithCancel(ctx)
+
 	emit := func(name string, data any) {
 		if r.Events != nil {
 			r.Events.Emit(name, data)
@@ -94,14 +221,117 @@ func (r *Runner) Crawl(ctx context.Context, seeds []string, opts Options) (*RunS
 	}
 	report := func(done, total int, message string) {}
 
-	coord, err := newCoordinator(ctx, r.DB, runID, opts, seedURL, r.Proxy, emit, report)
+	coord, err := newCoordinator(crawlCtx, r.DB, runID, opts, seedURL, r.Proxy, emit, report)
 	if err != nil {
+		cancel()
 		finishRun(r.DB, runID, StateFailed, "", err.Error(), false, time.Now())
 		return nil, err
 	}
 
+	handle := &CrawlHandle{
+		runID:  runID,
+		cancel: cancel,
+		coord:  coord,
+		done:   make(chan struct{}),
+	}
+	r.registerHandle(runID, handle)
+
+	go r.runCrawlLoop(crawlCtx, coord, handle, clean, false)
+
+	return handle, nil
+}
+
+// Resume continues a previously stopped or paused crawl from its SQLite checkpoint.
+// If the crawl is already live in-process, it lifts the pause gate.
+func (r *Runner) Resume(ctx context.Context, runID string) (*CrawlHandle, error) {
+	if h := r.handleFor(runID); h != nil {
+		if err := h.Resume(); err != nil {
+			return nil, err
+		}
+		return h, nil
+	}
+
+	if err := r.EnsureSchema(); err != nil {
+		return nil, fmt.Errorf("sitecrawl: ensure schema: %w", err)
+	}
+
+	run, err := loadRun(r.DB, runID)
+	if err != nil {
+		return nil, fmt.Errorf("sitecrawl: load run for resume: %w", err)
+	}
+
+	if err := claimRun(r.DB, runID); err != nil {
+		return nil, err
+	}
+
+	seen, nextID, err := loadSeen(r.DB, runID, run.Options.IgnoreQueryParam)
+	if err != nil {
+		return nil, fmt.Errorf("sitecrawl: load seen: %w", err)
+	}
+
+	items, err := loadFrontier(r.DB, runID)
+	if err != nil {
+		return nil, fmt.Errorf("sitecrawl: load frontier: %w", err)
+	}
+
+	var prior int
+	if err := r.DB.QueryRow(`SELECT COUNT(*) FROM sitecrawl_pages WHERE run_id = ?`, runID).Scan(&prior); err != nil {
+		return nil, fmt.Errorf("sitecrawl: count prior pages: %w", err)
+	}
+
+	crawlCtx, cancel := context.WithCancel(ctx)
+
+	emit := func(name string, data any) {
+		if r.Events != nil {
+			r.Events.Emit(name, data)
+		}
+		if name == EventProgress && r.Progress != nil {
+			r.Progress.OnProgress(data)
+		}
+	}
+	report := func(done, total int, message string) {}
+
+	coord, err := newCoordinator(crawlCtx, r.DB, runID, run.Options.normalized(), run.SeedURL, r.Proxy, emit, report)
+	if err != nil {
+		cancel()
+		finishRun(r.DB, runID, StateFailed, "", err.Error(), false, time.Now())
+		return nil, err
+	}
+
+	coord.crawled = prior
+	coord.crawledInternal = prior
+	coord.frontier.restore(seen, nextID, items, prior)
+	clearFrontier(r.DB, runID)
+
+	handle := &CrawlHandle{
+		runID:  runID,
+		cancel: cancel,
+		coord:  coord,
+		done:   make(chan struct{}),
+	}
+	r.registerHandle(runID, handle)
+
+	go r.runCrawlLoop(crawlCtx, coord, handle, nil, true)
+
+	return handle, nil
+}
+
+// ResumeRun resumes a run from checkpoint and waits synchronously for completion.
+func (r *Runner) ResumeRun(ctx context.Context, runID string) (*RunSummary, error) {
+	h, err := r.Resume(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return h.Wait()
+}
+
+func (r *Runner) runCrawlLoop(ctx context.Context, coord *coordinator, handle *CrawlHandle, seeds []string, resume bool) {
+	runID := handle.runID
+	defer r.unregisterHandle(runID)
+	defer close(handle.done)
+
 	started := time.Now()
-	runErr := coord.run(ctx, clean, false)
+	runErr := coord.run(ctx, seeds, resume)
 	coord.flush()
 
 	switch {
@@ -109,6 +339,10 @@ func (r *Runner) Crawl(ctx context.Context, seeds []string, opts Options) (*RunS
 		coord.checkpoint()
 		finishRun(r.DB, runID, StateStopped, StopUser, "", coord.frontier.queued() > 0, started)
 		coord.emitState(StateStopped, StopUser, coord.frontier.queued() > 0, nil)
+	case coord.gate.isPaused():
+		coord.checkpoint()
+		pauseRun(r.DB, runID)
+		coord.emitState(StatePaused, "", true, nil)
 	case runErr != nil:
 		finishRun(r.DB, runID, StateFailed, "", runErr.Error(), false, started)
 		coord.emitState(StateFailed, "", false, runErr)
@@ -119,17 +353,25 @@ func (r *Runner) Crawl(ctx context.Context, seeds []string, opts Options) (*RunS
 	}
 
 	summary, err := loadRun(r.DB, runID)
-	if err != nil {
-		return nil, fmt.Errorf("sitecrawl: load finished run: %w", err)
+	handle.mu.Lock()
+	if err == nil {
+		handle.summary = &summary
 	}
-
 	if ctx.Err() != nil {
-		return &summary, ctx.Err()
+		handle.err = ctx.Err()
+	} else if runErr != nil {
+		handle.err = runErr
 	}
-	if runErr != nil {
-		return &summary, runErr
+	handle.mu.Unlock()
+}
+
+// Crawl executes an end-to-end crawl for the given seeds and options synchronously.
+func (r *Runner) Crawl(ctx context.Context, seeds []string, opts Options) (*RunSummary, error) {
+	h, err := r.Start(ctx, seeds, opts)
+	if err != nil {
+		return nil, err
 	}
-	return &summary, nil
+	return h.Wait()
 }
 
 // LoadRun loads the summary for a run by ID.
