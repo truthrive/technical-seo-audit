@@ -3,6 +3,9 @@ package sitecrawl
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
@@ -10,8 +13,17 @@ import (
 	"github.com/truthrive/technical-seo-audit/internal/platform/standalone"
 )
 
-func setupResumableRun(t *testing.T, runID string, opts Options) (*Runner, string) {
+func setupResumableRun(t *testing.T, runID string, seedURL string, opts Options) (*Runner, string) {
 	t.Helper()
+	if seedURL == "" {
+		seedURL = "http://127.0.0.1:0/"
+	}
+	u, _ := url.Parse(seedURL)
+	host := u.Hostname()
+	if host == "" {
+		host = "127.0.0.1"
+	}
+
 	db, err := standalone.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
@@ -23,13 +35,13 @@ func setupResumableRun(t *testing.T, runID string, opts Options) (*Runner, strin
 		t.Fatalf("EnsureSchema: %v", err)
 	}
 
-	if err := insertRun(db, runID, "https://example.com/", "example.com", opts); err != nil {
+	if err := insertRun(db, runID, seedURL, host, opts); err != nil {
 		t.Fatalf("insertRun: %v", err)
 	}
 	pauseRun(db, runID) // mark as StatePaused, resumable=1
 
 	items := []frontierItem{
-		{URL: "https://example.com/page1", Depth: 1, Source: "link"},
+		{URL: seedURL + "page1", Depth: 1, Source: "link"},
 	}
 	if err := saveFrontier(db, runID, items); err != nil {
 		t.Fatalf("saveFrontier: %v", err)
@@ -45,7 +57,7 @@ func TestResumePageSpeedGuard(t *testing.T) {
 	opts := Options{
 		EnablePageSpeed: true,
 	}
-	runner, runID := setupResumableRun(t, "run-psi-guard", opts)
+	runner, runID := setupResumableRun(t, "run-psi-guard", "", opts)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -94,7 +106,7 @@ func TestResumeDuplicateAnalysisGuard(t *testing.T) {
 	opts := Options{
 		EnableDuplication: true,
 	}
-	runner, runID := setupResumableRun(t, "run-dupe-guard", opts)
+	runner, runID := setupResumableRun(t, "run-dupe-guard", "", opts)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -138,7 +150,7 @@ func TestResumeProxyGuard(t *testing.T) {
 	opts := Options{
 		UseProxy: true,
 	}
-	runner, runID := setupResumableRun(t, "run-proxy-guard", opts)
+	runner, runID := setupResumableRun(t, "run-proxy-guard", "", opts)
 	runner.Proxy = nil // ensure no proxy configured
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -177,12 +189,21 @@ func TestResumeProxyGuard(t *testing.T) {
 }
 
 // TestResumeProxyAvailable verifies that a persisted UseProxy=true run passes
-// the capability gate when resumed on a Runner with a configured proxy function.
+// the capability gate when resumed on a Runner with a configured proxy function,
+// using a local deterministic httptest.Server without external DNS dependencies.
 func TestResumeProxyAvailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<html><body>Proxy available test</body></html>`)
+	}))
+	t.Cleanup(srv.Close)
+
 	opts := Options{
-		UseProxy: true,
+		UseProxy:         true,
+		RespectRobots:    false,
+		DiscoverSitemaps: false,
 	}
-	runner, runID := setupResumableRun(t, "run-proxy-available", opts)
+	runner, runID := setupResumableRun(t, "run-proxy-available", srv.URL+"/", opts)
 
 	// Configure a non-nil proxy function
 	runner.Proxy = func() *url.URL {
