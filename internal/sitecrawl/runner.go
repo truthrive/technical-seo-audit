@@ -172,16 +172,25 @@ func (r *Runner) EnsureSchema() error {
 	return nil
 }
 
-// Start begins an asynchronous crawl, returning a lightweight CrawlHandle immediately.
-func (r *Runner) Start(ctx context.Context, seeds []string, opts Options) (*CrawlHandle, error) {
+// validateRuntimeCapabilities checks if the requested crawl options rely on capabilities
+// that are unsupported in standalone core or missing necessary runtime providers (e.g. proxy func).
+func validateRuntimeCapabilities(opts Options, proxy httpx.ProxyFunc) error {
 	if opts.EnablePageSpeed {
-		return nil, fmt.Errorf("%w: PageSpeed is not part of acquisition core", ErrCapabilityUnsupported)
+		return fmt.Errorf("%w: PageSpeed is not part of acquisition core", ErrCapabilityUnsupported)
 	}
 	if opts.EnableDuplication {
-		return nil, fmt.Errorf("%w: duplicate analysis is deferred", ErrCapabilityUnsupported)
+		return fmt.Errorf("%w: duplicate analysis is deferred", ErrCapabilityUnsupported)
 	}
-	if opts.UseProxy && r.Proxy == nil {
-		return nil, ErrProxyUnavailable
+	if opts.UseProxy && proxy == nil {
+		return ErrProxyUnavailable
+	}
+	return nil
+}
+
+// Start begins an asynchronous crawl, returning a lightweight CrawlHandle immediately.
+func (r *Runner) Start(ctx context.Context, seeds []string, opts Options) (*CrawlHandle, error) {
+	if err := validateRuntimeCapabilities(opts, r.Proxy); err != nil {
+		return nil, err
 	}
 
 	opts = opts.normalized()
@@ -258,6 +267,10 @@ func (r *Runner) Resume(ctx context.Context, runID string) (*CrawlHandle, error)
 	run, err := loadRun(r.DB, runID)
 	if err != nil {
 		return nil, fmt.Errorf("sitecrawl: load run for resume: %w", err)
+	}
+
+	if err := validateRuntimeCapabilities(run.Options, r.Proxy); err != nil {
+		return nil, err
 	}
 
 	if err := claimRun(r.DB, runID); err != nil {
