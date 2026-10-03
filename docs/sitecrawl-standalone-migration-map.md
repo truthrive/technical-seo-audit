@@ -1207,16 +1207,19 @@ At that point create a standalone-core freeze before beginning Audit V1 implemen
 
 ## 26. Migration Status & Next Task
 
-Checkpoints A1 (Buildability Inventory), A2 (Scoped Go Module Bootstrap), Coordinated Checkpoint A3/A4 (Reconstruct Standalone SiteCrawl Engine & Platform Primitives), and Checkpoint A5 (Standalone End-to-End SiteCrawl) are **completed**.
+Checkpoints A1 (Buildability Inventory), A2 (Scoped Go Module Bootstrap), Coordinated Checkpoint A3/A4 (Reconstruct Standalone SiteCrawl Engine & Platform Primitives), Checkpoint A5 (Standalone End-to-End SiteCrawl), and Checkpoint A6.1 (Acquisition Regression Parity) are **completed**. Checkpoint A6 is **in progress**.
 
 - Checkpoint A1 approved in [`docs/sitecrawl-standalone-buildability.md`](sitecrawl-standalone-buildability.md).
 - Checkpoint A2 created root `go.mod` (`module github.com/truthrive/technical-seo-audit`, `go 1.22`) and verified scoped packages via `go list ./go/deps/...` and `go test ./go/deps/...`.
 - Coordinated Checkpoint A3/A4 reconstructed `internal/sitecrawl/` (13 engine mechanics files) and created `internal/platform/standalone/` (run-state constants, SQLite opener using `modernc.org/sqlite`, context cancellation, event/progress sink primitives). External dependencies added: `golang.org/x/net v0.28.0`, `github.com/temoto/robotstxt v1.1.2`, `github.com/chromedp/chromedp v0.10.0`, `modernc.org/sqlite v1.33.1`.
 - Checkpoint A5 implemented single-writer coordinator (`internal/sitecrawl/crawler.go`), batch persistence (`persist.go`), run lifecycle and schema migrations (`runs.go`, `internal/platform/standalone/migrate.go`), page assembly (`page.go`), runtime entrypoint `sitecrawl.Runner` (`runner.go`), and developer CLI (`cmd/sitecrawl-dev/main.go`). PageSpeed is decoupled at compile-time (`EnablePageSpeed` rejects with `ErrCapabilityUnsupported`), legacy SEO issue evaluation is decoupled from acquisition core, duplicate analysis is deferred, and acquisition-only graph finalization computes inlinks. All E2E fixture crawl, process-level database reopen/readback, and cancellation tests pass cleanly.
+- Checkpoint A6.1 ported and verified 11 acquisition regression parity families into `internal/sitecrawl/` across `politeness_test.go`, `deferred_test.go`, `redirect_test.go`, `customheaders_test.go`, and `acquisition_parity_test.go` (covering politeness delay, per-host concurrency, adaptive 429/503 backoff & penalty clearing, burst mode, robots Crawl-delay cap & option, sitemap scheme preservation, temporary and persistent 429/503 retries, redirect chains & loop termination, seed off-site redirect `StopSeedRedirect` & event targets, sitemap host isolation, clean-run `Found == Crawled` convergence, custom-header scoping & persistence redaction, CSS/JS/images resource crawling on/off, broken images without legacy issue verdicts, one-request-per-URL HEAD safety, crawl max depth limits, list mode, and link evidence with `rel=nofollow` flags). Zero crawler bugfixes required.
 
-### Next Milestone: Checkpoint A6 — Regression Parity & Full Module Gate
+### Active Milestone: Checkpoint A6 — Regression Parity & Full Module Gate
 
-Execute full crawler regression parity against legacy reference tests, verify all remaining non-gated test suites, ensure zero missing engine behaviors, and enforce the full module gate (`go list ./...`).
+Checkpoint A6 is **IN PROGRESS**. Checkpoint A6.1 is complete.
+
+**Next Milestone:** Checkpoint A6.2 (coordinator lifecycle, pause/resume, FTS trigger parity, schema golden parity, and browser rendering environment gating). Followed by Checkpoint A6.3 (legacy reference tree isolation/cleanup and full module compilation gate `go list ./...`).
 
 ---
 
