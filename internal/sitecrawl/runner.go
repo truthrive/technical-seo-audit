@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
-	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +23,14 @@ var (
 
 	// ErrProxyUnavailable is returned when UseProxy is enabled but no proxy provider function was supplied.
 	ErrProxyUnavailable = errors.New("sitecrawl: proxy requested but no proxy function configured")
+
+	// ErrRunNotResumable is returned when attempting to resume a run that is not
+	// in an eligible resumable state (e.g. completed, failed, interrupted, deleting,
+	// or non-resumable stopped).
+	ErrRunNotResumable = errors.New("sitecrawl: run is not in a resumable state")
+
+	// ErrRunBusy indicates a crawl is already running or claimed.
+	ErrRunBusy = errors.New("sitecrawl: this crawl is already running")
 )
 
 // CrawlHandle represents an active or completed crawl execution.
@@ -213,7 +221,10 @@ func (r *Runner) Start(ctx context.Context, seeds []string, opts Options) (*Craw
 		return nil, fmt.Errorf("sitecrawl: ensure schema: %w", err)
 	}
 
-	runID := generateRunID()
+	runID, err := generateRunID()
+	if err != nil {
+		return nil, fmt.Errorf("sitecrawl: generate run id: %w", err)
+	}
 	if err := insertRun(r.DB, runID, seedURL, host, opts); err != nil {
 		return nil, fmt.Errorf("sitecrawl: insert run: %w", err)
 	}
@@ -273,8 +284,11 @@ func (r *Runner) Resume(ctx context.Context, runID string) (*CrawlHandle, error)
 		return nil, err
 	}
 
-	if err := claimRun(r.DB, runID); err != nil {
-		return nil, err
+	if run.State == StateRunning {
+		return nil, fmt.Errorf("%w: run %s is marked running with no active in-process handle", ErrRunBusy, runID)
+	}
+	if !run.Resumable || (run.State != StatePaused && run.State != StateStopped) {
+		return nil, fmt.Errorf("%w: run %s is in state %q (resumable=%v)", ErrRunNotResumable, runID, run.State, run.Resumable)
 	}
 
 	seen, nextID, err := loadSeen(r.DB, runID, run.Options.IgnoreQueryParam)
@@ -307,13 +321,18 @@ func (r *Runner) Resume(ctx context.Context, runID string) (*CrawlHandle, error)
 	coord, err := newCoordinator(crawlCtx, r.DB, runID, run.Options.normalized(), run.SeedURL, r.Proxy, emit, report)
 	if err != nil {
 		cancel()
-		finishRun(r.DB, runID, StateFailed, "", err.Error(), false, time.Now())
 		return nil, err
 	}
 
 	coord.crawled = prior
 	coord.crawledInternal = prior
 	coord.frontier.restore(seen, nextID, items, prior)
+
+	if err := claimRun(r.DB, runID); err != nil {
+		cancel()
+		return nil, err
+	}
+
 	clearFrontier(r.DB, runID)
 
 	handle := &CrawlHandle{
@@ -469,8 +488,10 @@ func (r *Runner) URLs(runID string) ([]urlEntry, error) {
 	return out, rows.Err()
 }
 
-func generateRunID() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return fmt.Sprintf("crawl_%s_%x", time.Now().UTC().Format("20060102150405"), binary.BigEndian.Uint64(b[:])&0xffff)
+func generateRunID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("sitecrawl: generate random run id: %w", err)
+	}
+	return fmt.Sprintf("crawl_%s_%s", time.Now().UTC().Format("20060102150405"), hex.EncodeToString(b[:])), nil
 }

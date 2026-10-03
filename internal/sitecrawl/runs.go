@@ -3,7 +3,6 @@ package sitecrawl
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -297,7 +296,7 @@ func finishRun(db *sql.DB, runID, state, reason, errMsg string, resumable bool, 
 	}
 }
 
-var errRunBusy = errors.New("sitecrawl: this crawl is already running")
+var errRunBusy = ErrRunBusy
 
 func claimRun(db *sql.DB, runID string) error {
 	res, err := db.Exec(`

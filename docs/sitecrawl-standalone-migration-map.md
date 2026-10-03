@@ -1207,7 +1207,7 @@ At that point create a standalone-core freeze before beginning Audit V1 implemen
 
 ## 26. Migration Status & Next Task
 
-Checkpoints A1 (Buildability Inventory), A2 (Scoped Go Module Bootstrap), Coordinated Checkpoint A3/A4 (Reconstruct Standalone SiteCrawl Engine & Platform Primitives), Checkpoint A5 (Standalone End-to-End SiteCrawl), Checkpoint A6.1 (Acquisition Regression Parity), and Checkpoint A6.2 (Lifecycle, Persistence & Runtime Parity) are **completed**. Checkpoint A6 is **in progress**.
+Checkpoints A1 (Buildability Inventory), A2 (Scoped Go Module Bootstrap), Coordinated Checkpoint A3/A4 (Reconstruct Standalone SiteCrawl Engine & Platform Primitives), Checkpoint A5 (Standalone End-to-End SiteCrawl), Checkpoint A6.1 (Acquisition Regression Parity), Checkpoint A6.2 (Lifecycle, Persistence & Runtime Parity), and Checkpoint A6.3 (Full Module Gate & Standalone Core Freeze) are **COMPLETED**. Checkpoint A6 is **COMPLETED**.
 
 - Checkpoint A1 approved in [`docs/sitecrawl-standalone-buildability.md`](sitecrawl-standalone-buildability.md).
 - Checkpoint A2 created root `go.mod` (`module github.com/truthrive/technical-seo-audit`, `go 1.22`) and verified scoped packages via `go list ./go/deps/...` and `go test ./go/deps/...`.
@@ -1226,13 +1226,23 @@ Checkpoints A1 (Buildability Inventory), A2 (Scoped Go Module Bootstrap), Coordi
   - Ported FTS5 trigger parity (`TestFTSSurvivesCounterUpdates`, `TestFTSStillFollowsSearchableEdits`, `TestFTSFollowsDeletes`), verifying non-searchable updates do not drop index entries while searchable edits and deletes synchronize.
   - Locked schema migration sequence immutability via `TestSchemaGolden` with SHA-256 digest `209ab3ee14d732cc16a77c09bc75829f4445d09f680ee708268d69b30717dab0` across all 38 verified statements matching `go/storage/runs.go`.
   - Ported environment-independent render gate tests (`TestRenderCapIsEnforced`, `TestRenderPatternGate`) and host-browser E2E rendering (`TestRenderExtractsJSContent`, passing with local browser).
-  - Run ID random suffix noted as pre-freeze technical debt for review in A6.3.
+  - Guarded `Runner.Resume` runtime capabilities (`TestResumePageSpeedGuard`, `TestResumeDuplicateAnalysisGuard`, `TestResumeProxyGuard`, `TestResumeProxyAvailable`) ensuring persisted capability requests cannot silently bypass standalone contracts.
+- Checkpoint A6.3 completed the final pre-freeze hardening, legacy reference isolation, full module gate, and standalone core freeze:
+  - Hardened run ID generation (`generateRunID`) with 128 bits of cryptographic randomness (`crawl_<UTC timestamp>_<32 hex chars>`) with error propagation to `Runner.Start`.
+  - Hardened checkpoint resume eligibility (`Runner.Resume` rejects non-resumable runs with `ErrRunNotResumable`, rejects orphan `running` runs with `ErrRunBusy`, orders validation/loads before `claimRun` to guarantee mutation safety on failure).
+  - Isolated legacy Go reference directories (`go/engine`, `go/storage`, `go/pagespeed`, `go/app-glue`, `go/tests`) into `_reference/sitecrawl/`, completely removing them from Go compiler package traversal.
+  - Made `TestSchemaGolden` self-contained without filesystem dependencies on legacy reference paths.
+  - Normalized module metadata via `go mod tidy` keeping `go 1.22`.
+  - Enforced full root-module package boundary: exactly 5 buildable packages (`cmd/sitecrawl-dev`, `go/deps/httpx`, `go/deps/safe`, `internal/platform/standalone`, `internal/sitecrawl`).
+  - Passed full-module gate (`go list ./...`), full test suite (`go test -count=1 ./...`), developer CLI build (`go build ./cmd/sitecrawl-dev`), and linter check (`go vet ./...`).
+  - Verified zero prohibited coupling (`onescout/`, `psiPump`, `PSIResult`, `IssueCatalog`, `evaluate(`, `AR-`).
+  - Transitioned `README.md` to reflect the frozen standalone core, developer CLI, and historical LibreCrawl / 1Scout provenance.
+  - Created and pushed immutable core freeze tag: `sitecrawl-standalone-core-v1`.
 
-### Active Milestone: Checkpoint A6 — Regression Parity & Full Module Gate
+### Milestone Status
 
-Checkpoint A6 is **IN PROGRESS**. Checkpoint A6.1 and A6.2 are complete.
-
-**Next Milestone:** Checkpoint A6.3 (legacy reference tree isolation/cleanup, full module compilation gate `go list ./...`, final regression run, and Core Freeze `sitecrawl-standalone-core-v1`).
+- **Checkpoint A6**: **COMPLETE**
+- **Next Milestone**: **Audit V1 Implementation** (Unblocked; NOT started).
 
 ---
 
