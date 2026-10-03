@@ -42,7 +42,7 @@ go run ./cmd/sitecrawl-dev -db crawl.db -max-urls 500 -max-depth 3 -concurrency 
 
 - **Start Crawl**: The CLI currently starts a crawl from the provided seed URL and prints the JSON summary to stdout. The `-v` flag streams live progress events to stderr.
 - **Lifecycle API**: The core `Runner` API (`internal/sitecrawl`) supports lifecycle operations including in-process pause/resume, graceful stop, and SQLite checkpoint resumption (`Runner.Start`, `CrawlHandle.Pause`, `CrawlHandle.Resume`, `CrawlHandle.Stop`, `Runner.Resume`).
-- **CLI Subcommands**: Checkpoint resume, database inspection, and benchmarking exist in the programmatic core and test suites but are not yet exposed as CLI subcommands.
+- **CLI Subcommands**: Checkpoint resume exists in the `Runner` API (`Runner.Resume`), and persisted run, page, and link data can be read through current `Runner` readback methods (`Runner.LoadRun`, `Runner.Pages`, `Runner.Links`, `Runner.URLs`). These lifecycle and readback operations are not exposed as CLI subcommands.
 
 ### Persistence & Schema
 
@@ -71,4 +71,4 @@ go run ./cmd/sitecrawl-dev -db crawl.db -max-urls 500 -max-depth 3 -concurrency 
 ## Project Status & Audit V1 Roadmap
 
 - **SiteCrawl Standalone Core**: **FREEZE v1 COMPLETE** (tagged `sitecrawl-standalone-core-v1`).
-- **Audit V1**: **NOT STARTED**. Audit V1 implementation (Evidence Adapter, EvidenceSnapshot, Rule Engine, 47 `AR-*` audit rules, Project Policy, scoring) will begin on top of this frozen core in subsequent milestones.
+- **Audit V1**: **NOT STARTED**. Audit V1 implementation (Evidence Adapter, normalized evidence / EvidenceSnapshot, Rule Engine, 47 `AR-*` atomic rules, Project Policy, Rule Results, Finding aggregation, and report model) will begin on top of this frozen core in subsequent milestones.
