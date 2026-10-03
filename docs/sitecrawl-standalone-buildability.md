@@ -79,55 +79,55 @@ Programmatically verified from workspace source code:
 
 | File | Package | External Imports | 1Scout Imports | Important Package-Private Symbol Coupling | Checkpoint Mapping | Migration Risk |
 |---|---|---|---|---|---|---|
-| [`exclusions.go`](../go/engine/exclusions.go) | `sitecrawl` | None | None | `shouldExclude`, `defaultExclusions` (used by `crawler.go`, `types.go`) | Checkpoint A3 (Engine Core) | Low |
-| [`extract.go`](../go/engine/extract.go) | `sitecrawl` | `golang.org/x/net/html` | None | `extractDocument`, `extractedDoc`, `SchemaItem`, `Image`, `Hreflang`, `LinkEdge` (used by `page.go`, `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
-| [`fetch.go`](../go/engine/fetch.go) | `sitecrawl` | None | `core/httpx` (bundled) | `newFetcher`, `fetcher`, `fetchResult`, `fetchOutcome` (used by `crawler.go`, `page.go`) | Checkpoint A3 (Engine Core) | Low |
-| [`frontier.go`](../go/engine/frontier.go) | `sitecrawl` | None | None | `newFrontier`, `frontier`, `frontierItem`, `admit`, `peekReady`, `snapshot`, `restore` (used by `crawler.go`, `runs.go`) | Checkpoint A3 (Engine Core) | Low |
-| [`issues.go`](../go/engine/issues.go) | `sitecrawl` | None | None | Defines `evaluate(p *Page)`, `indexabilityOf(p *Page)`, `issue`, `severityOf`, `countMissingAlt`. Defines method `(s *Service) IssueCatalog()` | Checkpoint A7 (Optional Compatibility Features) | Medium (depends on `Service`) |
-| [`links.go`](../go/engine/links.go) | `sitecrawl` | None | None | `collectLinks`, `linkEdge`, `classifyRel` (used by `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
-| [`normalize.go`](../go/engine/normalize.go) | `sitecrawl` | None | None | `normalizeURL`, `frontierKey`, `isSameSite`, `rootDomain`, `stripTracking` (used across all crawler modules) | Checkpoint A3 (Engine Core) | Low |
-| [`page.go`](../go/engine/page.go) | `sitecrawl` | None | None | Defines `buildPage`, `Page`, `pageRow`. Calls `nowStamp()` (in `storage/runs.go`), uses `issue`, `severityOf`, `countMissingAlt` (in `engine/issues.go`) | Checkpoint A3 (Engine Core) | Medium (cross-file symbol dependencies) |
-| [`politeness.go`](../go/engine/politeness.go) | `sitecrawl` | None | None | `newHostGate`, `hostGate`, `onSuccess`, `onRetryable`, `onTerminal` (used by `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
-| [`render.go`](../go/engine/render.go) | `sitecrawl` | `github.com/chromedp/chromedp` | None | `findBrowser`, `renderPage`, `renderResult` (used by `crawler.go`) | Checkpoint A3 (Engine Core) | Medium (runtime browser dependency) |
-| [`robots.go`](../go/engine/robots.go) | `sitecrawl` | `github.com/temoto/robotstxt` | None | `newRobots`, `robotsCache`, `Check`, `CrawlDelay`, `Sitemaps` (used by `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
-| [`similarity.go`](../go/engine/similarity.go) | `sitecrawl` | None | None | `simHash64`, `seqRatio` (used by `storage/duplicates.go`) | Checkpoint A3 (Engine Core) | Low |
-| [`sitemap.go`](../go/engine/sitemap.go) | `sitecrawl` | None | `core/safe` (bundled) | `discoverSitemaps`, `parseSitemap`, `sitemapEntry` (used by `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
-| [`types.go`](../go/engine/types.go) | `sitecrawl` | None | `core/runs` (unbundled) | Core types (`Options`, `Page`, events, crawl modes). Uses `runs.State*` constants | Checkpoint A3 (Engine Core) | Low (needs status constants decoupled) |
-| [`useragents.go`](../go/engine/useragents.go) | `sitecrawl` | None | None | `defaultUserAgent`, `UserAgentPresets` (used by `types.go`, `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
+| [`exclusions.go`](../_reference/sitecrawl/engine/exclusions.go) | `sitecrawl` | None | None | `shouldExclude`, `defaultExclusions` (used by `crawler.go`, `types.go`) | Checkpoint A3 (Engine Core) | Low |
+| [`extract.go`](../_reference/sitecrawl/engine/extract.go) | `sitecrawl` | `golang.org/x/net/html` | None | `extractDocument`, `extractedDoc`, `SchemaItem`, `Image`, `Hreflang`, `LinkEdge` (used by `page.go`, `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
+| [`fetch.go`](../_reference/sitecrawl/engine/fetch.go) | `sitecrawl` | None | `core/httpx` (bundled) | `newFetcher`, `fetcher`, `fetchResult`, `fetchOutcome` (used by `crawler.go`, `page.go`) | Checkpoint A3 (Engine Core) | Low |
+| [`frontier.go`](../_reference/sitecrawl/engine/frontier.go) | `sitecrawl` | None | None | `newFrontier`, `frontier`, `frontierItem`, `admit`, `peekReady`, `snapshot`, `restore` (used by `crawler.go`, `runs.go`) | Checkpoint A3 (Engine Core) | Low |
+| [`issues.go`](../_reference/sitecrawl/engine/issues.go) | `sitecrawl` | None | None | Defines `evaluate(p *Page)`, `indexabilityOf(p *Page)`, `issue`, `severityOf`, `countMissingAlt`. Defines method `(s *Service) IssueCatalog()` | Checkpoint A7 (Optional Compatibility Features) | Medium (depends on `Service`) |
+| [`links.go`](../_reference/sitecrawl/engine/links.go) | `sitecrawl` | None | None | `collectLinks`, `linkEdge`, `classifyRel` (used by `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
+| [`normalize.go`](../_reference/sitecrawl/engine/normalize.go) | `sitecrawl` | None | None | `normalizeURL`, `frontierKey`, `isSameSite`, `rootDomain`, `stripTracking` (used across all crawler modules) | Checkpoint A3 (Engine Core) | Low |
+| [`page.go`](../_reference/sitecrawl/engine/page.go) | `sitecrawl` | None | None | Defines `buildPage`, `Page`, `pageRow`. Calls `nowStamp()` (in `storage/runs.go`), uses `issue`, `severityOf`, `countMissingAlt` (in `engine/issues.go`) | Checkpoint A3 (Engine Core) | Medium (cross-file symbol dependencies) |
+| [`politeness.go`](../_reference/sitecrawl/engine/politeness.go) | `sitecrawl` | None | None | `newHostGate`, `hostGate`, `onSuccess`, `onRetryable`, `onTerminal` (used by `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
+| [`render.go`](../_reference/sitecrawl/engine/render.go) | `sitecrawl` | `github.com/chromedp/chromedp` | None | `findBrowser`, `renderPage`, `renderResult` (used by `crawler.go`) | Checkpoint A3 (Engine Core) | Medium (runtime browser dependency) |
+| [`robots.go`](../_reference/sitecrawl/engine/robots.go) | `sitecrawl` | `github.com/temoto/robotstxt` | None | `newRobots`, `robotsCache`, `Check`, `CrawlDelay`, `Sitemaps` (used by `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
+| [`similarity.go`](../_reference/sitecrawl/engine/similarity.go) | `sitecrawl` | None | None | `simHash64`, `seqRatio` (used by `storage/duplicates.go`) | Checkpoint A3 (Engine Core) | Low |
+| [`sitemap.go`](../_reference/sitecrawl/engine/sitemap.go) | `sitecrawl` | None | `core/safe` (bundled) | `discoverSitemaps`, `parseSitemap`, `sitemapEntry` (used by `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
+| [`types.go`](../_reference/sitecrawl/engine/types.go) | `sitecrawl` | None | `core/runs` (unbundled) | Core types (`Options`, `Page`, events, crawl modes). Uses `runs.State*` constants | Checkpoint A3 (Engine Core) | Low (needs status constants decoupled) |
+| [`useragents.go`](../_reference/sitecrawl/engine/useragents.go) | `sitecrawl` | None | None | `defaultUserAgent`, `UserAgentPresets` (used by `types.go`, `crawler.go`) | Checkpoint A3 (Engine Core) | Low |
 
 ---
 
-### 3.2 `go/storage/` (9 Files)
+### 3.2 `_reference/sitecrawl/storage/` (9 Files)
 
 | File | Package | External Imports | 1Scout Imports | Important Package-Private Symbol Coupling | Checkpoint Mapping | Migration Risk |
 |---|---|---|---|---|---|---|
-| [`crawler.go`](../go/storage/crawler.go) | `sitecrawl` | None | `core/httpx`, `core/safe` (both bundled) | `coordinator`, `newCoordinator`, `prepare`, `loop`, `doOne`, `absorb`, `flush`. Uses `psiPump`, `PSIResult`, `newPSIPump`, `psiClient`, `savePSI` from `pagespeed/`; calls `c.finalize()` in `finalize.go` | Checkpoint A5 (Coordinator & Persistence) | High (compile-coupled to `pagespeed/` and `finalize.go`) |
-| [`persist.go`](../go/storage/persist.go) | `sitecrawl` | None | None | `persistBuffer`, `writeBatch`, `writePage`, `writeLinks`, `writeIssues` (called by `crawler.go`) | Checkpoint A5 (Coordinator & Persistence) | Low |
-| [`runs.go`](../go/storage/runs.go) | `sitecrawl` | None | `core/runs`, `core/schema` (both unbundled) | `schemaStmts`, `nowStamp`, `initRun`, `finishRun`, `saveFrontier`, `loadFrontier`, `loadSeen`, `ensureFTS`. Calls `runs.Now()`, `schema.Migrate()` | Checkpoint A5 (Coordinator & Persistence) | Medium (requires schema migration and timestamp adapter) |
-| [`finalize.go`](../go/storage/finalize.go) | `sitecrawl` | None | None | Method `(c *coordinator) finalize(ctx)`, `finalizeCodes`, `finalizeInlinks`, `finalizeOrphans`, `finalizeCanonicals`, `clearIssues`. Uses `issues.go` codes | Checkpoint A7 (Optional Compatibility Features) | Medium (coupled to `coordinator` and `issues.go`) |
-| [`duplicates.go`](../go/storage/duplicates.go) | `sitecrawl` | None | None | `findExactDuplicates`, `findNearDuplicates` (calls `simHash64`, `seqRatio` from `engine/similarity.go`) | Checkpoint A7 (Optional Compatibility Features) | Low |
-| [`query.go`](../go/storage/query.go) | `sitecrawl` | None | None | Defines 9 methods on `(s *Service)`: `Rows`, `searchClause`, `issueRows`, `linkTabRows`, `Facets`, `Page`, `Inlinks`, `Outlinks`, `links` | Checkpoint A7 (Optional Compatibility Features) | High (coupled to desktop `Service`) |
-| [`export.go`](../go/storage/export.go) | `sitecrawl` | None | `core/runs` (unbundled) | Defines 5 methods on `(s *Service)`: `Export`, `eachWindow`, `exportCSV`, `exportJSON`, `exportXML`. Uses `s.Files` (`FilePicker`), `runs.BOMUTF8`, `runs.CSVGuard` | Checkpoint A7 (Optional Compatibility Features) | High (coupled to desktop `Service` and `FilePicker`) |
-| [`graph.go`](../go/storage/graph.go) | `sitecrawl` | None | None | Defines method `(s *Service) Graph(runID string, maxNodes int)` | Checkpoint A7 (Optional Compatibility Features) | Medium (coupled to desktop `Service`) |
-| [`agent_local.go`](../go/storage/agent_local.go) | `sitecrawl` | None | None | `LookupLocalPages` (read-only search query for 1Scout AI Writer) | Checkpoint A7 (Optional Compatibility Features) | Low |
+| [`crawler.go`](../_reference/sitecrawl/storage/crawler.go) | `sitecrawl` | None | `core/httpx`, `core/safe` (both bundled) | `coordinator`, `newCoordinator`, `prepare`, `loop`, `doOne`, `absorb`, `flush`. Uses `psiPump`, `PSIResult`, `newPSIPump`, `psiClient`, `savePSI` from `pagespeed/`; calls `c.finalize()` in `finalize.go` | Checkpoint A5 (Coordinator & Persistence) | High (compile-coupled to `pagespeed/` and `finalize.go`) |
+| [`persist.go`](../_reference/sitecrawl/storage/persist.go) | `sitecrawl` | None | None | `persistBuffer`, `writeBatch`, `writePage`, `writeLinks`, `writeIssues` (called by `crawler.go`) | Checkpoint A5 (Coordinator & Persistence) | Low |
+| [`runs.go`](../_reference/sitecrawl/storage/runs.go) | `sitecrawl` | None | `core/runs`, `core/schema` (both unbundled) | `schemaStmts`, `nowStamp`, `initRun`, `finishRun`, `saveFrontier`, `loadFrontier`, `loadSeen`, `ensureFTS`. Calls `runs.Now()`, `schema.Migrate()` | Checkpoint A5 (Coordinator & Persistence) | Medium (requires schema migration and timestamp adapter) |
+| [`finalize.go`](../_reference/sitecrawl/storage/finalize.go) | `sitecrawl` | None | None | Method `(c *coordinator) finalize(ctx)`, `finalizeCodes`, `finalizeInlinks`, `finalizeOrphans`, `finalizeCanonicals`, `clearIssues`. Uses `issues.go` codes | Checkpoint A7 (Optional Compatibility Features) | Medium (coupled to `coordinator` and `issues.go`) |
+| [`duplicates.go`](../_reference/sitecrawl/storage/duplicates.go) | `sitecrawl` | None | None | `findExactDuplicates`, `findNearDuplicates` (calls `simHash64`, `seqRatio` from `engine/similarity.go`) | Checkpoint A7 (Optional Compatibility Features) | Low |
+| [`query.go`](../_reference/sitecrawl/storage/query.go) | `sitecrawl` | None | None | Defines 9 methods on `(s *Service)`: `Rows`, `searchClause`, `issueRows`, `linkTabRows`, `Facets`, `Page`, `Inlinks`, `Outlinks`, `links` | Checkpoint A7 (Optional Compatibility Features) | High (coupled to desktop `Service`) |
+| [`export.go`](../_reference/sitecrawl/storage/export.go) | `sitecrawl` | None | `core/runs` (unbundled) | Defines 5 methods on `(s *Service)`: `Export`, `eachWindow`, `exportCSV`, `exportJSON`, `exportXML`. Uses `s.Files` (`FilePicker`), `runs.BOMUTF8`, `runs.CSVGuard` | Checkpoint A7 (Optional Compatibility Features) | High (coupled to desktop `Service` and `FilePicker`) |
+| [`graph.go`](../_reference/sitecrawl/storage/graph.go) | `sitecrawl` | None | None | Defines method `(s *Service) Graph(runID string, maxNodes int)` | Checkpoint A7 (Optional Compatibility Features) | Medium (coupled to desktop `Service`) |
+| [`agent_local.go`](../_reference/sitecrawl/storage/agent_local.go) | `sitecrawl` | None | None | `LookupLocalPages` (read-only search query for 1Scout AI Writer) | Checkpoint A7 (Optional Compatibility Features) | Low |
 
 ---
 
-### 3.3 `go/pagespeed/` (3 Files)
+### 3.3 `_reference/sitecrawl/pagespeed/` (3 Files)
 
 | File | Package | External Imports | 1Scout Imports | Important Package-Private Symbol Coupling | Checkpoint Mapping | Migration Risk |
 |---|---|---|---|---|---|---|
-| [`pagespeed.go`](../go/pagespeed/pagespeed.go) | `sitecrawl` | None | `core/credset`, `core/httpx`, `core/safe`, `core/workspace` | Defines `PSIResult`, `psiClient`, `savePSI`. Defines 7 methods on `(s *Service)`. Imported by `crawler.go` | Checkpoint A7 (Optional Compatibility Features) | High (coupled to `crawler.go`, `Service`, `workspace`, `credset`) |
-| [`pagespeed_pump.go`](../go/pagespeed/pagespeed_pump.go) | `sitecrawl` | None | `core/safe` (bundled) | Defines `psiPump`, `newPSIPump`. Defines method `(s *Service) PendingPageSpeed`. Used directly by `crawler.go` | Checkpoint A7 (Optional Compatibility Features) | High (coupled to `crawler.go` and `Service`) |
-| [`pagespeed_opps.go`](../go/pagespeed/pagespeed_opps.go) | `sitecrawl` | None | None | Defines 2 methods on `(s *Service)`: `Opportunities`, `OpportunityPages` | Checkpoint A7 (Optional Compatibility Features) | Medium (coupled to `Service` and PSI schema) |
+| [`pagespeed.go`](../_reference/sitecrawl/pagespeed/pagespeed.go) | `sitecrawl` | None | `core/credset`, `core/httpx`, `core/safe`, `core/workspace` | Defines `PSIResult`, `psiClient`, `savePSI`. Defines 7 methods on `(s *Service)`. Imported by `crawler.go` | Checkpoint A7 (Optional Compatibility Features) | High (coupled to `crawler.go`, `Service`, `workspace`, `credset`) |
+| [`pagespeed_pump.go`](../_reference/sitecrawl/pagespeed/pagespeed_pump.go) | `sitecrawl` | None | `core/safe` (bundled) | Defines `psiPump`, `newPSIPump`. Defines method `(s *Service) PendingPageSpeed`. Used directly by `crawler.go` | Checkpoint A7 (Optional Compatibility Features) | High (coupled to `crawler.go` and `Service`) |
+| [`pagespeed_opps.go`](../_reference/sitecrawl/pagespeed/pagespeed_opps.go) | `sitecrawl` | None | None | Defines 2 methods on `(s *Service)`: `Opportunities`, `OpportunityPages` | Checkpoint A7 (Optional Compatibility Features) | Medium (coupled to `Service` and PSI schema) |
 
 ---
 
-### 3.4 `go/app-glue/` (1 File)
+### 3.4 `_reference/sitecrawl/app-glue/` (1 File)
 
 | File | Package | External Imports | 1Scout Imports | Important Package-Private Symbol Coupling | Checkpoint Mapping | Migration Risk |
 |---|---|---|---|---|---|---|
-| [`service.go`](../go/app-glue/service.go) | `sitecrawl` | `github.com/wailsapp/wails/v3` | `core/credset`, `core/httpx`, `core/jobs`, `core/license`, `core/runs`, `core/schema`, `core/workspace`, `tools` | Defines `Service`, `FilePicker`, `handle`. Declares 24 methods on `(s *Service)`. Connects desktop UI to coordinator | Post-core optional / Excluded from standalone core | High (heavy 1Scout platform coupling; not needed for standalone core) |
+| [`service.go`](../_reference/sitecrawl/app-glue/service.go) | `sitecrawl` | `github.com/wailsapp/wails/v3` | `core/credset`, `core/httpx`, `core/jobs`, `core/license`, `core/runs`, `core/schema`, `core/workspace`, `tools` | Defines `Service`, `FilePicker`, `handle`. Declares 24 methods on `(s *Service)`. Connects desktop UI to coordinator | Post-core optional / Excluded from standalone core | High (heavy 1Scout platform coupling; not needed for standalone core) |
 
 ---
 
@@ -141,37 +141,37 @@ Programmatically verified from workspace source code:
 
 ---
 
-### 3.6 `go/tests/` (27 Files)
+### 3.6 `_reference/sitecrawl/tests/` (27 Files)
 
 | Test File | Package | External Imports | 1Scout Direct Imports | Test Harness & Runtime Coupling | Test Classification | Checkpoint Mapping |
 |---|---|---|---|---|---|---|
-| [`agent_local_test.go`](../go/tests/agent_local_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | In-memory SQLite search test and AST import validation | Pure/near-pure engine test | Checkpoint A6 |
-| [`cancel_test.go`](../go/tests/cancel_test.go) | `sitecrawl` | None | `core/runs` (`runs.Terminal`) | Crawl cancellation lifecycle; uses `newTestService`; contains `t.Skip` | Transitive test-harness dependency + direct import | Checkpoint A6 |
-| [`crawler_test.go`](../go/tests/crawler_test.go) | `sitecrawl` | None | `core/runs` (`runs.BOMUTF8`) | Core fixture crawl: facets, status codes, canonicals; uses `newTestService` | Transitive test-harness dependency + direct import | Checkpoint A6 |
-| [`credentials_test.go`](../go/tests/credentials_test.go) | `sitecrawl` | None | `core/credset`, `core/httpx` | PageSpeed API key storage vault tests | Direct import dependency (PageSpeed) | Checkpoint A7 |
-| [`customheaders_test.go`](../go/tests/customheaders_test.go) | `sitecrawl` | None | None | Custom HTTP headers forwarding during crawl; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
-| [`deferred_test.go`](../go/tests/deferred_test.go) | `sitecrawl` | None | None | 429 Too Many Requests & 503 retry/deferral loop; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
-| [`extract_test.go`](../go/tests/extract_test.go) | `sitecrawl` | None | None | HTML extraction: title, meta, canonical, hreflang, schema (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
-| [`fixture_test.go`](../go/tests/fixture_test.go) | `sitecrawl` | None | None | Synthetic site fixture with redirect chains, loops, canonicals | Test fixture helper | Checkpoint A3 / A6 |
-| [`frontier_cap_test.go`](../go/tests/frontier_cap_test.go) | `sitecrawl` | None | None | `MaxURLs` admission boundary enforcement (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
-| [`frontier_test.go`](../go/tests/frontier_test.go) | `sitecrawl` | None | None | FIFO queue, BFS depth order, tracking param stripping (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
-| [`fts_trigger_test.go`](../go/tests/fts_trigger_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | SQLite FTS5 index update triggers; contains `t.Skip` if FTS5 missing | Pure/near-pure engine test | Checkpoint A6 |
-| [`history_test.go`](../go/tests/history_test.go) | `sitecrawl` | None | `core/jobs`, `core/workspace`, `testutil` | Defines `newTestService`; tests run history queries | Transitive test-harness definition + direct import | Checkpoint A6 |
-| [`inspectdb_test.go`](../go/tests/inspectdb_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | Manual crawl DB inspection utility; contains `t.Skip` (`CRAWL_DB=<path>`) | Environment-gated utility | Checkpoint A6 |
-| [`inspectopts_test.go`](../go/tests/inspectopts_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | Manual options inspection utility; contains `t.Skip` (`CRAWL_DB=<path>`) | Environment-gated utility | Checkpoint A6 |
-| [`live_test.go`](../go/tests/live_test.go) | `sitecrawl` | None | `core/jobs`, `core/workspace` | Live web crawl test against external sites; contains `t.Skip` (`CRAWL_LIVE`) | Environment-gated + direct import | Checkpoint A6 |
-| [`pagespeed_test.go`](../go/tests/pagespeed_test.go) | `sitecrawl` | None | `core/credset`, `core/httpx` | PageSpeed pump, concurrency pacing, error handling; uses `newTestService` | Transitive test-harness dependency + direct import | Checkpoint A7 |
-| [`pause_test.go`](../go/tests/pause_test.go) | `sitecrawl` | None | None | Pause and resume lifecycle, frontier preservation; uses `newTestService`; contains `t.Skip` | Transitive test-harness dependency | Checkpoint A6 |
-| [`perf_test.go`](../go/tests/perf_test.go) | `sitecrawl` | None | None | High-concurrency synthetic crawl benchmark; uses `newTestService`; contains `t.Skip` (`CRAWL_PERF=1`) | Transitive test-harness dependency + environment-gated | Checkpoint A6 |
-| [`politeness_test.go`](../go/tests/politeness_test.go) | `sitecrawl` | None | None | Per-host pacing, backoff upon error, `Crawl-delay`; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
-| [`psi_live_test.go`](../go/tests/psi_live_test.go) | `sitecrawl` | None | None | Live Google PSI API request test; contains `t.Skip` (`PSI_LIVE_KEY=<key>`) | Environment-gated PageSpeed test | Checkpoint A7 |
-| [`query_test.go`](../go/tests/query_test.go) | `sitecrawl` | None | None | Grid query SQL construction and SQL injection safety; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
-| [`render_test.go`](../go/tests/render_test.go) | `sitecrawl` | None | None | Chrome/Edge headless rendering; uses `newTestService`; contains `t.Skip` if no browser | Transitive test-harness dependency + environment-gated | Checkpoint A6 |
-| [`resume_ids_test.go`](../go/tests/resume_ids_test.go) | `sitecrawl` | None | None | URL ID stability across crawl pause and restart; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
-| [`schema_golden_test.go`](../go/tests/schema_golden_test.go) | `sitecrawl` | None | `testutil` (`SchemaGolden`) | SQLite schema migration regression test against golden file | Direct import dependency | Checkpoint A6 |
-| [`seedredirect_test.go`](../go/tests/seedredirect_test.go) | `sitecrawl` | None | None | Initial seed URL 301/302 redirect resolution; uses `newTestService`; contains `t.Skip` | Transitive test-harness dependency | Checkpoint A6 |
-| [`similarity_test.go`](../go/tests/similarity_test.go) | `sitecrawl` | None | None | SimHash duplicate detection tests; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
-| [`sitemap_test.go`](../go/tests/sitemap_test.go) | `sitecrawl` | None | None | Sitemap index, gzip sitemaps, invalid XML tolerance (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
+| [`agent_local_test.go`](../_reference/sitecrawl/tests/agent_local_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | In-memory SQLite search test and AST import validation | Pure/near-pure engine test | Checkpoint A6 |
+| [`cancel_test.go`](../_reference/sitecrawl/tests/cancel_test.go) | `sitecrawl` | None | `core/runs` (`runs.Terminal`) | Crawl cancellation lifecycle; uses `newTestService`; contains `t.Skip` | Transitive test-harness dependency + direct import | Checkpoint A6 |
+| [`crawler_test.go`](../_reference/sitecrawl/tests/crawler_test.go) | `sitecrawl` | None | `core/runs` (`runs.BOMUTF8`) | Core fixture crawl: facets, status codes, canonicals; uses `newTestService` | Transitive test-harness dependency + direct import | Checkpoint A6 |
+| [`credentials_test.go`](../_reference/sitecrawl/tests/credentials_test.go) | `sitecrawl` | None | `core/credset`, `core/httpx` | PageSpeed API key storage vault tests | Direct import dependency (PageSpeed) | Checkpoint A7 |
+| [`customheaders_test.go`](../_reference/sitecrawl/tests/customheaders_test.go) | `sitecrawl` | None | None | Custom HTTP headers forwarding during crawl; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`deferred_test.go`](../_reference/sitecrawl/tests/deferred_test.go) | `sitecrawl` | None | None | 429 Too Many Requests & 503 retry/deferral loop; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`extract_test.go`](../_reference/sitecrawl/tests/extract_test.go) | `sitecrawl` | None | None | HTML extraction: title, meta, canonical, hreflang, schema (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
+| [`fixture_test.go`](../_reference/sitecrawl/tests/fixture_test.go) | `sitecrawl` | None | None | Synthetic site fixture with redirect chains, loops, canonicals | Test fixture helper | Checkpoint A3 / A6 |
+| [`frontier_cap_test.go`](../_reference/sitecrawl/tests/frontier_cap_test.go) | `sitecrawl` | None | None | `MaxURLs` admission boundary enforcement (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
+| [`frontier_test.go`](../_reference/sitecrawl/tests/frontier_test.go) | `sitecrawl` | None | None | FIFO queue, BFS depth order, tracking param stripping (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
+| [`fts_trigger_test.go`](../_reference/sitecrawl/tests/fts_trigger_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | SQLite FTS5 index update triggers; contains `t.Skip` if FTS5 missing | Pure/near-pure engine test | Checkpoint A6 |
+| [`history_test.go`](../_reference/sitecrawl/tests/history_test.go) | `sitecrawl` | None | `core/jobs`, `core/workspace`, `testutil` | Defines `newTestService`; tests run history queries | Transitive test-harness definition + direct import | Checkpoint A6 |
+| [`inspectdb_test.go`](../_reference/sitecrawl/tests/inspectdb_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | Manual crawl DB inspection utility; contains `t.Skip` (`CRAWL_DB=<path>`) | Environment-gated utility | Checkpoint A6 |
+| [`inspectopts_test.go`](../_reference/sitecrawl/tests/inspectopts_test.go) | `sitecrawl` | `modernc.org/sqlite` | None | Manual options inspection utility; contains `t.Skip` (`CRAWL_DB=<path>`) | Environment-gated utility | Checkpoint A6 |
+| [`live_test.go`](../_reference/sitecrawl/tests/live_test.go) | `sitecrawl` | None | `core/jobs`, `core/workspace` | Live web crawl test against external sites; contains `t.Skip` (`CRAWL_LIVE`) | Environment-gated + direct import | Checkpoint A6 |
+| [`pagespeed_test.go`](../_reference/sitecrawl/tests/pagespeed_test.go) | `sitecrawl` | None | `core/credset`, `core/httpx` | PageSpeed pump, concurrency pacing, error handling; uses `newTestService` | Transitive test-harness dependency + direct import | Checkpoint A7 |
+| [`pause_test.go`](../_reference/sitecrawl/tests/pause_test.go) | `sitecrawl` | None | None | Pause and resume lifecycle, frontier preservation; uses `newTestService`; contains `t.Skip` | Transitive test-harness dependency | Checkpoint A6 |
+| [`perf_test.go`](../_reference/sitecrawl/tests/perf_test.go) | `sitecrawl` | None | None | High-concurrency synthetic crawl benchmark; uses `newTestService`; contains `t.Skip` (`CRAWL_PERF=1`) | Transitive test-harness dependency + environment-gated | Checkpoint A6 |
+| [`politeness_test.go`](../_reference/sitecrawl/tests/politeness_test.go) | `sitecrawl` | None | None | Per-host pacing, backoff upon error, `Crawl-delay`; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`psi_live_test.go`](../_reference/sitecrawl/tests/psi_live_test.go) | `sitecrawl` | None | None | Live Google PSI API request test; contains `t.Skip` (`PSI_LIVE_KEY=<key>`) | Environment-gated PageSpeed test | Checkpoint A7 |
+| [`query_test.go`](../_reference/sitecrawl/tests/query_test.go) | `sitecrawl` | None | None | Grid query SQL construction and SQL injection safety; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`render_test.go`](../_reference/sitecrawl/tests/render_test.go) | `sitecrawl` | None | None | Chrome/Edge headless rendering; uses `newTestService`; contains `t.Skip` if no browser | Transitive test-harness dependency + environment-gated | Checkpoint A6 |
+| [`resume_ids_test.go`](../_reference/sitecrawl/tests/resume_ids_test.go) | `sitecrawl` | None | None | URL ID stability across crawl pause and restart; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`schema_golden_test.go`](../_reference/sitecrawl/tests/schema_golden_test.go) | `sitecrawl` | None | `testutil` (`SchemaGolden`) | SQLite schema migration regression test against golden file | Direct import dependency | Checkpoint A6 |
+| [`seedredirect_test.go`](../_reference/sitecrawl/tests/seedredirect_test.go) | `sitecrawl` | None | None | Initial seed URL 301/302 redirect resolution; uses `newTestService`; contains `t.Skip` | Transitive test-harness dependency | Checkpoint A6 |
+| [`similarity_test.go`](../_reference/sitecrawl/tests/similarity_test.go) | `sitecrawl` | None | None | SimHash duplicate detection tests; uses `newTestService` | Transitive test-harness dependency | Checkpoint A6 |
+| [`sitemap_test.go`](../_reference/sitecrawl/tests/sitemap_test.go) | `sitecrawl` | None | None | Sitemap index, gzip sitemaps, invalid XML tolerance (100% stdlib) | Pure/near-pure engine test | Checkpoint A3 / A6 |
 
 #### Summary of Test Classifications (27 Files Total)
 - **Pure / Near-Pure Engine & Fixture Unit Tests (7 files)**: `agent_local_test.go`, `extract_test.go`, `fixture_test.go`, `frontier_cap_test.go`, `frontier_test.go`, `fts_trigger_test.go`, `sitemap_test.go`.

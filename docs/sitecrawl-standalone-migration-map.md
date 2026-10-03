@@ -1074,10 +1074,10 @@ The crawler/audit domain should not need to know which host is active.
 Explicitly treat these behaviors as legacy compatibility:
 
 ```text
-go/engine/issues.go
+_reference/sitecrawl/engine/issues.go (historically go/engine/issues.go)
 legacy severity constants
 legacy indexability verdicts
-legacy issue writes in finalize.go
+legacy issue writes in _reference/sitecrawl/storage/finalize.go
 UI issue taxonomy / translated issue descriptions
 ```
 
@@ -1224,7 +1224,7 @@ Checkpoints A1 (Buildability Inventory), A2 (Scoped Go Module Bootstrap), Coordi
   - Verified sub-second cancellation latency (`TestCancelStopsTheCrawlWithinOneSecond`, ~2ms measured with work in flight).
   - Verified network failure taxonomy (`TestNetworkFailure_ConnectionRefused`, `TestNetworkFailure_Timeout`, `TestNetworkFailure_TLSCertificate`, `TestNetworkFailure_IgnoreSSL`), verifying observation persistence without generating audit findings.
   - Ported FTS5 trigger parity (`TestFTSSurvivesCounterUpdates`, `TestFTSStillFollowsSearchableEdits`, `TestFTSFollowsDeletes`), verifying non-searchable updates do not drop index entries while searchable edits and deletes synchronize.
-  - Locked schema migration sequence immutability via `TestSchemaGolden` with SHA-256 digest `209ab3ee14d732cc16a77c09bc75829f4445d09f680ee708268d69b30717dab0` across all 38 verified statements matching `go/storage/runs.go`.
+  - Locked schema migration sequence immutability via `TestSchemaGolden` with SHA-256 digest `209ab3ee14d732cc16a77c09bc75829f4445d09f680ee708268d69b30717dab0` across all 38 verified statements matching historical `_reference/sitecrawl/storage/runs.go`.
   - Ported environment-independent render gate tests (`TestRenderCapIsEnforced`, `TestRenderPatternGate`) and host-browser E2E rendering (`TestRenderExtractsJSContent`, passing with local browser).
   - Guarded `Runner.Resume` runtime capabilities (`TestResumePageSpeedGuard`, `TestResumeDuplicateAnalysisGuard`, `TestResumeProxyGuard`, `TestResumeProxyAvailable`) ensuring persisted capability requests cannot silently bypass standalone contracts.
 - Checkpoint A6.3 completed the final pre-freeze hardening, legacy reference isolation, full module gate, and standalone core freeze:
@@ -1237,12 +1237,13 @@ Checkpoints A1 (Buildability Inventory), A2 (Scoped Go Module Bootstrap), Coordi
   - Passed full-module gate (`go list ./...`), full test suite (`go test -count=1 ./...`), developer CLI build (`go build ./cmd/sitecrawl-dev`), and linter check (`go vet ./...`).
   - Verified zero prohibited coupling (`onescout/`, `psiPump`, `PSIResult`, `IssueCatalog`, `evaluate(`, `AR-`).
   - Transitioned `README.md` to reflect the frozen standalone core, developer CLI, and historical LibreCrawl / 1Scout provenance.
-  - Created and pushed immutable core freeze tag: `sitecrawl-standalone-core-v1`.
+  - Created and pushed immutable core freeze tag: `sitecrawl-standalone-core-v1` pointing to approved freeze commit `50760ed89f58b4e3abc68614363536c05516e07a`.
+  - Post-freeze documentation corrections align references, paths, and CLI usage; no frozen runtime behavior or code changed, and the tag remains immutable.
 
 ### Milestone Status
 
-- **Checkpoint A6**: **COMPLETE**
-- **Next Milestone**: **Audit V1 Implementation** (Unblocked; NOT started).
+- **Checkpoint A6**: **COMPLETE** (frozen at `sitecrawl-standalone-core-v1`, commit `50760ed`)
+- **Next Milestone**: **Audit V1 Implementation** (Unblocked; NOT started). Next implementation step begins with Evidence Adapter / normalized evidence boundary.
 
 ---
 

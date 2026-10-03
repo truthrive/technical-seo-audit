@@ -16,34 +16,39 @@ The root Go module contains only active, buildable packages:
 
 - `internal/sitecrawl/`: The core standalone crawler engine, coordinator, extraction pipeline, frontier scheduler, robots/sitemap parser, and lifecycle manager.
 - `internal/platform/standalone/`: Standalone SQLite storage drivers, schema migration engine (`Migrate`), and persistence helpers.
-- `cmd/sitecrawl-dev/`: Developer CLI tool for running, inspecting, resuming, and benchmarking crawls.
+- `cmd/sitecrawl-dev/`: Developer CLI tool for running standalone crawls and inspecting progress.
 - `go/deps/httpx/`: Resilient HTTP client utilities, proxy hooks, and private network guards.
 - `go/deps/safe/`: Panic recovery wrappers protecting crawler goroutines.
 - `_reference/sitecrawl/`: Isolated historical reference source (`engine/`, `storage/`, `pagespeed/`, `app-glue/`, `tests/`), ignored by Go toolchain builds.
 
 ## Developer CLI (`cmd/sitecrawl-dev`)
 
-The developer CLI provides local execution and debugging capabilities:
+The developer CLI provides local execution and debugging capabilities for starting standalone crawls.
+
+Flags must precede the positional seed URL per standard Go `flag` parsing:
 
 ```bash
 # Build the CLI
 go build ./cmd/sitecrawl-dev
 
 # Run a basic crawl
-go run ./cmd/sitecrawl-dev crawl https://example.com --db crawl.db --max-urls 500 --max-depth 3
+go run ./cmd/sitecrawl-dev -db crawl.db https://example.com
 
-# Inspect an existing crawl database
-go run ./cmd/sitecrawl-dev inspect crawl.db
-
-# Resume a stopped or paused crawl
-go run ./cmd/sitecrawl-dev resume <run-id> --db crawl.db
+# Expanded invocation with crawler options
+go run ./cmd/sitecrawl-dev -db crawl.db -max-urls 500 -max-depth 3 -concurrency 5 -js -v https://example.com
 ```
+
+### CLI Capabilities & Lifecycle
+
+- **Start Crawl**: The CLI currently starts a crawl from the provided seed URL and prints the JSON summary to stdout. The `-v` flag streams live progress events to stderr.
+- **Lifecycle API**: The core `Runner` API (`internal/sitecrawl`) supports lifecycle operations including in-process pause/resume, graceful stop, and SQLite checkpoint resumption (`Runner.Start`, `CrawlHandle.Pause`, `CrawlHandle.Resume`, `CrawlHandle.Stop`, `Runner.Resume`).
+- **CLI Subcommands**: Checkpoint resume, database inspection, and benchmarking exist in the programmatic core and test suites but are not yet exposed as CLI subcommands.
 
 ### Persistence & Schema
 
 - **Engine**: Pure-Go SQLite (`modernc.org/sqlite`) with WAL mode enabled.
 - **Schema**: 38 deterministic, append-only migration steps validated by golden digest tests (`209ab3ee14d732cc16a77c09bc75829f4445d09f680ee708268d69b30717dab0`).
-- **Data Model**: URL dictionary encoding (`sitecrawl_urls`), page attributes (`sitecrawl_pages`), internal/external link graph (`sitecrawl_links`), and full-text search triggers (`sitecrawl_pages_fts`).
+- **Data Model**: URL dictionary encoding (`sitecrawl_urls`), page attributes (`sitecrawl_pages`), internal/external link graph (`sitecrawl_links`), and full-text search index (`sitecrawl_fts`).
 
 ### Checkpoint & Pause/Resume
 
