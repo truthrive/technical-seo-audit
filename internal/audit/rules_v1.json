@@ -1,0 +1,1672 @@
+[
+  {
+    "rule_id": "AR-ACC-001",
+    "parent_check": "ACC-001",
+    "rule_version": 1,
+    "name": "HTTPS endpoint reachable",
+    "category": "access",
+    "lifecycle": "Crawl",
+    "automation": "deterministic",
+    "default_severity": "P0",
+    "required_inputs": [
+      "site_https_url",
+      "fetch_attempted",
+      "tls_valid",
+      "fetch_error_type",
+      "fetch_status"
+    ],
+    "preconditions": [
+      "HTTPS origin can be derived from project origin."
+    ],
+    "pass_condition": "TLS connection succeeds and an HTTP response is obtained.",
+    "warning_condition": "not used.",
+    "fail_condition": "DNS, connection, or TLS/certificate failure prevents the HTTPS endpoint from returning an HTTP response.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "fetch was required but no usable acquisition result was produced.",
+    "not_applicable_condition": "not used.",
+    "evidence_fields": [
+      "site_https_url",
+      "tls_valid",
+      "fetch_error_type",
+      "fetch_status",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-ACC-002",
+    "parent_check": "ACC-003",
+    "rule_version": 1,
+    "name": "Robots access matches explicit crawl intent",
+    "category": "access",
+    "lifecycle": "Crawl",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "robots_allowed_default",
+      "matched_robots_rule",
+      "expected_crawlable"
+    ],
+    "preconditions": [
+      "robots.txt parsed; expected_crawlable=true explicitly supplied."
+    ],
+    "pass_condition": "URL is allowed for the evaluated crawler.",
+    "warning_condition": "not used.",
+    "fail_condition": "explicit expected_crawlable=true and effective robots policy disallows the URL.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "effective robots decision cannot be obtained.",
+    "not_applicable_condition": "crawl intent was not explicitly supplied.",
+    "evidence_fields": [
+      "url",
+      "expected_crawlable",
+      "robots_allowed_default",
+      "matched_robots_rule",
+      "robots_txt_url",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-ROBOTS-001"
+    ]
+  },
+  {
+    "rule_id": "AR-ACC-003",
+    "parent_check": "ACC-007",
+    "rule_version": 1,
+    "name": "HTTP status matches explicit expected URL state",
+    "category": "access",
+    "lifecycle": "Crawl",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "expected_url_state",
+      "fetch_status",
+      "final_status"
+    ],
+    "preconditions": [
+      "expected_url_state is explicitly live, redirect, or missing."
+    ],
+    "pass_condition": "live -> 2xx; redirect -> 3xx; missing -> final 404/410.",
+    "warning_condition": "not used.",
+    "fail_condition": "obtained response does not match the explicitly supplied expected state.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "response state cannot be obtained.",
+    "not_applicable_condition": "expected state unspecified.",
+    "evidence_fields": [
+      "url",
+      "expected_url_state",
+      "fetch_status",
+      "final_status",
+      "final_url",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-ACC-004",
+    "parent_check": "ACC-007",
+    "rule_version": 1,
+    "name": "Unexpected server-error response",
+    "category": "access",
+    "lifecycle": "Crawl",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "fetch_status"
+    ],
+    "preconditions": [
+      "HTTP response obtained."
+    ],
+    "pass_condition": "status is not 5xx.",
+    "warning_condition": "not used.",
+    "fail_condition": "status is 5xx.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "no HTTP response obtained.",
+    "not_applicable_condition": "not used.",
+    "evidence_fields": [
+      "url",
+      "fetch_status",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-ACC-005",
+    "parent_check": "ACC-002",
+    "rule_version": 1,
+    "name": "Googlebot robots access matches explicit policy",
+    "category": "access",
+    "lifecycle": "Crawl",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "robots_allowed_googlebot",
+      "googlebot_access_policy",
+      "matched_robots_rule"
+    ],
+    "preconditions": [
+      "Googlebot robots policy is parseable."
+    ],
+    "pass_condition": "explicit allow/block policy matches effective robots behavior.",
+    "warning_condition": "Googlebot is disallowed while project policy is unspecified.",
+    "fail_condition": "explicit Googlebot access policy exists and effective robots behavior contradicts it.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "effective Googlebot robots state cannot be calculated.",
+    "not_applicable_condition": "not used.",
+    "evidence_fields": [
+      "url",
+      "googlebot_access_policy",
+      "robots_allowed_googlebot",
+      "matched_robots_rule",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-ACC-006",
+    "parent_check": "ACC-002",
+    "rule_version": 1,
+    "name": "Googlebot profile response anomaly",
+    "category": "access",
+    "lifecycle": "Crawl",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "default_profile_status",
+      "googlebot_profile_status",
+      "default_challenge_detected",
+      "googlebot_challenge_detected"
+    ],
+    "preconditions": [
+      "normal and Googlebot-profile requests attempted."
+    ],
+    "pass_condition": "equivalent accessible response classes and no bot-only challenge observed.",
+    "warning_condition": "Googlebot-profile request receives 403/429/challenge not observed for normal request.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "comparison evidence incomplete.",
+    "not_applicable_condition": "profile comparison not enabled.",
+    "evidence_fields": [
+      "request_profiles",
+      "statuses",
+      "challenge_markers",
+      "captured_response_evidence",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ],
+    "guardrail": "this is an observed profile difference, not proof of actual Googlebot access."
+  },
+  {
+    "rule_id": "AR-ACC-007",
+    "parent_check": "ACC-004",
+    "rule_version": 1,
+    "name": "Blocked CSS/JS resource affects rendered output",
+    "category": "access",
+    "lifecycle": "Render",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "page_url",
+      "resource_url",
+      "resource_type",
+      "resource_robots_allowed",
+      "render_dependency_observed",
+      "render_diff_evidence"
+    ],
+    "preconditions": [
+      "CSS/JS resource referenced by selected rendered page."
+    ],
+    "pass_condition": "resource accessible, or blocked without observed material audited-output dependency.",
+    "warning_condition": "resource blocked but material rendering impact cannot be established.",
+    "fail_condition": "resource blocked and direct render evidence proves loss/change of audited main content or metadata because the resource is unavailable.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "renderer/resource evidence unavailable.",
+    "not_applicable_condition": "no relevant CSS/JS resource.",
+    "evidence_fields": [
+      "page_url",
+      "resource_url",
+      "resource_type",
+      "robots_rule",
+      "render_evidence",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-ACC-008",
+    "parent_check": "ACC-005",
+    "rule_version": 1,
+    "name": "Bot-profile access restriction observed",
+    "category": "access",
+    "lifecycle": "Crawl",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "default_profile_status",
+      "bot_profile_status",
+      "default_challenge_detected",
+      "bot_challenge_detected",
+      "tested_user_agent"
+    ],
+    "preconditions": [
+      "normal and alternate bot-profile requests completed."
+    ],
+    "pass_condition": "no bot-specific access restriction observed.",
+    "warning_condition": "alternate profile receives 403/429/challenge while normal profile remains accessible.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "comparison evidence incomplete.",
+    "not_applicable_condition": "profile comparison disabled.",
+    "evidence_fields": [
+      "request_profiles",
+      "statuses",
+      "challenge_markers",
+      "relevant_headers",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ],
+    "guardrail": "no verified crawler-blocking claim without verified bot identity/log evidence."
+  },
+  {
+    "rule_id": "AR-INDEX-001",
+    "parent_check": "INDEX-001",
+    "rule_version": 1,
+    "name": "Effective noindex conflicts with explicit indexability intent",
+    "category": "index",
+    "lifecycle": "Index",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "effective_noindex",
+      "expected_indexable"
+    ],
+    "preconditions": [
+      "expected_indexable=true explicitly supplied."
+    ],
+    "pass_condition": "no effective noindex.",
+    "warning_condition": "not used.",
+    "fail_condition": "effective noindex exists.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "directives unavailable.",
+    "not_applicable_condition": "expected indexability false or unspecified.",
+    "evidence_fields": [
+      "url",
+      "explicit_intent",
+      "raw_directives",
+      "normalized_directives",
+      "effective_state",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-ROBOTS-001"
+    ]
+  },
+  {
+    "rule_id": "AR-INDEX-002",
+    "parent_check": "INDEX-001",
+    "rule_version": 1,
+    "name": "Conflicting index directives",
+    "category": "index",
+    "lifecycle": "Index",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "robots_meta_tokens",
+      "x_robots_tokens"
+    ],
+    "preconditions": [
+      "at least one applicable directive parsed."
+    ],
+    "pass_condition": "no contradictory index/noindex intent in the same applicable scope.",
+    "warning_condition": "not used.",
+    "fail_condition": "contradictory index and noindex directives explicitly present in the same applicable scope.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "directives present but not reliably parseable.",
+    "not_applicable_condition": "no robots directive exists.",
+    "evidence_fields": [
+      "original_directive_strings",
+      "parsed_tokens",
+      "source_location_header",
+      "url",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-ROBOTS-001"
+    ]
+  },
+  {
+    "rule_id": "AR-INDEX-003",
+    "parent_check": "INDEX-001",
+    "rule_version": 1,
+    "name": "Malformed or unsupported robots directive",
+    "category": "index",
+    "lifecycle": "Index",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "robots_directive_tokens",
+      "robots_parse_errors"
+    ],
+    "preconditions": [
+      "meta robots or X-Robots-Tag exists."
+    ],
+    "pass_condition": "all directive tokens are recognized by the supported V1 directive registry.",
+    "warning_condition": "malformed or unsupported token observed.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "raw directive unavailable.",
+    "not_applicable_condition": "no directive exists.",
+    "evidence_fields": [
+      "raw_directive",
+      "parsed_tokens",
+      "unsupported_tokens",
+      "parse_error",
+      "source_location",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-ROBOTS-001"
+    ]
+  },
+  {
+    "rule_id": "AR-INDEX-004",
+    "parent_check": "INDEX-004",
+    "rule_version": 1,
+    "name": "Known-missing probe resolves to 404/410",
+    "category": "index",
+    "lifecycle": "Index",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "missing_probe_url",
+      "probe_final_status",
+      "probe_final_url"
+    ],
+    "preconditions": [
+      "audit generated a collision-resistant URL expected not to exist."
+    ],
+    "pass_condition": "final response is 404 or 410.",
+    "warning_condition": "not used.",
+    "fail_condition": "usable final response is obtained but final status is not 404/410.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "probe cannot complete.",
+    "not_applicable_condition": "not used.",
+    "evidence_fields": [
+      "probe_url",
+      "redirect_path",
+      "final_url",
+      "final_status",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-INDEX-005",
+    "parent_check": "INDEX-007",
+    "rule_version": 1,
+    "name": "Snippet restriction conflicts with snippet policy",
+    "category": "index",
+    "lifecycle": "Index",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "nosnippet",
+      "max_snippet",
+      "data_nosnippet_count",
+      "snippet_policy"
+    ],
+    "preconditions": [
+      "snippet directives extracted."
+    ],
+    "pass_condition": "no restriction exists, or explicit policy permits observed restriction.",
+    "warning_condition": "restriction exists while snippet policy is unspecified.",
+    "fail_condition": "snippet_policy=allow_unrestricted and a snippet restriction is present.",
+    "manual_review_condition": "restriction scope requires human interpretation, e.g. block-level data-nosnippet.",
+    "unknown_condition": "snippet directives unavailable.",
+    "not_applicable_condition": "explicit policy intentionally requires observed restriction.",
+    "evidence_fields": [
+      "raw_directives",
+      "normalized_restriction_value",
+      "affected_element_count",
+      "explicit_policy",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-ROBOTS-001"
+    ],
+    "guardrail": "relaxing snippet controls never guarantees AI citation."
+  },
+  {
+    "rule_id": "AR-INDEX-006",
+    "parent_check": "INDEX-003",
+    "rule_version": 1,
+    "name": "200 response matches known 404 template",
+    "category": "index",
+    "lifecycle": "Index",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "fetch_status",
+      "content_fingerprint",
+      "known_404_content_fingerprint",
+      "known_404_probe_status"
+    ],
+    "preconditions": [
+      "target is 200; known missing probe returned 404/410 and its fingerprint was captured."
+    ],
+    "pass_condition": "target fingerprint differs from known 404-template fingerprint.",
+    "warning_condition": "target returns 200 and exactly matches known 404-template fingerprint.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "reliable comparison unavailable.",
+    "not_applicable_condition": "target is not 200.",
+    "evidence_fields": [
+      "url",
+      "status",
+      "content_fingerprint",
+      "known_404_content_fingerprint",
+      "probe_url",
+      "probe_status",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-CANON-001",
+    "parent_check": "CANON-001",
+    "rule_version": 1,
+    "name": "Origin variants normalize to preferred origin",
+    "category": "canonical",
+    "lifecycle": "Consolidate",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "preferred_origin",
+      "origin_variant",
+      "variant_fetch_status",
+      "variant_final_url",
+      "redirect_hops"
+    ],
+    "preconditions": [
+      "explicit preferred origin; evaluated non-preferred variant returns an HTTP response."
+    ],
+    "pass_condition": "non-preferred variant permanently redirects via 301/308 to preferred origin.",
+    "warning_condition": "preferred origin reached only through temporary redirect.",
+    "fail_condition": "non-preferred variant remains 2xx or resolves to a different origin.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "preferred origin/variant cannot be evaluated.",
+    "not_applicable_condition": "evaluated origin already preferred.",
+    "evidence_fields": [
+      "preferred_origin",
+      "origin_variant",
+      "redirect_hops",
+      "final_url",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-CANONICAL-001"
+    ]
+  },
+  {
+    "rule_id": "AR-CANON-002",
+    "parent_check": "CANON-002",
+    "rule_version": 1,
+    "name": "Trailing-slash pair is consistently normalized",
+    "category": "canonical",
+    "lifecycle": "Consolidate",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "slash_url",
+      "non_slash_url",
+      "slash_response_state",
+      "non_slash_response_state",
+      "redirect_paths",
+      "normalized_content_hash"
+    ],
+    "preconditions": [
+      "both variants evaluable."
+    ],
+    "pass_condition": "one variant is final 2xx and the alternative permanently redirects directly to it.",
+    "warning_condition": "both are 2xx but hashes differ, or normalization is inconsistent without proving duplication.",
+    "fail_condition": "both variants are 2xx with identical normalized content hashes.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "either variant cannot be evaluated.",
+    "not_applicable_condition": "no meaningful slash pair.",
+    "evidence_fields": [
+      "slash_url",
+      "non_slash_url",
+      "statuses",
+      "redirect_paths",
+      "normalized_hashes",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-CANON-003",
+    "parent_check": "CANON-003",
+    "rule_version": 1,
+    "name": "Canonical declaration missing",
+    "category": "canonical",
+    "lifecycle": "Consolidate",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "fetch_status",
+      "content_type",
+      "canonical_values"
+    ],
+    "preconditions": [
+      "final response is 2xx HTML."
+    ],
+    "pass_condition": "at least one canonical declaration present.",
+    "warning_condition": "no canonical declaration present.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "HTML/head extraction failed.",
+    "not_applicable_condition": "non-HTML or non-2xx.",
+    "evidence_fields": [
+      "url",
+      "fetch_status",
+      "canonical_count",
+      "canonical_values",
+      "canonical_source",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-CANONICAL-001"
+    ]
+  },
+  {
+    "rule_id": "AR-CANON-004",
+    "parent_check": "CANON-003",
+    "rule_version": 1,
+    "name": "Multiple canonical declarations",
+    "category": "canonical",
+    "lifecycle": "Consolidate",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "canonical_values",
+      "normalized_canonical_values"
+    ],
+    "preconditions": [
+      "at least one canonical declaration exists."
+    ],
+    "pass_condition": "exactly one declaration.",
+    "warning_condition": "multiple declarations normalize to the same target.",
+    "fail_condition": "more than one distinct normalized canonical target.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "declarations cannot be normalized.",
+    "not_applicable_condition": "no canonical exists.",
+    "evidence_fields": [
+      "raw_declarations",
+      "normalized_declarations",
+      "canonical_count",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-CANONICAL-001"
+    ]
+  },
+  {
+    "rule_id": "AR-CANON-005",
+    "parent_check": "CANON-003",
+    "rule_version": 1,
+    "name": "Canonical URL is syntactically resolvable",
+    "category": "canonical",
+    "lifecycle": "Consolidate",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "canonical_raw",
+      "canonical_resolved_url",
+      "canonical_parse_error"
+    ],
+    "preconditions": [
+      "exactly one canonical declaration exists."
+    ],
+    "pass_condition": "value resolves to valid HTTP(S) URL.",
+    "warning_condition": "not used.",
+    "fail_condition": "value cannot be resolved as a valid canonical URL.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "canonical source cannot be read.",
+    "not_applicable_condition": "no single canonical declaration.",
+    "evidence_fields": [
+      "raw_value",
+      "base_url",
+      "resolved_value",
+      "parse_error",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-CANONICAL-001"
+    ]
+  },
+  {
+    "rule_id": "AR-CANON-006",
+    "parent_check": "CANON-003",
+    "rule_version": 1,
+    "name": "Canonical target returns final 200",
+    "category": "canonical",
+    "lifecycle": "Consolidate",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "canonical_resolved_url",
+      "canonical_target_status"
+    ],
+    "preconditions": [
+      "exactly one valid canonical target and target fetch attempted."
+    ],
+    "pass_condition": "target directly returns 200.",
+    "warning_condition": "not used.",
+    "fail_condition": "target returns 3xx, 4xx, or 5xx.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "target cannot be fetched.",
+    "not_applicable_condition": "no valid canonical target.",
+    "evidence_fields": [
+      "source_url",
+      "canonical_url",
+      "target_status",
+      "final_url",
+      "fetch_error",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-CANONICAL-001"
+    ]
+  },
+  {
+    "rule_id": "AR-CANON-007",
+    "parent_check": "CANON-003",
+    "rule_version": 1,
+    "name": "Canonical target is not noindex",
+    "category": "canonical",
+    "lifecycle": "Consolidate",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "canonical_resolved_url",
+      "canonical_target_status",
+      "canonical_target_effective_noindex"
+    ],
+    "preconditions": [
+      "canonical target is 200 and index directives extracted."
+    ],
+    "pass_condition": "target has no effective noindex.",
+    "warning_condition": "not used.",
+    "fail_condition": "target has effective noindex.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "target directives unavailable.",
+    "not_applicable_condition": "no usable target.",
+    "evidence_fields": [
+      "target_url",
+      "target_status",
+      "raw_directives",
+      "effective_state",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-CANONICAL-001"
+    ]
+  },
+  {
+    "rule_id": "AR-CANON-008",
+    "parent_check": "CANON-007",
+    "rule_version": 1,
+    "name": "Redirect chain exceeds one hop",
+    "category": "canonical",
+    "lifecycle": "Consolidate",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "redirect_hops"
+    ],
+    "preconditions": [
+      "initial response redirects."
+    ],
+    "pass_condition": "exactly one redirect reaches final destination.",
+    "warning_condition": "not used.",
+    "fail_condition": "two or more redirect hops occur before final destination.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "redirect traversal incomplete.",
+    "not_applicable_condition": "URL does not redirect.",
+    "evidence_fields": [
+      "redirect_chain",
+      "hop_statuses",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-CANON-009",
+    "parent_check": "CANON-007",
+    "rule_version": 1,
+    "name": "Redirect loop detected",
+    "category": "canonical",
+    "lifecycle": "Consolidate",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "redirect_hops",
+      "redirect_loop_detected"
+    ],
+    "preconditions": [
+      "at least one redirect occurs."
+    ],
+    "pass_condition": "no URL repeats in traversal.",
+    "warning_condition": "not used.",
+    "fail_condition": "traversal enters loop.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "traversal incomplete before loop state determined.",
+    "not_applicable_condition": "no redirect.",
+    "evidence_fields": [
+      "redirect_chain",
+      "repeated_url",
+      "repeated_hop",
+      "statuses",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-CANON-010",
+    "parent_check": "CANON-007",
+    "rule_version": 1,
+    "name": "Redirect final target is available",
+    "category": "canonical",
+    "lifecycle": "Consolidate",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "redirect_hops",
+      "final_status",
+      "redirect_loop_detected"
+    ],
+    "preconditions": [
+      "redirect exists and no loop detected."
+    ],
+    "pass_condition": "final destination is 2xx.",
+    "warning_condition": "not used.",
+    "fail_condition": "final destination is 4xx or 5xx.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "final destination cannot be resolved.",
+    "not_applicable_condition": "no initial redirect.",
+    "evidence_fields": [
+      "source_url",
+      "redirect_chain",
+      "final_url",
+      "final_status",
+      "fetch_error",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-CANON-011",
+    "parent_check": "CANON-006",
+    "rule_version": 1,
+    "name": "Pagination exposes crawlable next-page link",
+    "category": "canonical",
+    "lifecycle": "Discover",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "pagination_detected",
+      "has_next_page",
+      "next_page_url",
+      "next_page_element_tag",
+      "next_page_href"
+    ],
+    "preconditions": [
+      "paginated sequence identified and current URL not final page."
+    ],
+    "pass_condition": "next page exposed through crawlable <a href>.",
+    "warning_condition": "next page appears to depend only on script/event/infinite-scroll interaction.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "pagination/link evidence unavailable.",
+    "not_applicable_condition": "no pagination or final page.",
+    "evidence_fields": [
+      "sequence_url",
+      "current_url",
+      "next_url",
+      "element_tag",
+      "href",
+      "discovery_evidence",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-CANONICAL-001"
+    ],
+    "guardrail": "deprecated rel=prev/next is not required."
+  },
+  {
+    "rule_id": "AR-LINK-001",
+    "parent_check": "LINK-001",
+    "rule_version": 1,
+    "name": "Internal navigation target lacks crawlable href",
+    "category": "links",
+    "lifecycle": "Discover",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "source_url",
+      "navigation_candidate",
+      "resolved_internal_target",
+      "element_tag",
+      "href"
+    ],
+    "preconditions": [
+      "internal navigation candidate has resolvable target."
+    ],
+    "pass_condition": "target represented by <a href> with usable URL.",
+    "warning_condition": "navigation works through another mechanism but no crawlable href exposed.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "target/action cannot be determined.",
+    "not_applicable_condition": "not a navigation candidate.",
+    "evidence_fields": [
+      "source_url",
+      "target_url",
+      "element_tag",
+      "href",
+      "element_context",
+      "candidate_reason",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-JS-001"
+    ]
+  },
+  {
+    "rule_id": "AR-LINK-002",
+    "parent_check": "LINK-002",
+    "rule_version": 1,
+    "name": "Internal link targets 3xx",
+    "category": "links",
+    "lifecycle": "Discover",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "source_url",
+      "target_url",
+      "target_status",
+      "anchor_text",
+      "link_location"
+    ],
+    "preconditions": [
+      "resolved target is internal and fetchable."
+    ],
+    "pass_condition": "target is not 3xx.",
+    "warning_condition": "not used.",
+    "fail_condition": "target is 3xx.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "target response unavailable.",
+    "not_applicable_condition": "external/non-HTTP link.",
+    "evidence_fields": [
+      "source_url",
+      "target_url",
+      "target_status",
+      "anchor_text",
+      "link_location",
+      "redirect_target",
+      "final_url",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-LINK-003",
+    "parent_check": "LINK-002",
+    "rule_version": 1,
+    "name": "Internal link targets 4xx",
+    "category": "links",
+    "lifecycle": "Discover",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "source_url",
+      "target_url",
+      "target_status",
+      "anchor_text",
+      "link_location"
+    ],
+    "preconditions": [
+      "resolved target is internal and fetchable."
+    ],
+    "pass_condition": "target is not 4xx.",
+    "warning_condition": "not used.",
+    "fail_condition": "target is 4xx.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "target response unavailable.",
+    "not_applicable_condition": "external/non-HTTP link.",
+    "evidence_fields": [
+      "source_url",
+      "target_url",
+      "target_status",
+      "anchor_text",
+      "link_location",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-LINK-004",
+    "parent_check": "LINK-002",
+    "rule_version": 1,
+    "name": "Internal link targets 5xx",
+    "category": "links",
+    "lifecycle": "Discover",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "source_url",
+      "target_url",
+      "target_status",
+      "anchor_text",
+      "link_location"
+    ],
+    "preconditions": [
+      "resolved target is internal and fetchable."
+    ],
+    "pass_condition": "target is not 5xx.",
+    "warning_condition": "not used.",
+    "fail_condition": "target is 5xx.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "target response unavailable.",
+    "not_applicable_condition": "external/non-HTTP link.",
+    "evidence_fields": [
+      "source_url",
+      "target_url",
+      "target_status",
+      "anchor_text",
+      "link_location",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ]
+  },
+  {
+    "rule_id": "AR-LINK-005",
+    "parent_check": "LINK-003",
+    "rule_version": 1,
+    "name": "Orphan candidate relative to supplied discovery sources",
+    "category": "links",
+    "lifecycle": "Discover",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "discovery_sources",
+      "crawl_inlink_count",
+      "is_start_url",
+      "crawl_complete"
+    ],
+    "preconditions": [
+      "URL is in at least one supplied non-crawl source and is not crawl start URL."
+    ],
+    "pass_condition": "at least one crawlable internal inlink found.",
+    "warning_condition": "zero crawlable internal inlinks found.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "crawl graph incomplete.",
+    "not_applicable_condition": "no supplied supplemental discovery source.",
+    "evidence_fields": [
+      "url",
+      "discovery_source_memberships",
+      "inlink_count",
+      "inlink_samples",
+      "crawl_completeness",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ],
+    "guardrail": "wording must remain “orphan relative to supplied discovery sources”."
+  },
+  {
+    "rule_id": "AR-LINK-006",
+    "parent_check": "LINK-004",
+    "rule_version": 1,
+    "name": "Priority-page crawl depth review",
+    "category": "links",
+    "lifecycle": "Discover",
+    "automation": "manual",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "crawl_depth",
+      "priority_page"
+    ],
+    "preconditions": [
+      "priority_page=true explicitly supplied."
+    ],
+    "pass_condition": "reviewer decision only.",
+    "warning_condition": "not used.",
+    "fail_condition": "reviewer decision only.",
+    "manual_review_condition": "preconditions met; surface depth/path with no universal threshold.",
+    "unknown_condition": "depth unavailable due incomplete discovery/crawl evidence.",
+    "not_applicable_condition": "page not explicitly marked priority.",
+    "evidence_fields": [
+      "url",
+      "crawl_depth",
+      "shortest_discovered_path",
+      "priority_page",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-INTERNAL-CHECKLIST-001"
+    ],
+    "guardrail": "no universal depth > 3 = FAIL rule."
+  },
+  {
+    "rule_id": "AR-DISC-001",
+    "parent_check": "DISC-001",
+    "rule_version": 1,
+    "name": "Sitemap presence matches project policy",
+    "category": "sitemaps",
+    "lifecycle": "Discover",
+    "automation": "assisted",
+    "default_severity": "P1",
+    "required_inputs": [
+      "discovered_sitemap_urls",
+      "sitemap_expected",
+      "sitemap_discovery_complete"
+    ],
+    "preconditions": [
+      "root/robots sitemap discovery sources evaluated."
+    ],
+    "pass_condition": "one or more sitemap URLs discovered.",
+    "warning_condition": "none found and sitemap_expected=true.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "none found and policy unspecified.",
+    "unknown_condition": "discovery could not complete.",
+    "not_applicable_condition": "sitemap_expected=false.",
+    "evidence_fields": [
+      "discovered_sitemap_list",
+      "discovery_sources_checked",
+      "explicit_policy",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-SITEMAP-001"
+    ]
+  },
+  {
+    "rule_id": "AR-DISC-002",
+    "parent_check": "DISC-002",
+    "rule_version": 1,
+    "name": "Sitemap document returns 200",
+    "category": "sitemaps",
+    "lifecycle": "Discover",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "sitemap_url",
+      "sitemap_fetch_status"
+    ],
+    "preconditions": [
+      "sitemap discovered or explicitly supplied."
+    ],
+    "pass_condition": "response is 200.",
+    "warning_condition": "not used.",
+    "fail_condition": "HTTP response is non-200.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "request fails before HTTP response.",
+    "not_applicable_condition": "not used.",
+    "evidence_fields": [
+      "sitemap_url",
+      "fetch_status",
+      "fetch_error",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-SITEMAP-001"
+    ]
+  },
+  {
+    "rule_id": "AR-DISC-003",
+    "parent_check": "DISC-002",
+    "rule_version": 1,
+    "name": "Sitemap is parseable",
+    "category": "sitemaps",
+    "lifecycle": "Discover",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "sitemap_url",
+      "sitemap_fetch_status",
+      "sitemap_parse_status",
+      "sitemap_parse_error"
+    ],
+    "preconditions": [
+      "sitemap returned 200 and body retrieved."
+    ],
+    "pass_condition": "parses as supported sitemap or sitemap index.",
+    "warning_condition": "not used.",
+    "fail_condition": "retrieved document is malformed/unparseable.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "parser could not execute.",
+    "not_applicable_condition": "body not successfully retrieved.",
+    "evidence_fields": [
+      "sitemap_url",
+      "parser_result",
+      "parse_error",
+      "document_type",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-SITEMAP-001"
+    ]
+  },
+  {
+    "rule_id": "AR-DISC-004",
+    "parent_check": "DISC-002",
+    "rule_version": 1,
+    "name": "Sitemap-listed URL returns final 200",
+    "category": "sitemaps",
+    "lifecycle": "Discover",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "sitemap_url",
+      "listed_url",
+      "listed_url_status"
+    ],
+    "preconditions": [
+      "URL parsed from sitemap."
+    ],
+    "pass_condition": "listed URL directly returns 200.",
+    "warning_condition": "not used.",
+    "fail_condition": "listed URL returns 3xx/4xx/5xx.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "listed URL cannot be fetched.",
+    "not_applicable_condition": "not used.",
+    "evidence_fields": [
+      "sitemap_url",
+      "listed_url",
+      "status",
+      "redirect_evidence",
+      "fetch_evidence",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-SITEMAP-001",
+      "SRC-GOOGLE-CANONICAL-001"
+    ]
+  },
+  {
+    "rule_id": "AR-DISC-005",
+    "parent_check": "DISC-002",
+    "rule_version": 1,
+    "name": "Sitemap-listed URL is not noindex",
+    "category": "sitemaps",
+    "lifecycle": "Discover",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "sitemap_url",
+      "listed_url",
+      "listed_url_status",
+      "listed_url_effective_noindex"
+    ],
+    "preconditions": [
+      "listed URL is 200 and directives extractable."
+    ],
+    "pass_condition": "no effective noindex.",
+    "warning_condition": "not used.",
+    "fail_condition": "effective noindex exists.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "directives unavailable.",
+    "not_applicable_condition": "listed URL not usable 200 HTML target.",
+    "evidence_fields": [
+      "sitemap_url",
+      "listed_url",
+      "robots_sources",
+      "robots_tokens",
+      "effective_state",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-SITEMAP-001",
+      "SRC-GOOGLE-CANONICAL-001"
+    ]
+  },
+  {
+    "rule_id": "AR-DISC-006",
+    "parent_check": "DISC-002",
+    "rule_version": 1,
+    "name": "Sitemap-listed URL canonicalizes to itself when canonical is declared",
+    "category": "sitemaps",
+    "lifecycle": "Discover",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "sitemap_url",
+      "listed_url",
+      "listed_url_canonical"
+    ],
+    "preconditions": [
+      "listed URL declares exactly one valid canonical."
+    ],
+    "pass_condition": "normalized canonical equals listed URL.",
+    "warning_condition": "not used.",
+    "fail_condition": "normalized canonical points elsewhere.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "canonical cannot be resolved.",
+    "not_applicable_condition": "no usable canonical declaration.",
+    "evidence_fields": [
+      "sitemap_url",
+      "listed_url",
+      "canonical_raw_value",
+      "canonical_resolved_value",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-SITEMAP-001",
+      "SRC-GOOGLE-CANONICAL-001"
+    ]
+  },
+  {
+    "rule_id": "AR-ENTITY-001",
+    "parent_check": "ENTITY-001",
+    "rule_version": 1,
+    "name": "Structured-data block parses successfully",
+    "category": "structured_data",
+    "lifecycle": "Retrieve",
+    "automation": "deterministic",
+    "default_severity": "P2",
+    "required_inputs": [
+      "url",
+      "structured_block_id",
+      "structured_format",
+      "structured_raw",
+      "structured_parse_status",
+      "structured_parse_error"
+    ],
+    "preconditions": [
+      "JSON-LD, Microdata, or RDFa block detected."
+    ],
+    "pass_condition": "block parses successfully in supported parser.",
+    "warning_condition": "not used.",
+    "fail_condition": "reproducible syntax/extraction errors prevent parsing.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "parser cannot execute.",
+    "not_applicable_condition": "no structured-data block exists.",
+    "evidence_fields": [
+      "structured_block_id",
+      "structured_format",
+      "raw_location",
+      "parser_status",
+      "parse_error",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-STRUCTURED-001",
+      "SRC-SCHEMA-VALIDATOR-001"
+    ],
+    "guardrail": "V1 does not infer page-type appropriateness or special GEO schema requirements."
+  },
+  {
+    "rule_id": "AR-RENDER-001",
+    "parent_check": "RENDER-002",
+    "rule_version": 1,
+    "name": "Title changes after render",
+    "category": "render",
+    "lifecycle": "Render",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "title_raw",
+      "title_rendered"
+    ],
+    "preconditions": [
+      "raw and rendered observations are available for a URL selected for rendering."
+    ],
+    "pass_condition": "normalized title values equal.",
+    "warning_condition": "title values differ.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "rendering requested but required raw/rendered evidence unavailable.",
+    "not_applicable_condition": "page not selected for rendering.",
+    "evidence_fields": [
+      "title_raw",
+      "title_rendered",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-JS-001"
+    ],
+    "guardrail": "never convert an observed raw/render difference into “Google cannot render this page” without platform-specific evidence."
+  },
+  {
+    "rule_id": "AR-RENDER-002",
+    "parent_check": "RENDER-002",
+    "rule_version": 1,
+    "name": "Canonical changes after render",
+    "category": "render",
+    "lifecycle": "Render",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "canonical_raw",
+      "canonical_rendered"
+    ],
+    "preconditions": [
+      "raw and rendered observations are available for a URL selected for rendering."
+    ],
+    "pass_condition": "normalized canonical sets equal.",
+    "warning_condition": "canonical sets differ.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "rendering requested but required raw/rendered evidence unavailable.",
+    "not_applicable_condition": "page not selected for rendering.",
+    "evidence_fields": [
+      "canonical_raw_set",
+      "canonical_rendered_set",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-JS-001"
+    ],
+    "guardrail": "never convert an observed raw/render difference into “Google cannot render this page” without platform-specific evidence."
+  },
+  {
+    "rule_id": "AR-RENDER-003",
+    "parent_check": "RENDER-002",
+    "rule_version": 1,
+    "name": "Robots directives change after render",
+    "category": "render",
+    "lifecycle": "Render",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "meta_robots_raw",
+      "meta_robots_rendered"
+    ],
+    "preconditions": [
+      "raw and rendered observations are available for a URL selected for rendering."
+    ],
+    "pass_condition": "normalized effective directive sets equal.",
+    "warning_condition": "directive sets differ.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "rendering requested but required raw/rendered evidence unavailable.",
+    "not_applicable_condition": "page not selected for rendering.",
+    "evidence_fields": [
+      "raw_directives",
+      "rendered_directives",
+      "normalized_tokens",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-JS-001"
+    ],
+    "guardrail": "never convert an observed raw/render difference into “Google cannot render this page” without platform-specific evidence."
+  },
+  {
+    "rule_id": "AR-RENDER-004",
+    "parent_check": "RENDER-001",
+    "rule_version": 1,
+    "name": "H1 set changes after render",
+    "category": "render",
+    "lifecycle": "Render",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "h1_raw",
+      "h1_rendered"
+    ],
+    "preconditions": [
+      "raw and rendered observations are available for a URL selected for rendering."
+    ],
+    "pass_condition": "normalized H1 sets equal.",
+    "warning_condition": "H1 sets differ.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "rendering requested but required raw/rendered evidence unavailable.",
+    "not_applicable_condition": "page not selected for rendering.",
+    "evidence_fields": [
+      "h1_raw",
+      "h1_rendered",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-JS-001"
+    ],
+    "guardrail": "never convert an observed raw/render difference into “Google cannot render this page” without platform-specific evidence."
+  },
+  {
+    "rule_id": "AR-RENDER-005",
+    "parent_check": "RENDER-001",
+    "rule_version": 1,
+    "name": "Main-text presence changes after render",
+    "category": "render",
+    "lifecycle": "Render",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "main_text_present_raw",
+      "main_text_present_rendered"
+    ],
+    "preconditions": [
+      "raw and rendered observations are available for a URL selected for rendering."
+    ],
+    "pass_condition": "main-text presence state equal.",
+    "warning_condition": "main-text presence differs.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "rendering requested but required raw/rendered evidence unavailable.",
+    "not_applicable_condition": "page not selected for rendering.",
+    "evidence_fields": [
+      "raw_main_text_present",
+      "rendered_main_text_present",
+      "text_signal_evidence",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-JS-001"
+    ],
+    "guardrail": "never convert an observed raw/render difference into “Google cannot render this page” without platform-specific evidence."
+  },
+  {
+    "rule_id": "AR-RENDER-006",
+    "parent_check": "RENDER-001",
+    "rule_version": 1,
+    "name": "Crawlable internal-link set changes after render",
+    "category": "render",
+    "lifecycle": "Render",
+    "automation": "deterministic",
+    "default_severity": "P1",
+    "required_inputs": [
+      "url",
+      "internal_links_raw",
+      "internal_links_rendered"
+    ],
+    "preconditions": [
+      "raw and rendered observations are available for a URL selected for rendering."
+    ],
+    "pass_condition": "normalized crawlable internal-link sets equal.",
+    "warning_condition": "link sets differ.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "rendering requested but required raw/rendered evidence unavailable.",
+    "not_applicable_condition": "page not selected for rendering.",
+    "evidence_fields": [
+      "raw_link_set",
+      "rendered_link_set",
+      "added_urls",
+      "removed_urls",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-GOOGLE-JS-001"
+    ],
+    "guardrail": "never convert an observed raw/render difference into “Google cannot render this page” without platform-specific evidence."
+  },
+  {
+    "rule_id": "AR-AI-001",
+    "parent_check": "AI-001",
+    "rule_version": 1,
+    "name": "OAI-SearchBot robots access matches project policy",
+    "category": "ai_policy",
+    "lifecycle": "Crawl",
+    "automation": "assisted",
+    "default_severity": "P2",
+    "required_inputs": [
+      "url",
+      "robots_allowed_oai_searchbot",
+      "oai_searchbot_access_policy",
+      "matched_robots_rule"
+    ],
+    "preconditions": [
+      "OAI-SearchBot robots policy can be evaluated."
+    ],
+    "pass_condition": "explicit allow/block policy matches effective robots behavior.",
+    "warning_condition": "OAI-SearchBot blocked while project policy unspecified.",
+    "fail_condition": "explicit project policy exists and robots configuration contradicts it.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "effective robots state unavailable.",
+    "not_applicable_condition": "not used.",
+    "evidence_fields": [
+      "url",
+      "project_policy",
+      "effective_rule",
+      "robots_source",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-OPENAI-BOTS-001"
+    ],
+    "guardrail": "FAIL means configuration contradicts explicit project policy; it is not a ChatGPT ranking/citation failure."
+  },
+  {
+    "rule_id": "AR-AI-002",
+    "parent_check": "AI-001",
+    "rule_version": 1,
+    "name": "OAI-SearchBot profile encounters access anomaly",
+    "category": "ai_policy",
+    "lifecycle": "Crawl",
+    "automation": "assisted",
+    "default_severity": "P2",
+    "required_inputs": [
+      "url",
+      "default_profile_status",
+      "oai_profile_status",
+      "default_challenge_detected",
+      "oai_challenge_detected"
+    ],
+    "preconditions": [
+      "default and OAI-profile requests attempted."
+    ],
+    "pass_condition": "no OAI-specific anomaly observed.",
+    "warning_condition": "OAI profile receives 403/429/challenge while normal request does not.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "not used.",
+    "unknown_condition": "comparison incomplete.",
+    "not_applicable_condition": "profile testing disabled.",
+    "evidence_fields": [
+      "request_profiles",
+      "statuses",
+      "challenge_markers",
+      "relevant_headers",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-OPENAI-BOTS-001"
+    ],
+    "guardrail": "user-agent profile is not verified crawler identity."
+  },
+  {
+    "rule_id": "AR-AI-003",
+    "parent_check": "AI-002",
+    "rule_version": 1,
+    "name": "GPTBot configuration matches explicit training policy",
+    "category": "ai_policy",
+    "lifecycle": "Crawl",
+    "automation": "assisted",
+    "default_severity": "P2",
+    "required_inputs": [
+      "robots_allowed_gptbot",
+      "gptbot_training_policy",
+      "robots_allowed_oai_searchbot"
+    ],
+    "preconditions": [
+      "GPTBot robots state can be evaluated."
+    ],
+    "pass_condition": "explicit allow/block training policy matches effective GPTBot robots behavior.",
+    "warning_condition": "explicit training policy conflicts with actual GPTBot configuration.",
+    "fail_condition": "not used.",
+    "manual_review_condition": "training policy not supplied.",
+    "unknown_condition": "GPTBot robots state unavailable.",
+    "not_applicable_condition": "not used.",
+    "evidence_fields": [
+      "training_policy",
+      "gptbot_effective_rule",
+      "oai_searchbot_effective_rule",
+      "robots_source",
+      "observed_at"
+    ],
+    "source_refs": [
+      "SRC-OPENAI-BOTS-001"
+    ],
+    "guardrail": "GPTBot blocked can be PASS when policy is to block; it never implies ChatGPT Search is blocked."
+  }
+]
