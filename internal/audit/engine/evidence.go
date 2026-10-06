@@ -41,12 +41,18 @@ func NewEvidenceIndex(snapshot *audit.EvidenceSnapshot) (*EvidenceIndex, error) 
 
 	bySubject := make(map[audit.EvaluationSubjectType]map[string]map[string][]audit.NormalizedObservation)
 	subjectSet := make(map[audit.EvaluationSubjectType]map[string]struct{})
+	obsIDSet := make(map[audit.ObservationID]struct{}, len(snapshot.NormalizedObservations))
 
 	for i, obs := range snapshot.NormalizedObservations {
 		// Validate observation integrity
 		if obs.ObservationID == "" {
 			return nil, fmt.Errorf("%w: observation at index %d has empty observation_id", ErrInvalidObservation, i)
 		}
+		if _, exists := obsIDSet[obs.ObservationID]; exists {
+			return nil, fmt.Errorf("%w: duplicate observation_id %q", ErrInvalidObservation, obs.ObservationID)
+		}
+		obsIDSet[obs.ObservationID] = struct{}{}
+
 		if obs.AuditRunID != snapshot.AuditRunID {
 			return nil, fmt.Errorf("%w: observation %q audit_run_id %q does not match snapshot audit_run_id %q",
 				ErrInvalidObservation, obs.ObservationID, obs.AuditRunID, snapshot.AuditRunID)

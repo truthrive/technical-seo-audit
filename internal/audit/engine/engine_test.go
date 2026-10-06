@@ -146,6 +146,25 @@ func TestEngine_ObservationValidationGuards(t *testing.T) {
 	if !errors.Is(err, engine.ErrInvalidObservation) {
 		t.Errorf("expected ErrInvalidObservation for invalid DerivationType, got %v", err)
 	}
+
+	// 2e. Duplicate ObservationID
+	snapDupObs := newValidFrozenSnapshot()
+	snapDupObs.NormalizedObservations = append(snapDupObs.NormalizedObservations, audit.NormalizedObservation{
+		ObservationID:      snapDupObs.NormalizedObservations[0].ObservationID, // duplicate!
+		AuditRunID:         "audit:run:1",
+		SnapshotID:         "snap:test:1",
+		SubjectType:        audit.SubjectURL,
+		SubjectRef:         "url:audit:run:1:2",
+		Field:              "http_status",
+		Value:              "200",
+		DerivationType:     audit.DerivationDirect,
+		SourceEvidenceRefs: []string{"sitecrawl_pages:run:1"},
+		ObservedAt:         time.Now().UTC(),
+	})
+	_, err = eng.EvaluateRule(ctx, snapDupObs, "AR-ACC-004")
+	if !errors.Is(err, engine.ErrInvalidObservation) {
+		t.Errorf("expected ErrInvalidObservation for duplicate ObservationID, got %v", err)
+	}
 }
 
 // 3. Rule selection behavior
@@ -283,16 +302,26 @@ func TestEngine_EvaluationDeterminism(t *testing.T) {
 	}
 	snap.NormalizedObservations = append(snap.NormalizedObservations, extraObs...)
 
+	snap1 := snap
+
+	// Construct snap2 with the same observations in reversed order to assert order independence
+	snap2 := *snap
+	reversedObs := make([]audit.NormalizedObservation, len(snap.NormalizedObservations))
+	for i, o := range snap.NormalizedObservations {
+		reversedObs[len(snap.NormalizedObservations)-1-i] = o
+	}
+	snap2.NormalizedObservations = reversedObs
+
 	ctx := context.Background()
 
-	res1, err := eng.EvaluateRule(ctx, snap, "AR-ACC-004")
+	res1, err := eng.EvaluateRule(ctx, snap1, "AR-ACC-004")
 	if err != nil {
-		t.Fatalf("first evaluation failed: %v", err)
+		t.Fatalf("evaluation on snap1 failed: %v", err)
 	}
 
-	res2, err := eng.EvaluateRule(ctx, snap, "AR-ACC-004")
+	res2, err := eng.EvaluateRule(ctx, &snap2, "AR-ACC-004")
 	if err != nil {
-		t.Fatalf("second evaluation failed: %v", err)
+		t.Fatalf("evaluation on snap2 (reversed observation order) failed: %v", err)
 	}
 
 	if len(res1) != len(res2) {

@@ -169,3 +169,206 @@ func TestAR_ACC_004_StatusEvaluation(t *testing.T) {
 		})
 	}
 }
+
+// Helper to construct a frozen snapshot with arbitrary URL and status observations for testing input resolution.
+func newSnapshotForInputs(subjectRef string, urls []string, statuses []string) *audit.EvidenceSnapshot {
+	now := time.Now().UTC()
+	var obs []audit.NormalizedObservation
+
+	for i, u := range urls {
+		obs = append(obs, audit.NormalizedObservation{
+			ObservationID:      audit.ObservationID(fmt.Sprintf("obs:url:%s:%d", subjectRef, i)),
+			AuditRunID:         "audit:run:inputs",
+			SnapshotID:         "snap:run:inputs",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         subjectRef,
+			Field:              "url_identity",
+			Value:              u,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"sitecrawl_pages:test"},
+			ObservedAt:         now,
+		})
+	}
+
+	for i, st := range statuses {
+		obs = append(obs, audit.NormalizedObservation{
+			ObservationID:      audit.ObservationID(fmt.Sprintf("obs:st:%s:%d", subjectRef, i)),
+			AuditRunID:         "audit:run:inputs",
+			SnapshotID:         "snap:run:inputs",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         subjectRef,
+			Field:              "http_status",
+			Value:              st,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"sitecrawl_pages:test"},
+			ObservedAt:         now,
+		})
+	}
+
+	return &audit.EvidenceSnapshot{
+		SnapshotID:             "snap:run:inputs",
+		AuditRunID:             "audit:run:inputs",
+		SnapshotStatus:         audit.SnapshotFrozen,
+		NormalizationVersion:   "v1.2.0",
+		CrawlComplete:          true,
+		CreatedAt:              now.Add(-1 * time.Minute),
+		FrozenAt:               &now,
+		NormalizedObservations: obs,
+	}
+}
+
+func TestAR_ACC_004_URLInputResolution(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	ctx := context.Background()
+	subjectRef := "url:audit:run:inputs:1"
+
+	t.Run("missing url_identity with status 200 -> UNKNOWN", func(t *testing.T) {
+		snap := newSnapshotForInputs(subjectRef, nil, []string{"200"})
+		results, err := eng.EvaluateRule(ctx, snap, "AR-ACC-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		r := results[0]
+		if r.Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for missing URL, got %s", r.Status)
+		}
+		if r.Status == audit.StatusPass || r.Status == audit.StatusFail {
+			t.Errorf("missing URL must NEVER produce PASS or FAIL")
+		}
+		if r.ObservedSummary != "Required URL identity evidence is unavailable." {
+			t.Errorf("expected summary 'Required URL identity evidence is unavailable.', got %q", r.ObservedSummary)
+		}
+		// Must not contain fake URL evidence, but must contain status evidence
+		if len(r.EvidenceRefs) != 1 || r.EvidenceRefs[0].Field != "fetch_status" {
+			t.Errorf("expected 1 status evidence ref, got %+v", r.EvidenceRefs)
+		}
+	})
+
+	t.Run("missing url_identity with status 503 -> UNKNOWN", func(t *testing.T) {
+		snap := newSnapshotForInputs(subjectRef, nil, []string{"503"})
+		results, err := eng.EvaluateRule(ctx, snap, "AR-ACC-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		r := results[0]
+		if r.Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for missing URL with 503, got %s", r.Status)
+		}
+		if r.Status == audit.StatusFail {
+			t.Errorf("missing URL with 503 must NEVER produce FAIL")
+		}
+	})
+
+	t.Run("one usable URL + 200 -> PASS", func(t *testing.T) {
+		snap := newSnapshotForInputs(subjectRef, []string{"https://example.com/ok"}, []string{"200"})
+		results, err := eng.EvaluateRule(ctx, snap, "AR-ACC-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		r := results[0]
+		if r.Status != audit.StatusPass {
+			t.Errorf("expected PASS, got %s", r.Status)
+		}
+		if r.ObservedSummary != "HTTP status 200 is not a server-error response." {
+			t.Errorf("unexpected summary: %q", r.ObservedSummary)
+		}
+		if len(r.EvidenceRefs) != 2 {
+			t.Fatalf("expected 2 evidence refs, got %d", len(r.EvidenceRefs))
+		}
+	})
+
+	t.Run("one usable URL + 503 -> FAIL", func(t *testing.T) {
+		snap := newSnapshotForInputs(subjectRef, []string{"https://example.com/err"}, []string{"503"})
+		results, err := eng.EvaluateRule(ctx, snap, "AR-ACC-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		r := results[0]
+		if r.Status != audit.StatusFail {
+			t.Errorf("expected FAIL, got %s", r.Status)
+		}
+		if r.ObservedSummary != "HTTP status 503 is a server-error response." {
+			t.Errorf("unexpected summary: %q", r.ObservedSummary)
+		}
+		if len(r.EvidenceRefs) != 2 {
+			t.Fatalf("expected 2 evidence refs, got %d", len(r.EvidenceRefs))
+		}
+	})
+
+	t.Run("conflicting URL identities -> UNKNOWN", func(t *testing.T) {
+		snap := newSnapshotForInputs(subjectRef, []string{"https://example.com/a", "https://example.com/b"}, []string{"200"})
+		results, err := eng.EvaluateRule(ctx, snap, "AR-ACC-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		r := results[0]
+		if r.Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for conflicting URLs, got %s", r.Status)
+		}
+		if r.Status == audit.StatusPass || r.Status == audit.StatusFail {
+			t.Errorf("conflicting URLs must NEVER produce PASS or FAIL")
+		}
+		if r.ObservedSummary != "No usable URL identity is available: conflicting URL identity observations." {
+			t.Errorf("unexpected summary: %q", r.ObservedSummary)
+		}
+		// Must include all conflicting URL evidence refs plus status ref
+		if len(r.EvidenceRefs) != 3 {
+			t.Fatalf("expected 3 evidence refs (2 conflicting URLs + 1 status), got %d", len(r.EvidenceRefs))
+		}
+		urlRefsCount := 0
+		for _, ref := range r.EvidenceRefs {
+			if ref.Field == "url" {
+				urlRefsCount++
+			}
+		}
+		if urlRefsCount != 2 {
+			t.Errorf("expected 2 URL context refs, got %d", urlRefsCount)
+		}
+	})
+
+	t.Run("duplicate identical URL identities with 200 -> PASS", func(t *testing.T) {
+		snap := newSnapshotForInputs(subjectRef, []string{"https://example.com/dup", "https://example.com/dup"}, []string{"200"})
+		results, err := eng.EvaluateRule(ctx, snap, "AR-ACC-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		r := results[0]
+		if r.Status != audit.StatusPass {
+			t.Errorf("expected PASS for duplicate identical URLs with 200, got %s", r.Status)
+		}
+		// Both source observations should be retained in evidence refs
+		if len(r.EvidenceRefs) != 3 {
+			t.Fatalf("expected 3 evidence refs (2 source identical URLs + 1 status), got %d", len(r.EvidenceRefs))
+		}
+		// Verify distinct RuleEvidenceRef IDs
+		refIDs := make(map[audit.RuleEvidenceRefID]struct{})
+		for _, ref := range r.EvidenceRefs {
+			if _, exists := refIDs[ref.RuleEvidenceRefID]; exists {
+				t.Errorf("duplicate RuleEvidenceRefID detected: %q", ref.RuleEvidenceRefID)
+			}
+			refIDs[ref.RuleEvidenceRefID] = struct{}{}
+		}
+	})
+
+	t.Run("duplicate identical URL identities with 503 -> FAIL", func(t *testing.T) {
+		snap := newSnapshotForInputs(subjectRef, []string{"https://example.com/dup", "https://example.com/dup"}, []string{"503"})
+		results, err := eng.EvaluateRule(ctx, snap, "AR-ACC-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		r := results[0]
+		if r.Status != audit.StatusFail {
+			t.Errorf("expected FAIL for duplicate identical URLs with 503, got %s", r.Status)
+		}
+		if len(r.EvidenceRefs) != 3 {
+			t.Fatalf("expected 3 evidence refs, got %d", len(r.EvidenceRefs))
+		}
+	})
+}

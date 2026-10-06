@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,11 +19,13 @@ const ruleIDACC004 = "AR-ACC-004"
 // Contract:
 // - PASS: HTTP response obtained and status is not 5xx (e.g. 200, 204, 301, 404, 429).
 // - FAIL: HTTP response obtained and status is 5xx (500 <= status <= 599).
-// - UNKNOWN: No usable HTTP response obtained (missing status, status 0, malformed, or conflicting).
+// - UNKNOWN: No usable HTTP response obtained (missing status, status 0, malformed, or conflicting),
+//            or missing/conflicting URL identity evidence.
 //
-// Field projection:
+// Required inputs:
 // - url          <- url_identity
 // - fetch_status <- http_status
+// A PASS or FAIL is produced only when both required inputs are usable.
 func evaluateACC004(
 	ctx context.Context,
 	rule audit.RuleDefinition,
@@ -44,62 +47,103 @@ func evaluateACC004(
 
 		ruleResultID := audit.RuleResultID(fmt.Sprintf("rr:%s:%s:%s", snapshot.SnapshotID, rule.RuleID, subjectRef))
 
-		// 1. Project inputs from normalized observations
+		// 1. Resolve URL identity input
 		urlObs := idx.GetObservations(audit.SubjectURL, subjectRef, "url_identity")
-		statusObs := idx.GetObservations(audit.SubjectURL, subjectRef, "http_status")
-
 		var (
-			evalStatus      audit.RuleResultStatus
-			observedSummary string
+			urlUsable   bool
+			urlConflict bool
+			firstURL    string
 		)
 
-		if len(statusObs) == 0 {
-			// No HTTP status observation recorded
-			evalStatus = audit.StatusUnknown
-			observedSummary = "No usable HTTP response status is available."
-		} else {
-			// Check for conflicting status observations
-			hasConflict := false
-			firstVal := statusObs[0].Value
-			for _, so := range statusObs[1:] {
-				if so.Value != firstVal {
-					hasConflict = true
-					break
-				}
-			}
-
-			if hasConflict {
-				evalStatus = audit.StatusUnknown
-				observedSummary = "No usable HTTP response status is available: conflicting status observations."
-			} else {
-				valTrimmed := strings.TrimSpace(firstVal)
-				code, err := strconv.Atoi(valTrimmed)
-				if err != nil {
-					// Malformed integer
-					evalStatus = audit.StatusUnknown
-					observedSummary = fmt.Sprintf("No usable HTTP response status is available: malformed status %q.", valTrimmed)
-				} else if code <= 0 {
-					// Zero or negative status indicates no response or network/acquisition failure
-					evalStatus = audit.StatusUnknown
-					observedSummary = "No usable HTTP response status is available."
-				} else {
-					if code >= 500 && code <= 599 {
-						evalStatus = audit.StatusFail
-						observedSummary = fmt.Sprintf("HTTP status %d is a server-error response.", code)
-					} else {
-						evalStatus = audit.StatusPass
-						observedSummary = fmt.Sprintf("HTTP status %d is not a server-error response.", code)
+		if len(urlObs) > 0 {
+			firstURL = strings.TrimSpace(urlObs[0].Value)
+			if firstURL != "" {
+				urlUsable = true
+				for _, u := range urlObs[1:] {
+					if strings.TrimSpace(u.Value) != firstURL {
+						urlConflict = true
+						urlUsable = false
+						break
 					}
 				}
 			}
 		}
 
-		// 2. Build traceable evidence references
+		// 2. Resolve fetch_status input
+		statusObs := idx.GetObservations(audit.SubjectURL, subjectRef, "http_status")
+		var (
+			statusUsable    bool
+			statusConflict  bool
+			statusCode      int
+			statusVal       string
+			statusMalformed bool
+		)
+
+		if len(statusObs) > 0 {
+			firstStatus := strings.TrimSpace(statusObs[0].Value)
+			statusVal = firstStatus
+			statusUsable = true
+			for _, so := range statusObs[1:] {
+				if strings.TrimSpace(so.Value) != firstStatus {
+					statusConflict = true
+					statusUsable = false
+					break
+				}
+			}
+			if !statusConflict {
+				code, err := strconv.Atoi(firstStatus)
+				if err != nil {
+					statusMalformed = true
+					statusUsable = false
+				} else if code <= 0 {
+					statusUsable = false
+				} else {
+					statusCode = code
+				}
+			}
+		}
+
+		// 3. Determine evaluation status and observed summary
+		var (
+			evalStatus      audit.RuleResultStatus
+			observedSummary string
+		)
+
+		if !urlUsable {
+			evalStatus = audit.StatusUnknown
+			if urlConflict {
+				observedSummary = "No usable URL identity is available: conflicting URL identity observations."
+			} else {
+				observedSummary = "Required URL identity evidence is unavailable."
+			}
+		} else if !statusUsable {
+			evalStatus = audit.StatusUnknown
+			if len(statusObs) == 0 {
+				observedSummary = "No usable HTTP response status is available."
+			} else if statusConflict {
+				observedSummary = "No usable HTTP response status is available: conflicting status observations."
+			} else if statusMalformed {
+				observedSummary = fmt.Sprintf("No usable HTTP response status is available: malformed status %q.", statusVal)
+			} else {
+				// code <= 0
+				observedSummary = "No usable HTTP response status is available."
+			}
+		} else {
+			// Both required inputs are usable
+			if statusCode >= 500 && statusCode <= 599 {
+				evalStatus = audit.StatusFail
+				observedSummary = fmt.Sprintf("HTTP status %d is a server-error response.", statusCode)
+			} else {
+				evalStatus = audit.StatusPass
+				observedSummary = fmt.Sprintf("HTTP status %d is not a server-error response.", statusCode)
+			}
+		}
+
+		// 4. Build traceable evidence references
 		var evidenceRefs []audit.RuleEvidenceRef
 
-		// URL Context Evidence
-		if len(urlObs) > 0 {
-			u := urlObs[0]
+		// URL Context Evidence: include all actual URL observations
+		for _, u := range urlObs {
 			evidenceRefs = append(evidenceRefs, audit.RuleEvidenceRef{
 				RuleEvidenceRefID: audit.RuleEvidenceRefID(fmt.Sprintf("ref:%s:%s:url", ruleResultID, u.ObservationID)),
 				RuleResultID:      ruleResultID,
@@ -111,7 +155,7 @@ func evaluateACC004(
 			})
 		}
 
-		// Status Primary Evidence
+		// Status Primary Evidence: include all actual status observations
 		for _, st := range statusObs {
 			evidenceRefs = append(evidenceRefs, audit.RuleEvidenceRef{
 				RuleEvidenceRefID: audit.RuleEvidenceRefID(fmt.Sprintf("ref:%s:%s:fetch_status", ruleResultID, st.ObservationID)),
@@ -122,6 +166,31 @@ func evaluateACC004(
 				ObservedValue:     st.Value,
 				Role:              audit.EvidenceRolePrimary,
 			})
+		}
+
+		// Sort evidence refs deterministically by RuleEvidenceRefID
+		sort.Slice(evidenceRefs, func(i, j int) bool {
+			return evidenceRefs[i].RuleEvidenceRefID < evidenceRefs[j].RuleEvidenceRefID
+		})
+
+		// Guard: PASS or FAIL requires both usable inputs
+		if evalStatus == audit.StatusPass || evalStatus == audit.StatusFail {
+			if !urlUsable || !statusUsable {
+				return nil, fmt.Errorf("audit engine: internal error: rule result %s produced %s without both usable inputs", ruleResultID, evalStatus)
+			}
+			hasURLContext := false
+			hasStatusPrimary := false
+			for _, ref := range evidenceRefs {
+				if ref.Field == "url" && ref.Role == audit.EvidenceRoleContext {
+					hasURLContext = true
+				}
+				if ref.Field == "fetch_status" && ref.Role == audit.EvidenceRolePrimary {
+					hasStatusPrimary = true
+				}
+			}
+			if !hasURLContext || !hasStatusPrimary {
+				return nil, fmt.Errorf("audit engine: internal error: rule result %s missing required evidence refs (url context: %v, fetch_status primary: %v)", ruleResultID, hasURLContext, hasStatusPrimary)
+			}
 		}
 
 		rr := audit.RuleResult{
