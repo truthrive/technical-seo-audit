@@ -62,9 +62,9 @@ type UrlResource struct {
 	Path            string     `json:"path"`
 	Query           string     `json:"query"`
 	FragmentRemoved bool       `json:"fragment_removed"`
-	IsInternal      bool       `json:"is_internal"`
+	IsInternal      *bool      `json:"is_internal,omitempty"`
 	Origin          string     `json:"origin"`
-	CreatedAt       time.Time  `json:"created_at"`
+	CreatedAt       *time.Time `json:"created_at,omitempty"`
 }
 
 // DiscoveryRecord represents legitimate provenance granting site discovery universe membership.
@@ -86,16 +86,16 @@ type FetchObservation struct {
 	URLID               URLID              `json:"url_id"`
 	AcquisitionPurpose  AcquisitionPurpose `json:"acquisition_purpose"`
 	RequestProfile      RequestProfile     `json:"request_profile"`
-	RequestedAt         time.Time          `json:"requested_at"`
-	CompletedAt         time.Time          `json:"completed_at"`
+	RequestedAt         *time.Time         `json:"requested_at,omitempty"`
+	CompletedAt         *time.Time         `json:"completed_at,omitempty"`
 	FetchAttempted      bool               `json:"fetch_attempted"`
 	Status              int                `json:"status"`
 	FinalURLID          *URLID             `json:"final_url_id,omitempty"`
 	ContentType         string             `json:"content_type"`
 	ResponseTimeMs      int64              `json:"response_time_ms"`
 	FetchErrorType      string             `json:"fetch_error_type,omitempty"`
-	TLSValid            bool               `json:"tls_valid"`
-	ChallengeDetected   bool               `json:"challenge_detected"`
+	TLSValid            *bool              `json:"tls_valid,omitempty"`
+	ChallengeDetected   *bool              `json:"challenge_detected,omitempty"`
 	ResponseHeadersRef  string             `json:"response_headers_ref,omitempty"`
 	BodyArtifactRef     string             `json:"body_artifact_ref,omitempty"`
 	ObservedAt          time.Time          `json:"observed_at"`
@@ -162,7 +162,7 @@ type HtmlObservation struct {
 	MetaRobotsRaw        []string          `json:"meta_robots_raw"`
 	XRobotsRaw           []string          `json:"x_robots_raw"`
 	CanonicalRawValues   []string          `json:"canonical_raw_values"`
-	MainTextPresent      bool              `json:"main_text_present"`
+	MainTextPresent      *bool             `json:"main_text_present,omitempty"`
 	MainTextFingerprint  string            `json:"main_text_fingerprint,omitempty"`
 	ContentFingerprint   string            `json:"content_fingerprint,omitempty"`
 	ObservedAt           time.Time         `json:"observed_at"`
