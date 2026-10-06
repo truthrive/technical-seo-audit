@@ -71,6 +71,7 @@ go run ./cmd/sitecrawl-dev -db crawl.db -max-urls 500 -max-depth 3 -concurrency 
 ## Project Status & Audit V1 Roadmap
 
 - **SiteCrawl Standalone Core**: **FREEZE v1 COMPLETE** (tagged `sitecrawl-standalone-core-v1` at commit `50760ed89f58b4e3abc68614363536c05516e07a`).
-- **Audit V1.1 (Domain Contracts & Rule Registry)**: **COMPLETE** (in `internal/audit/`; domain entities, enums, policy contracts, and machine-readable 47-rule registry).
-- **Audit V1.2 (Evidence Adapter & Frozen Snapshot Boundary)**: **COMPLETE** (in `internal/audit/adapter/`; translates completed SiteCrawl SQLite runs into normalized observations and frozen `EvidenceSnapshot`, reporting explicit `EvidenceGap` diagnostics; semantically hardened for truthful evidence representation).
-- **Audit V1.3+ (Rule Engine Core & Access/Index Vertical Slice)**: **NEXT MILESTONE**. Rule Engine core evaluator + first evidence-ready Access/Index vertical slice will follow on top of this frozen evidence boundary. Frozen crawler core remains unchanged.
+- **Audit V1.1 (Domain Contracts & Rule Registry)**: **COMPLETE / LOCKED** (in `internal/audit/`; domain entities, enums, policy contracts, and machine-readable 47-rule registry).
+- **Audit V1.2 (Evidence Adapter & Frozen Snapshot Boundary)**: **COMPLETE / LOCKED** (in `internal/audit/adapter/`; translates completed SiteCrawl SQLite runs into normalized observations and frozen `EvidenceSnapshot`, reporting explicit `EvidenceGap` diagnostics; semantically hardened for truthful evidence representation and crawl completeness).
+- **Audit V1.3a (Rule Engine Core + AR-ACC-004 Vertical Slice)**: **COMPLETE** (in `internal/audit/engine/`; evaluates frozen `EvidenceSnapshot` against `AR-ACC-004 — Unexpected server-error response` producing deterministic `RuleResult` and `RuleEvidenceRef` objects).
+- **Phase 4 (First Vertical Slice: HTTP / Robots / Index)**: **IN PROGRESS**. Currently, only `AR-ACC-004` executes; the other 46 rules remain registered but unimplemented. No Finding aggregation or Audit SQL persistence exists yet. Frozen crawler core remains unchanged.
