@@ -47,6 +47,7 @@ const (
 	GapFetchErrorUnmappable               = "GAP_FETCH_ERROR_UNMAPPABLE"
 	GapBotResponseNotPreserved            = "GAP_BOT_RESPONSE_NOT_PRESERVED"
 	GapUnresolvedLinkTargetUnavailable    = "GAP_UNRESOLVED_LINK_TARGET_UNAVAILABLE"
+	GapDirectiveScopeAmbiguous            = "GAP_DIRECTIVE_SCOPE_AMBIGUOUS"
 )
 
 // EvidenceGap records an implementation-level diagnostic stating that the

@@ -442,6 +442,8 @@ robots_directive_observation_id
 audit_run_id
 url_id
 source
+target
+scope_unknown
 raw_value
 parsed_tokens[]
 unsupported_tokens[]
@@ -458,7 +460,12 @@ HTTP_HEADER
 RENDERED_META
 ```
 
-Preserve source-level evidence before deriving effective state.
+Target values:
+- generic: `*`
+- explicit agent: normalized user-agent token (e.g. `googlebot`)
+- unknown applicability: empty string with `scope_unknown = true`
+
+Preserve source-level evidence before deriving effective state. Do not infer scope. Unqualified `effective_noindex` is only derived when generic directive evidence is complete and unambiguous.
 
 ## 15. CanonicalObservation
 

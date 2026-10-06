@@ -316,7 +316,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		AuditRunID:               req.AuditRunID,
 		CreatedAt:                time.Now().UTC(),
 		SnapshotStatus:           audit.SnapshotBuilding,
-		NormalizationVersion:     "v1.2.0",
+		NormalizationVersion:     "v1.3.0",
 		CrawlComplete:            crawlComplete,
 		SitemapDiscoveryComplete: false,
 		RenderSelectionComplete:  false,
@@ -761,54 +761,22 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				}
 				htmlObservations = append(htmlObservations, htmlObs)
 
-				if len(xRobotsRaw) > 0 {
-					hasHeaderNoindex := false
-					for dirIdx, raw := range xRobotsRaw {
-						tokens := parseDirectiveTokens(raw)
-						isNoindex := containsToken(tokens, "noindex")
-						if isNoindex {
-							hasHeaderNoindex = true
-						}
-						robotsDirectiveObservations = append(robotsDirectiveObservations, audit.RobotsDirectiveObservation{
-							RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:header:%d", req.AuditRunID, urlID, dirIdx)),
-							AuditRunID:                   req.AuditRunID,
-							URLID:                        urlIDStr,
-							Source:                       audit.DirectiveSourceHTTPHeader,
-							RawValue:                     raw,
-							ParsedTokens:                 tokens,
-							EffectiveNoindex:             isNoindex,
-							ObservedAt:                   obsTime,
-						})
-					}
-					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-						ObservationID:      nextObsID(),
-						AuditRunID:         req.AuditRunID,
-						SnapshotID:         req.SnapshotID,
-						SubjectType:        audit.SubjectURL,
-						SubjectRef:         string(urlIDStr),
-						Field:              "x_robots_raw",
-						Value:              strings.Join(xRobotsRaw, ", "),
-						DerivationType:     audit.DerivationDirect,
-						SourceEvidenceRefs: []string{pageSrcRef},
-						ObservedAt:         obsTime,
-					})
-					noindexVal := "false"
-					if hasHeaderNoindex {
-						noindexVal = "true"
-					}
-					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-						ObservationID:      nextObsID(),
-						AuditRunID:         req.AuditRunID,
-						SnapshotID:         req.SnapshotID,
-						SubjectType:        audit.SubjectURL,
-						SubjectRef:         string(urlIDStr),
-						Field:              "effective_noindex",
-						Value:              noindexVal,
-						DerivationType:     audit.DerivationNormalized,
-						SourceEvidenceRefs: []string{pageSrcRef},
-						ObservedAt:         obsTime,
-					})
-				}
+				pageDirectives, dirNorms, dirGaps := processPageDirectives(
+					req,
+					urlID,
+					urlIDStr,
+					pageSrcRef,
+					obsTime,
+					true,
+					nil,
+					"",
+					"",
+					xRobotsRaw,
+					nextObsID,
+				)
+				robotsDirectiveObservations = append(robotsDirectiveObservations, pageDirectives...)
+				normalizedObservations = append(normalizedObservations, dirNorms...)
+				evidenceGaps = append(evidenceGaps, dirGaps...)
 			} else {
 				// Non-rendered page: extract verified raw HTML fields
 				h1Values := pr.page.H1
@@ -894,90 +862,22 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					})
 				}
 
-				// Robots directives
-				hasNoindex := false
-				if len(metaRobotsRaw) > 0 {
-					for dirIdx, raw := range metaRobotsRaw {
-						tokens := parseDirectiveTokens(raw)
-						isNoindex := containsToken(tokens, "noindex")
-						if isNoindex {
-							hasNoindex = true
-						}
-						robotsDirectiveObservations = append(robotsDirectiveObservations, audit.RobotsDirectiveObservation{
-							RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, dirIdx)),
-							AuditRunID:                   req.AuditRunID,
-							URLID:                        urlIDStr,
-							Source:                       audit.DirectiveSourceMeta,
-							RawValue:                     raw,
-							ParsedTokens:                 tokens,
-							EffectiveNoindex:             isNoindex,
-							ObservedAt:                   obsTime,
-						})
-					}
-					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-						ObservationID:      nextObsID(),
-						AuditRunID:         req.AuditRunID,
-						SnapshotID:         req.SnapshotID,
-						SubjectType:        audit.SubjectURL,
-						SubjectRef:         string(urlIDStr),
-						Field:              "meta_robots_raw",
-						Value:              strings.Join(metaRobotsRaw, ", "),
-						DerivationType:     audit.DerivationDirect,
-						SourceEvidenceRefs: []string{pageSrcRef},
-						ObservedAt:         obsTime,
-					})
-				}
-
-				if len(xRobotsRaw) > 0 {
-					for dirIdx, raw := range xRobotsRaw {
-						tokens := parseDirectiveTokens(raw)
-						isNoindex := containsToken(tokens, "noindex")
-						if isNoindex {
-							hasNoindex = true
-						}
-						robotsDirectiveObservations = append(robotsDirectiveObservations, audit.RobotsDirectiveObservation{
-							RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:header:%d", req.AuditRunID, urlID, dirIdx)),
-							AuditRunID:                   req.AuditRunID,
-							URLID:                        urlIDStr,
-							Source:                       audit.DirectiveSourceHTTPHeader,
-							RawValue:                     raw,
-							ParsedTokens:                 tokens,
-							EffectiveNoindex:             isNoindex,
-							ObservedAt:                   obsTime,
-						})
-					}
-					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-						ObservationID:      nextObsID(),
-						AuditRunID:         req.AuditRunID,
-						SnapshotID:         req.SnapshotID,
-						SubjectType:        audit.SubjectURL,
-						SubjectRef:         string(urlIDStr),
-						Field:              "x_robots_raw",
-						Value:              strings.Join(xRobotsRaw, ", "),
-						DerivationType:     audit.DerivationDirect,
-						SourceEvidenceRefs: []string{pageSrcRef},
-						ObservedAt:         obsTime,
-					})
-				}
-
-				if len(metaRobotsRaw) > 0 || len(xRobotsRaw) > 0 {
-					noindexVal := "false"
-					if hasNoindex {
-						noindexVal = "true"
-					}
-					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-						ObservationID:      nextObsID(),
-						AuditRunID:         req.AuditRunID,
-						SnapshotID:         req.SnapshotID,
-						SubjectType:        audit.SubjectURL,
-						SubjectRef:         string(urlIDStr),
-						Field:              "effective_noindex",
-						Value:              noindexVal,
-						DerivationType:     audit.DerivationNormalized,
-						SourceEvidenceRefs: []string{pageSrcRef},
-						ObservedAt:         obsTime,
-					})
-				}
+				pageDirectives, dirNorms, dirGaps := processPageDirectives(
+					req,
+					urlID,
+					urlIDStr,
+					pageSrcRef,
+					obsTime,
+					false,
+					pr.page.MetaTags,
+					pr.page.MetaRobots,
+					pr.metaRobots,
+					xRobotsRaw,
+					nextObsID,
+				)
+				robotsDirectiveObservations = append(robotsDirectiveObservations, pageDirectives...)
+				normalizedObservations = append(normalizedObservations, dirNorms...)
+				evidenceGaps = append(evidenceGaps, dirGaps...)
 
 				// Canonical observations
 				canonicals := pr.page.Canonicals
@@ -1356,4 +1256,492 @@ func containsToken(tokens []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func isParameterizedDirective(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "max-snippet", "max-image-preview", "max-video-preview", "unavailable_after":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidAgentToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+type parsedHeaderSegment struct {
+	target       string
+	scopeUnknown bool
+	rawValue     string
+	tokens       []string
+}
+
+func parseXRobotsSegment(seg string, prevHadAgentPrefix bool) (parsedHeaderSegment, bool) {
+	colonIdx := strings.Index(seg, ":")
+	if colonIdx == -1 {
+		tokens := parseDirectiveTokens(seg)
+		if prevHadAgentPrefix {
+			return parsedHeaderSegment{
+				target:       "",
+				scopeUnknown: true,
+				rawValue:     seg,
+				tokens:       tokens,
+			}, false
+		}
+		return parsedHeaderSegment{
+			target:       "*",
+			scopeUnknown: false,
+			rawValue:     seg,
+			tokens:       tokens,
+		}, false
+	}
+
+	firstPart := strings.TrimSpace(seg[:colonIdx])
+	firstPartLower := strings.ToLower(firstPart)
+	rest := strings.TrimSpace(seg[colonIdx+1:])
+
+	if isParameterizedDirective(firstPartLower) {
+		tokens := []string{strings.ToLower(seg)}
+		if prevHadAgentPrefix {
+			return parsedHeaderSegment{
+				target:       "",
+				scopeUnknown: true,
+				rawValue:     seg,
+				tokens:       tokens,
+			}, false
+		}
+		return parsedHeaderSegment{
+			target:       "*",
+			scopeUnknown: false,
+			rawValue:     seg,
+			tokens:       tokens,
+		}, false
+	}
+
+	if isValidAgentToken(firstPartLower) && rest != "" {
+		var tokens []string
+		restColonIdx := strings.Index(rest, ":")
+		if restColonIdx != -1 {
+			restFirst := strings.TrimSpace(rest[:restColonIdx])
+			if isParameterizedDirective(restFirst) {
+				tokens = []string{strings.ToLower(rest)}
+			} else {
+				tokens = parseDirectiveTokens(rest)
+			}
+		} else {
+			tokens = parseDirectiveTokens(rest)
+		}
+		return parsedHeaderSegment{
+			target:       firstPartLower,
+			scopeUnknown: false,
+			rawValue:     seg,
+			tokens:       tokens,
+		}, true
+	}
+
+	return parsedHeaderSegment{
+		target:       "",
+		scopeUnknown: true,
+		rawValue:     seg,
+		tokens:       parseDirectiveTokens(seg),
+	}, false
+}
+
+func processPageDirectives(
+	req BuildRequest,
+	urlID int,
+	urlIDStr audit.URLID,
+	pageSrcRef string,
+	obsTime time.Time,
+	isRendered bool,
+	pageMetaTags map[string]string,
+	pageMetaRobots string,
+	columnMetaRobots string,
+	xRobotsRaw []string,
+	nextObsID func() audit.ObservationID,
+) (
+	directives []audit.RobotsDirectiveObservation,
+	normalized []audit.NormalizedObservation,
+	gaps []EvidenceGap,
+) {
+	metaDirIdx := 0
+
+	// 1. Meta directives (suppressed on rendered pages where raw server HTML was replaced)
+	metaRobotsRawStr := ""
+	if !isRendered {
+		if pageMetaRobots != "" {
+			metaRobotsRawStr = pageMetaRobots
+		} else if columnMetaRobots != "" {
+			metaRobotsRawStr = columnMetaRobots
+		}
+		metaRobotsRawStr = strings.TrimSpace(metaRobotsRawStr)
+
+		var (
+			robotsVal    string
+			hasRobots    bool
+			googlebotVal string
+			hasGooglebot bool
+		)
+		if pageMetaTags != nil {
+			for k, v := range pageMetaTags {
+				switch strings.ToLower(strings.TrimSpace(k)) {
+				case "robots":
+					if strings.TrimSpace(v) != "" {
+						robotsVal = strings.TrimSpace(v)
+						hasRobots = true
+					}
+				case "googlebot":
+					if strings.TrimSpace(v) != "" {
+						googlebotVal = strings.TrimSpace(v)
+						hasGooglebot = true
+					}
+				}
+			}
+		}
+
+		if hasRobots || hasGooglebot {
+			if hasRobots {
+				tokens := parseDirectiveTokens(robotsVal)
+				isNoindex := containsToken(tokens, "noindex") || containsToken(tokens, "none")
+				directives = append(directives, audit.RobotsDirectiveObservation{
+					RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+					AuditRunID:                   req.AuditRunID,
+					URLID:                        urlIDStr,
+					Source:                       audit.DirectiveSourceMeta,
+					Target:                       "*",
+					ScopeUnknown:                 false,
+					RawValue:                     robotsVal,
+					ParsedTokens:                 tokens,
+					EffectiveNoindex:             isNoindex,
+					ObservedAt:                   obsTime,
+				})
+				metaDirIdx++
+			}
+
+			if hasGooglebot {
+				tokens := parseDirectiveTokens(googlebotVal)
+				directives = append(directives, audit.RobotsDirectiveObservation{
+					RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+					AuditRunID:                   req.AuditRunID,
+					URLID:                        urlIDStr,
+					Source:                       audit.DirectiveSourceMeta,
+					Target:                       "googlebot",
+					ScopeUnknown:                 false,
+					RawValue:                     googlebotVal,
+					ParsedTokens:                 tokens,
+					EffectiveNoindex:             false, // agent-scoped evidence does not produce unqualified noindex
+					ObservedAt:                   obsTime,
+				})
+				metaDirIdx++
+			}
+
+			// Check for unrecovered extra content in flattened MetaRobots
+			if metaRobotsRawStr != "" {
+				allTokens := parseDirectiveTokens(metaRobotsRawStr)
+				rTokens := parseDirectiveTokens(robotsVal)
+				gTokens := parseDirectiveTokens(googlebotVal)
+				var extraTokens []string
+				for _, t := range allTokens {
+					if !containsToken(rTokens, t) && !containsToken(gTokens, t) {
+						extraTokens = append(extraTokens, t)
+					}
+				}
+				if len(extraTokens) > 0 {
+					extraRaw := strings.Join(extraTokens, ", ")
+					directives = append(directives, audit.RobotsDirectiveObservation{
+						RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+						AuditRunID:                   req.AuditRunID,
+						URLID:                        urlIDStr,
+						Source:                       audit.DirectiveSourceMeta,
+						Target:                       "",
+						ScopeUnknown:                 true,
+						RawValue:                     extraRaw,
+						ParsedTokens:                 extraTokens,
+						EffectiveNoindex:             false,
+						ObservedAt:                   obsTime,
+					})
+					metaDirIdx++
+					gaps = append(gaps, EvidenceGap{
+						GapCode:         GapDirectiveScopeAmbiguous,
+						SubjectRef:      string(urlIDStr),
+						Field:           "meta_robots",
+						Reason:          fmt.Sprintf("Flattened MetaRobots contains unrecovered extra tokens: %s", extraRaw),
+						SourceComponent: "sitecrawl_pages",
+					})
+				}
+			}
+		} else if metaRobotsRawStr != "" {
+			// Legacy Page JSON with only MetaRobots: scope cannot be recovered, remain unknown
+			tokens := parseDirectiveTokens(metaRobotsRawStr)
+			directives = append(directives, audit.RobotsDirectiveObservation{
+				RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+				AuditRunID:                   req.AuditRunID,
+				URLID:                        urlIDStr,
+				Source:                       audit.DirectiveSourceMeta,
+				Target:                       "",
+				ScopeUnknown:                 true,
+				RawValue:                     metaRobotsRawStr,
+				ParsedTokens:                 tokens,
+				EffectiveNoindex:             false,
+				ObservedAt:                   obsTime,
+			})
+			metaDirIdx++
+			gaps = append(gaps, EvidenceGap{
+				GapCode:         GapDirectiveScopeAmbiguous,
+				SubjectRef:      string(urlIDStr),
+				Field:           "meta_robots",
+				Reason:          "Meta robots directive scope cannot be recovered from legacy evidence without scoped MetaTags.",
+				SourceComponent: "sitecrawl_pages",
+			})
+		}
+	}
+
+	// 2. HTTP Header X-Robots-Tag directives (preserved for both rendered and non-rendered)
+	headerDirIdx := 0
+	for _, headerStr := range xRobotsRaw {
+		trimmedHeader := strings.TrimSpace(headerStr)
+		if trimmedHeader == "" {
+			continue
+		}
+		segments := strings.Split(trimmedHeader, ",")
+		hadAgentPrefix := false
+		for _, seg := range segments {
+			s := strings.TrimSpace(seg)
+			if s == "" {
+				continue
+			}
+			parsed, introducedAgent := parseXRobotsSegment(s, hadAgentPrefix)
+			if introducedAgent {
+				hadAgentPrefix = true
+			}
+
+			isNoindex := false
+			if parsed.target == "*" && !parsed.scopeUnknown && (containsToken(parsed.tokens, "noindex") || containsToken(parsed.tokens, "none")) {
+				isNoindex = true
+			}
+
+			directives = append(directives, audit.RobotsDirectiveObservation{
+				RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:header:%d", req.AuditRunID, urlID, headerDirIdx)),
+				AuditRunID:                   req.AuditRunID,
+				URLID:                        urlIDStr,
+				Source:                       audit.DirectiveSourceHTTPHeader,
+				Target:                       parsed.target,
+				ScopeUnknown:                 parsed.scopeUnknown,
+				RawValue:                     parsed.rawValue,
+				ParsedTokens:                 parsed.tokens,
+				EffectiveNoindex:             isNoindex,
+				ObservedAt:                   obsTime,
+			})
+			headerDirIdx++
+
+			if parsed.scopeUnknown {
+				gaps = append(gaps, EvidenceGap{
+					GapCode:         GapDirectiveScopeAmbiguous,
+					SubjectRef:      string(urlIDStr),
+					Field:           "x_robots_tag",
+					Reason:          fmt.Sprintf("X-Robots-Tag directive segment %q has ambiguous applicability scope due to joined header boundaries.", s),
+					SourceComponent: "sitecrawl_pages",
+				})
+			}
+		}
+	}
+
+	// 3. Emit NormalizedObservations for each directive observation
+	for _, d := range directives {
+		dirID := string(d.RobotsDirectiveObservationID)
+		refs := []string{dirID, pageSrcRef}
+
+		normalized = append(normalized, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "directive_source",
+			Value:              string(d.Source),
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: refs,
+			ObservedAt:         obsTime,
+		})
+
+		normalized = append(normalized, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "directive_target",
+			Value:              d.Target,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: refs,
+			ObservedAt:         obsTime,
+		})
+
+		normalized = append(normalized, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "directive_raw",
+			Value:              d.RawValue,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: refs,
+			ObservedAt:         obsTime,
+		})
+
+		tokensVal := strings.Join(d.ParsedTokens, ", ")
+		normalized = append(normalized, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "directive_tokens",
+			Value:              tokensVal,
+			DerivationType:     audit.DerivationNormalized,
+			SourceEvidenceRefs: refs,
+			ObservedAt:         obsTime,
+		})
+
+		if d.ScopeUnknown {
+			normalized = append(normalized, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "directive_scope_unknown",
+				Value:              "true",
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: refs,
+				ObservedAt:         obsTime,
+			})
+		}
+
+		// AR-INDEX-003: robots_directive_tokens
+		normalized = append(normalized, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "robots_directive_tokens",
+			Value:              tokensVal,
+			DerivationType:     audit.DerivationNormalized,
+			SourceEvidenceRefs: refs,
+			ObservedAt:         obsTime,
+		})
+
+		// AR-INDEX-002: robots_meta_tokens and x_robots_tokens for applicable generic scope
+		if d.Target == "*" && !d.ScopeUnknown {
+			if d.Source == audit.DirectiveSourceMeta {
+				normalized = append(normalized, audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "robots_meta_tokens",
+					Value:              tokensVal,
+					DerivationType:     audit.DerivationNormalized,
+					SourceEvidenceRefs: refs,
+					ObservedAt:         obsTime,
+				})
+			} else if d.Source == audit.DirectiveSourceHTTPHeader {
+				normalized = append(normalized, audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "x_robots_tokens",
+					Value:              tokensVal,
+					DerivationType:     audit.DerivationNormalized,
+					SourceEvidenceRefs: refs,
+					ObservedAt:         obsTime,
+				})
+			}
+		}
+	}
+
+	// 4. URL-level Raw Observations
+	if metaRobotsRawStr != "" && !isRendered {
+		normalized = append(normalized, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "meta_robots_raw",
+			Value:              metaRobotsRawStr,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{pageSrcRef},
+			ObservedAt:         obsTime,
+		})
+	}
+	if len(xRobotsRaw) > 0 {
+		normalized = append(normalized, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "x_robots_raw",
+			Value:              strings.Join(xRobotsRaw, ", "),
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{pageSrcRef},
+			ObservedAt:         obsTime,
+		})
+	}
+
+	// 5. Effective Noindex:
+	// Only emit when generic directive evidence is complete and unambiguous.
+	// Do not derive unqualified effective_noindex from agent-scoped or unknown-scope evidence.
+	// No directive evidence must not become effective_noindex=false.
+	hasGenericDirective := false
+	hasAmbiguousDirective := false
+	genericNoindex := false
+
+	for _, d := range directives {
+		if d.ScopeUnknown {
+			hasAmbiguousDirective = true
+		} else if d.Target == "*" {
+			hasGenericDirective = true
+			if containsToken(d.ParsedTokens, "noindex") || containsToken(d.ParsedTokens, "none") {
+				genericNoindex = true
+			}
+		}
+	}
+
+	if hasGenericDirective && !hasAmbiguousDirective {
+		noindexVal := "false"
+		if genericNoindex {
+			noindexVal = "true"
+		}
+		normalized = append(normalized, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "effective_noindex",
+			Value:              noindexVal,
+			DerivationType:     audit.DerivationNormalized,
+			SourceEvidenceRefs: []string{pageSrcRef},
+			ObservedAt:         obsTime,
+		})
+	}
+
+	return directives, normalized, gaps
 }

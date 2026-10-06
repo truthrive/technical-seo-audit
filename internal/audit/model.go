@@ -174,6 +174,8 @@ type RobotsDirectiveObservation struct {
 	AuditRunID                   AuditRunID        `json:"audit_run_id"`
 	URLID                        URLID             `json:"url_id"`
 	Source                       DirectiveSource   `json:"source"`
+	Target                       string            `json:"target"`
+	ScopeUnknown                 bool              `json:"scope_unknown"`
 	RawValue                     string            `json:"raw_value"`
 	ParsedTokens                 []string          `json:"parsed_tokens"`
 	UnsupportedTokens            []string          `json:"unsupported_tokens"`
