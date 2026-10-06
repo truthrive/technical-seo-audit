@@ -84,7 +84,7 @@ type FetchObservation struct {
 	FetchID             FetchID            `json:"fetch_id"`
 	AuditRunID          AuditRunID         `json:"audit_run_id"`
 	URLID               URLID              `json:"url_id"`
-	AcquisitionPurpose  AcquisitionPurpose `json:"acquisition_purpose"`
+	AcquisitionPurpose  *AcquisitionPurpose `json:"acquisition_purpose,omitempty"`
 	RequestProfile      RequestProfile     `json:"request_profile"`
 	RequestedAt         *time.Time         `json:"requested_at,omitempty"`
 	CompletedAt         *time.Time         `json:"completed_at,omitempty"`

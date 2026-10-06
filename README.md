@@ -72,5 +72,5 @@ go run ./cmd/sitecrawl-dev -db crawl.db -max-urls 500 -max-depth 3 -concurrency 
 
 - **SiteCrawl Standalone Core**: **FREEZE v1 COMPLETE** (tagged `sitecrawl-standalone-core-v1` at commit `50760ed89f58b4e3abc68614363536c05516e07a`).
 - **Audit V1.1 (Domain Contracts & Rule Registry)**: **COMPLETE** (in `internal/audit/`; domain entities, enums, policy contracts, and machine-readable 47-rule registry).
-- **Audit V1.2 (Evidence Adapter & Frozen Snapshot Boundary)**: **COMPLETE** (in `internal/audit/adapter/`; translates completed SiteCrawl SQLite runs into normalized observations and frozen `EvidenceSnapshot`, reporting explicit `EvidenceGap` diagnostics).
-- **Audit V1.3+ (Rule Engine & Persistence)**: **NEXT MILESTONE**. Rule Engine core evaluator, 47 `AR-*` rule logic, Finding aggregation, Audit SQLite persistence, and UI integration will follow on top of this frozen evidence boundary. Frozen crawler core remains unchanged.
+- **Audit V1.2 (Evidence Adapter & Frozen Snapshot Boundary)**: **COMPLETE** (in `internal/audit/adapter/`; translates completed SiteCrawl SQLite runs into normalized observations and frozen `EvidenceSnapshot`, reporting explicit `EvidenceGap` diagnostics; semantically hardened for truthful evidence representation).
+- **Audit V1.3+ (Rule Engine Core & Access/Index Vertical Slice)**: **NEXT MILESTONE**. Rule Engine core evaluator + first evidence-ready Access/Index vertical slice will follow on top of this frozen evidence boundary. Frozen crawler core remains unchanged.

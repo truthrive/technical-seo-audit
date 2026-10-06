@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -62,13 +64,15 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 	}
 
 	var opts sitecrawl.Options
-	if optJSON != "" {
-		_ = json.Unmarshal([]byte(optJSON), &opts)
+	if optJSON != "" && optJSON != "{}" {
+		if err := json.Unmarshal([]byte(optJSON), &opts); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrMalformedOptionsJSON, err)
+		}
 	}
 
 	runStartedAt, err := time.Parse(time.RFC3339, startedAtStr)
 	if err != nil {
-		runStartedAt = time.Now().UTC()
+		return nil, fmt.Errorf("%w: %v", ErrMalformedRunTimestamp, err)
 	}
 
 	// 3. Load URL dictionary
@@ -96,6 +100,13 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		return nil, fmt.Errorf("audit adapter: read urls: %w", err)
 	}
 
+	// Extract and sort numeric URL IDs to guarantee deterministic ordering
+	urlIDs := make([]int, 0, len(urlsByID))
+	for id := range urlsByID {
+		urlIDs = append(urlIDs, id)
+	}
+	sort.Ints(urlIDs)
+
 	// 4. Load page rows
 	type rawPageRecord struct {
 		urlID        int
@@ -121,6 +132,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		xRobots      string
 		rendered     int
 		crawledAt    string
+		robotsState  string
 		page         sitecrawl.Page
 	}
 
@@ -128,7 +140,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		`SELECT url_id, url, data, kind, is_internal, depth, discovered_by,
 		        status, content_type, size_bytes, response_ms, redirect_to,
 		        redirect_hops, error_type, title, meta_desc, h1, lang, canonical,
-		        meta_robots, x_robots, rendered, crawled_at
+		        meta_robots, x_robots, rendered, crawled_at, robots_state
 		 FROM sitecrawl_pages WHERE run_id = ? ORDER BY url_id ASC`, req.CrawlRunID)
 	if err != nil {
 		return nil, fmt.Errorf("audit adapter: query pages: %w", err)
@@ -142,9 +154,16 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			&pr.urlID, &pr.url, &pr.dataJSON, &pr.kind, &pr.isInternal, &pr.depth, &pr.discoveredBy,
 			&pr.status, &pr.contentType, &pr.sizeBytes, &pr.responseMs, &pr.redirectTo,
 			&pr.redirectHops, &pr.errorType, &pr.title, &pr.metaDesc, &pr.h1, &pr.lang, &pr.canonical,
-			&pr.metaRobots, &pr.xRobots, &pr.rendered, &pr.crawledAt,
+			&pr.metaRobots, &pr.xRobots, &pr.rendered, &pr.crawledAt, &pr.robotsState,
 		); err != nil {
 			return nil, fmt.Errorf("audit adapter: scan page: %w", err)
+		}
+
+		if pr.crawledAt == "" {
+			return nil, fmt.Errorf("%w: page url_id %d has empty crawled_at", ErrMalformedPageTimestamp, pr.urlID)
+		}
+		if _, err := time.Parse(time.RFC3339, pr.crawledAt); err != nil {
+			return nil, fmt.Errorf("%w: page url_id %d crawled_at %q: %v", ErrMalformedPageTimestamp, pr.urlID, pr.crawledAt, err)
 		}
 
 		if pr.dataJSON != "" {
@@ -242,26 +261,21 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		return nil, fmt.Errorf("audit adapter: read links: %w", err)
 	}
 
-	// 6. Build UrlResource objects
+	// 6. Build UrlResource objects in deterministic order
 	var urlResources []audit.UrlResource
-	for urlID, rawURL := range urlsByID {
-		parsed, err := url.Parse(rawURL)
-		var (
-			scheme, host, pathStr, query, origin string
-			port                                int
-		)
-		if err == nil {
-			scheme = parsed.Scheme
-			host = parsed.Hostname()
-			pathStr = parsed.EscapedPath()
-			query = parsed.RawQuery
-			origin = parsed.Scheme + "://" + parsed.Host
-			if p := parsed.Port(); p != "" {
-				port, _ = strconv.Atoi(p)
-			}
-		} else {
-			origin = rawURL
+	for _, urlID := range urlIDs {
+		rawURL := urlsByID[urlID]
+		normURL, fragRemoved, err := normalizeURL(rawURL)
+		if err != nil {
+			return nil, fmt.Errorf("audit adapter: url %d: %w", urlID, err)
 		}
+		normParsed, _ := url.Parse(normURL)
+
+		var portInt int
+		if p := normParsed.Port(); p != "" {
+			portInt, _ = strconv.Atoi(p)
+		}
+		origin := normParsed.Scheme + "://" + normParsed.Host
 
 		var isInternal *bool
 		if pr, exists := pagesByURLID[urlID]; exists {
@@ -276,13 +290,13 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			URLID:           audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, urlID)),
 			AuditRunID:      req.AuditRunID,
 			URL:             rawURL,
-			NormalizedURL:   rawURL,
-			Scheme:          scheme,
-			Host:            host,
-			Port:            port,
-			Path:            pathStr,
-			Query:           query,
-			FragmentRemoved: false,
+			NormalizedURL:   normURL,
+			Scheme:          normParsed.Scheme,
+			Host:            normParsed.Hostname(),
+			Port:            portInt,
+			Path:            normParsed.EscapedPath(),
+			Query:           normParsed.RawQuery,
+			FragmentRemoved: fragRemoved,
 			IsInternal:      isInternal,
 			Origin:          origin,
 			CreatedAt:       nil, // Not persisted in SQLite
@@ -290,26 +304,720 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		urlResources = append(urlResources, ur)
 	}
 
-	// 7. Build DiscoveryRecords with strict provenance
+	// 7. Build DiscoveryRecords with strict provenance and multiple-record support
 	var (
 		discoveryRecords []audit.DiscoveryRecord
 		evidenceGaps     []EvidenceGap
 	)
 
-	// Pre-populate standard global gaps
-	evidenceGaps = append(evidenceGaps,
-		EvidenceGap{
+	for _, urlID := range urlIDs {
+		rawURL := urlsByID[urlID]
+		urlIDStr := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, urlID))
+		pr := pagesByURLID[urlID]
+		provenanceCount := 0
+
+		// 7a. Seed URL discovery
+		if rawURL == seedURL {
+			discoveryRecords = append(discoveryRecords, audit.DiscoveryRecord{
+				DiscoveryID:   audit.DiscoveryID(fmt.Sprintf("disc:%s:%d:%s", req.AuditRunID, urlID, audit.DiscoveryStartURL)),
+				AuditRunID:    req.AuditRunID,
+				URLID:         urlIDStr,
+				DiscoveryType: audit.DiscoveryStartURL,
+				SourceURLID:   nil,
+				SourceRef:     "sitecrawl_runs:" + req.CrawlRunID,
+				DiscoveredAt:  runStartedAt,
+			})
+			provenanceCount++
+		}
+
+		// 7b. Supplied URL list discovery (only when proven by SourceManual / list admission)
+		if pr != nil && (pr.discoveredBy == sitecrawl.SourceManual || pr.page.Source == sitecrawl.SourceManual) {
+			discoveryRecords = append(discoveryRecords, audit.DiscoveryRecord{
+				DiscoveryID:   audit.DiscoveryID(fmt.Sprintf("disc:%s:%d:%s", req.AuditRunID, urlID, audit.DiscoverySuppliedURLList)),
+				AuditRunID:    req.AuditRunID,
+				URLID:         urlIDStr,
+				DiscoveryType: audit.DiscoverySuppliedURLList,
+				SourceURLID:   nil,
+				SourceRef:     "sitecrawl_runs:" + req.CrawlRunID + ":list",
+				DiscoveredAt:  runStartedAt,
+			})
+			provenanceCount++
+		}
+
+		// 7c. Sitemap discovery
+		if pr != nil && (pr.discoveredBy == sitecrawl.SourceSitemap || pr.page.Source == sitecrawl.SourceSitemap) {
+			obsTime, _ := time.Parse(time.RFC3339, pr.crawledAt)
+			if obsTime.IsZero() {
+				obsTime = runStartedAt
+			}
+			discoveryRecords = append(discoveryRecords, audit.DiscoveryRecord{
+				DiscoveryID:   audit.DiscoveryID(fmt.Sprintf("disc:%s:%d:%s", req.AuditRunID, urlID, audit.DiscoverySitemap)),
+				AuditRunID:    req.AuditRunID,
+				URLID:         urlIDStr,
+				DiscoveryType: audit.DiscoverySitemap,
+				SourceURLID:   nil,
+				SourceRef:     fmt.Sprintf("sitecrawl_pages:%s:%d", req.CrawlRunID, urlID),
+				DiscoveredAt:  obsTime,
+			})
+			provenanceCount++
+		}
+
+		// 7d. Internal link discovery (MUST be verified by an incoming non-resource anchor link)
+		if edges, ok := incomingAnchorEdges[urlID]; ok && len(edges) > 0 {
+			firstEdge := edges[0]
+			srcURLID := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, firstEdge.srcID))
+			obsTime := runStartedAt
+			if p, ok := pagesByURLID[firstEdge.srcID]; ok {
+				t, err := time.Parse(time.RFC3339, p.crawledAt)
+				if err == nil {
+					obsTime = t
+				}
+			}
+
+			discoveryRecords = append(discoveryRecords, audit.DiscoveryRecord{
+				DiscoveryID:   audit.DiscoveryID(fmt.Sprintf("disc:%s:%d:%s", req.AuditRunID, urlID, audit.DiscoveryInternalLink)),
+				AuditRunID:    req.AuditRunID,
+				URLID:         urlIDStr,
+				DiscoveryType: audit.DiscoveryInternalLink,
+				SourceURLID:   &srcURLID,
+				SourceRef:     fmt.Sprintf("sitecrawl_links:%s:%d:%d", req.CrawlRunID, firstEdge.srcID, firstEdge.seq),
+				DiscoveredAt:  obsTime,
+			})
+			provenanceCount++
+		}
+
+		// 7e. Ambiguous or non-anchor provenance
+		if provenanceCount == 0 && pr != nil && (pr.discoveredBy == sitecrawl.SourceLink || pr.page.Source == sitecrawl.SourceLink) {
+			evidenceGaps = append(evidenceGaps, EvidenceGap{
+				GapCode:         GapDiscoveryProvenanceAmbiguous,
+				SubjectRef:      string(urlIDStr),
+				Field:           "discovery_record",
+				Reason:          "Page is marked with source 'link' but has no supporting internal anchor edge in sitecrawl_links (e.g. canonical or hreflang reference).",
+				SourceComponent: "sitecrawl_pages",
+			})
+		}
+	}
+
+	// 8. Build FetchObservations, RedirectHops, HtmlObservations, Directives, Canonicals in deterministic order
+	var (
+		fetchObservations           []audit.FetchObservation
+		redirectHops                []audit.RedirectHop
+		htmlObservations            []audit.HtmlObservation
+		robotsDirectiveObservations []audit.RobotsDirectiveObservation
+		canonicalObservations       []audit.CanonicalObservation
+		normalizedObservations      []audit.NormalizedObservation
+		obsSeq                      int
+	)
+
+	nextObsID := func() audit.ObservationID {
+		obsSeq++
+		return audit.ObservationID(fmt.Sprintf("obs:%s:%d", req.SnapshotID, obsSeq))
+	}
+
+	requestProfile := mapRequestProfile(opts.UserAgent)
+
+	for _, urlID := range urlIDs {
+		pr, exists := pagesByURLID[urlID]
+		if !exists {
+			continue
+		}
+		urlIDStr := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, urlID))
+		fetchID := audit.FetchID(fmt.Sprintf("fetch:%s:%d", req.AuditRunID, urlID))
+
+		obsTime, _ := time.Parse(time.RFC3339, pr.crawledAt)
+
+		// Acquisition purpose determination
+		var purpose *audit.AcquisitionPurpose
+		if pr.discoveredBy == sitecrawl.SourceRedirect || pr.page.Source == sitecrawl.SourceRedirect {
+			p := audit.PurposeRedirectTarget
+			purpose = &p
+		} else if pr.url == seedURL ||
+			pr.discoveredBy == sitecrawl.SourceSitemap || pr.page.Source == sitecrawl.SourceSitemap ||
+			pr.discoveredBy == sitecrawl.SourceManual || pr.page.Source == sitecrawl.SourceManual ||
+			len(incomingAnchorEdges[urlID]) > 0 {
+			p := audit.PurposeCrawl
+			purpose = &p
+		} else {
+			purpose = nil
+			evidenceGaps = append(evidenceGaps, EvidenceGap{
+				GapCode:         GapAcquisitionPurposeAmbiguous,
+				SubjectRef:      string(urlIDStr),
+				Field:           "acquisition_purpose",
+				Reason:          "Page fetch occurred without confirmed anchor, seed, sitemap, or redirect provenance; acquisition purpose is unavailable.",
+				SourceComponent: "sitecrawl_pages",
+			})
+		}
+
+		// FetchAttempted determination
+		fetchAttempted := true
+		isRobotsBlocked := (pr.robotsState == sitecrawl.RobotsBlocked || pr.page.RobotsState == sitecrawl.RobotsBlocked)
+		if isRobotsBlocked && pr.status == 0 && pr.errorType == "" {
+			fetchAttempted = false
+		}
+
+		// Fetch error normalization
+		fetchError, errGap := normalizeFetchError(pr.errorType, string(urlIDStr))
+		if errGap != nil {
+			evidenceGaps = append(evidenceGaps, *errGap)
+		}
+
+		var finalURLID *audit.URLID
+		if pr.redirectTo != "" {
+			if fid, ok := idsByURL[pr.redirectTo]; ok {
+				fidStr := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, fid))
+				finalURLID = &fidStr
+			}
+		} else if len(pr.page.Redirects) > 0 {
+			lastHop := pr.page.Redirects[len(pr.page.Redirects)-1]
+			if fid, ok := idsByURL[lastHop.Location]; ok {
+				fidStr := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, fid))
+				finalURLID = &fidStr
+			}
+		}
+
+		fetchObs := audit.FetchObservation{
+			FetchID:             fetchID,
+			AuditRunID:          req.AuditRunID,
+			URLID:               urlIDStr,
+			AcquisitionPurpose:  purpose,
+			RequestProfile:      requestProfile,
+			RequestedAt:         nil, // Not stored
+			CompletedAt:         nil, // Not stored
+			FetchAttempted:      fetchAttempted,
+			Status:              pr.status,
+			FinalURLID:          finalURLID,
+			ContentType:         pr.contentType,
+			ResponseTimeMs:      int64(pr.responseMs),
+			FetchErrorType:      fetchError,
+			TLSValid:            nil, // Not verified
+			ChallengeDetected:   nil, // Not verified
+			ResponseHeadersRef:  "",
+			BodyArtifactRef:     "",
+			ObservedAt:          obsTime,
+		}
+		fetchObservations = append(fetchObservations, fetchObs)
+
+		pageSrcRef := fmt.Sprintf("sitecrawl_pages:%s:%d", req.CrawlRunID, urlID)
+
+		// Normalized observations for transport / HTTP
+		normalizedObservations = append(normalizedObservations,
+			audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "url_identity",
+				Value:              pr.url,
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			},
+		)
+
+		if fetchAttempted || pr.status > 0 {
+			normalizedObservations = append(normalizedObservations,
+				audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "http_status",
+					Value:              strconv.Itoa(pr.status),
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{pageSrcRef},
+					ObservedAt:         obsTime,
+				},
+			)
+		}
+
+		if pr.contentType != "" {
+			normalizedObservations = append(normalizedObservations,
+				audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "content_type",
+					Value:              pr.contentType,
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{pageSrcRef},
+					ObservedAt:         obsTime,
+				},
+			)
+		}
+
+		normalizedObservations = append(normalizedObservations,
+			audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "crawl_depth",
+				Value:              strconv.Itoa(pr.depth),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			},
+		)
+
+		if pr.responseMs > 0 {
+			normalizedObservations = append(normalizedObservations,
+				audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "response_time_ms",
+					Value:              strconv.Itoa(pr.responseMs),
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{pageSrcRef},
+					ObservedAt:         obsTime,
+				},
+			)
+		}
+
+		if fetchError != "" {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "fetch_error_type",
+				Value:              fetchError,
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+
+		if purpose != nil {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "acquisition_purpose",
+				Value:              string(*purpose),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+
+		// 8b. Redirect Hops
+		if len(pr.page.Redirects) > 0 {
+			for hopIdx, hop := range pr.page.Redirects {
+				resolvedTarget := hop.Location
+				if baseParsed, err := url.Parse(hop.URL); err == nil {
+					if refParsed, err := url.Parse(hop.Location); err == nil {
+						resolvedTarget = baseParsed.ResolveReference(refParsed).String()
+					}
+				}
+
+				redirectHops = append(redirectHops, audit.RedirectHop{
+					RedirectHopID:     audit.RedirectHopID(fmt.Sprintf("hop:%s:%d:%d", req.AuditRunID, urlID, hopIdx)),
+					FetchID:           fetchID,
+					HopIndex:          hopIdx,
+					SourceURL:         hop.URL,
+					Status:            hop.Status,
+					LocationRaw:       hop.Location,
+					ResolvedTargetURL: resolvedTarget,
+					ObservedAt:        obsTime,
+				})
+			}
+		}
+
+		// 8c. HTML Observations
+		isHTML := pr.kind == sitecrawl.KindHTML || strings.Contains(pr.contentType, "html")
+		if isHTML {
+			isRendered := (pr.rendered == 1 || pr.page.Rendered)
+			if isRendered {
+				evidenceGaps = append(evidenceGaps, EvidenceGap{
+					GapCode:         GapRenderedRawSourceUnavailable,
+					SubjectRef:      string(urlIDStr),
+					Field:           "raw_html_evidence",
+					Reason:          "Page was rendered via headless browser; raw server-rendered HTML was replaced and is unavailable.",
+					SourceComponent: "sitecrawl_pages",
+				})
+
+				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "rendered",
+					Value:              "true",
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{pageSrcRef},
+					ObservedAt:         obsTime,
+				})
+			}
+
+			var xRobotsRaw []string
+			if pr.page.XRobotsTag != "" {
+				xRobotsRaw = append(xRobotsRaw, pr.page.XRobotsTag)
+			} else if pr.xRobots != "" {
+				xRobotsRaw = append(xRobotsRaw, pr.xRobots)
+			}
+
+			if isRendered {
+				// Rendered page: DO NOT emit raw-style title, meta description, H1, meta robots, or canonicals.
+				// Preserved: X-Robots-Tag (HTTP response header) and rendered = true fact.
+				htmlObs := audit.HtmlObservation{
+					HTMLObservationID:   audit.HtmlObservationID(fmt.Sprintf("html:%s:%d", req.AuditRunID, urlID)),
+					AuditRunID:          req.AuditRunID,
+					URLID:               urlIDStr,
+					FetchID:             fetchID,
+					Title:               "",
+					MetaDescription:     "",
+					H1Values:            nil,
+					MetaRobotsRaw:       nil,
+					XRobotsRaw:          xRobotsRaw,
+					CanonicalRawValues:  nil,
+					MainTextPresent:     nil,
+					MainTextFingerprint: "",
+					ContentFingerprint:  "",
+					ObservedAt:          obsTime,
+				}
+				htmlObservations = append(htmlObservations, htmlObs)
+
+				if len(xRobotsRaw) > 0 {
+					hasHeaderNoindex := false
+					for dirIdx, raw := range xRobotsRaw {
+						tokens := parseDirectiveTokens(raw)
+						isNoindex := containsToken(tokens, "noindex")
+						if isNoindex {
+							hasHeaderNoindex = true
+						}
+						robotsDirectiveObservations = append(robotsDirectiveObservations, audit.RobotsDirectiveObservation{
+							RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:header:%d", req.AuditRunID, urlID, dirIdx)),
+							AuditRunID:                   req.AuditRunID,
+							URLID:                        urlIDStr,
+							Source:                       audit.DirectiveSourceHTTPHeader,
+							RawValue:                     raw,
+							ParsedTokens:                 tokens,
+							EffectiveNoindex:             isNoindex,
+							ObservedAt:                   obsTime,
+						})
+					}
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "x_robots_raw",
+						Value:              strings.Join(xRobotsRaw, ", "),
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+					noindexVal := "false"
+					if hasHeaderNoindex {
+						noindexVal = "true"
+					}
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "effective_noindex",
+						Value:              noindexVal,
+						DerivationType:     audit.DerivationNormalized,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+				}
+			} else {
+				// Non-rendered page: extract verified raw HTML fields
+				h1Values := pr.page.H1
+				if len(h1Values) == 0 && pr.h1 != "" {
+					h1Values = []string{pr.h1}
+				}
+
+				var metaRobotsRaw []string
+				if pr.page.MetaRobots != "" {
+					metaRobotsRaw = append(metaRobotsRaw, pr.page.MetaRobots)
+				} else if pr.metaRobots != "" {
+					metaRobotsRaw = append(metaRobotsRaw, pr.metaRobots)
+				}
+
+				titleVal := pr.page.Title
+				if titleVal == "" {
+					titleVal = pr.title
+				}
+				metaDescVal := pr.page.MetaDesc
+				if metaDescVal == "" {
+					metaDescVal = pr.metaDesc
+				}
+
+				htmlObs := audit.HtmlObservation{
+					HTMLObservationID:   audit.HtmlObservationID(fmt.Sprintf("html:%s:%d", req.AuditRunID, urlID)),
+					AuditRunID:          req.AuditRunID,
+					URLID:               urlIDStr,
+					FetchID:             fetchID,
+					Title:               titleVal,
+					MetaDescription:     metaDescVal,
+					H1Values:            h1Values,
+					MetaRobotsRaw:       metaRobotsRaw,
+					XRobotsRaw:          xRobotsRaw,
+					CanonicalRawValues:  nil, // Raw canonical syntax unavailable
+					MainTextPresent:     nil, // Not verified
+					MainTextFingerprint: "",
+					ContentFingerprint:  "",
+					ObservedAt:          obsTime,
+				}
+				htmlObservations = append(htmlObservations, htmlObs)
+
+				// Normalized HTML fields
+				if titleVal != "" {
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "title",
+						Value:              titleVal,
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+				}
+				if metaDescVal != "" {
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "meta_description",
+						Value:              metaDescVal,
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+				}
+				for _, h1 := range h1Values {
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "h1",
+						Value:              h1,
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+				}
+
+				// Robots directives
+				hasNoindex := false
+				if len(metaRobotsRaw) > 0 {
+					for dirIdx, raw := range metaRobotsRaw {
+						tokens := parseDirectiveTokens(raw)
+						isNoindex := containsToken(tokens, "noindex")
+						if isNoindex {
+							hasNoindex = true
+						}
+						robotsDirectiveObservations = append(robotsDirectiveObservations, audit.RobotsDirectiveObservation{
+							RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, dirIdx)),
+							AuditRunID:                   req.AuditRunID,
+							URLID:                        urlIDStr,
+							Source:                       audit.DirectiveSourceMeta,
+							RawValue:                     raw,
+							ParsedTokens:                 tokens,
+							EffectiveNoindex:             isNoindex,
+							ObservedAt:                   obsTime,
+						})
+					}
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "meta_robots_raw",
+						Value:              strings.Join(metaRobotsRaw, ", "),
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+				}
+
+				if len(xRobotsRaw) > 0 {
+					for dirIdx, raw := range xRobotsRaw {
+						tokens := parseDirectiveTokens(raw)
+						isNoindex := containsToken(tokens, "noindex")
+						if isNoindex {
+							hasNoindex = true
+						}
+						robotsDirectiveObservations = append(robotsDirectiveObservations, audit.RobotsDirectiveObservation{
+							RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:header:%d", req.AuditRunID, urlID, dirIdx)),
+							AuditRunID:                   req.AuditRunID,
+							URLID:                        urlIDStr,
+							Source:                       audit.DirectiveSourceHTTPHeader,
+							RawValue:                     raw,
+							ParsedTokens:                 tokens,
+							EffectiveNoindex:             isNoindex,
+							ObservedAt:                   obsTime,
+						})
+					}
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "x_robots_raw",
+						Value:              strings.Join(xRobotsRaw, ", "),
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+				}
+
+				if len(metaRobotsRaw) > 0 || len(xRobotsRaw) > 0 {
+					noindexVal := "false"
+					if hasNoindex {
+						noindexVal = "true"
+					}
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "effective_noindex",
+						Value:              noindexVal,
+						DerivationType:     audit.DerivationNormalized,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+				}
+
+				// Canonical observations
+				canonicals := pr.page.Canonicals
+				if len(canonicals) == 0 && (pr.page.Canonical != "" || pr.canonical != "") {
+					c := pr.page.Canonical
+					if c == "" {
+						c = pr.canonical
+					}
+					canonicals = []string{c}
+				}
+
+				if len(canonicals) > 0 {
+					var targetIDs []audit.URLID
+					for _, c := range canonicals {
+						if tid, ok := idsByURL[c]; ok {
+							targetIDs = append(targetIDs, audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, tid)))
+						}
+					}
+
+					canonicalObservations = append(canonicalObservations, audit.CanonicalObservation{
+						CanonicalObservationID: audit.CanonicalObservationID(fmt.Sprintf("canon:%s:%d", req.AuditRunID, urlID)),
+						AuditRunID:             req.AuditRunID,
+						URLID:                  urlIDStr,
+						CanonicalCount:         len(canonicals),
+						RawValues:              nil, // Raw canonical syntax unavailable
+						NormalizedValues:       canonicals,
+						ResolvedTargetURLIDs:   targetIDs,
+						ParseErrors:            nil,
+						ObservedAt:             obsTime,
+					})
+
+					for _, c := range canonicals {
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "canonical_resolved",
+							Value:              c,
+							DerivationType:     audit.DerivationNormalized,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	// 9. Add normalized observations for links
+	for _, lo := range linkObservations {
+		linkSrcRef := fmt.Sprintf("sitecrawl_links:%s", strings.TrimPrefix(string(lo.LinkID), "link:"+string(req.AuditRunID)+":"))
+		normalizedObservations = append(normalizedObservations,
+			audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectLink,
+				SubjectRef:         string(lo.LinkID),
+				Field:              "link_target",
+				Value:              lo.TargetURLResolved,
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{linkSrcRef},
+				ObservedAt:         lo.ObservedAt,
+			},
+			audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectLink,
+				SubjectRef:         string(lo.LinkID),
+				Field:              "link_anchor",
+				Value:              lo.AnchorText,
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{linkSrcRef},
+				ObservedAt:         lo.ObservedAt,
+			},
+			audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectLink,
+				SubjectRef:         string(lo.LinkID),
+				Field:              "link_location",
+				Value:              lo.LinkLocation,
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{linkSrcRef},
+				ObservedAt:         lo.ObservedAt,
+			},
+		)
+	}
+
+	// 10. Append conditional and global capability-level evidence gaps
+	if len(canonicalObservations) > 0 {
+		evidenceGaps = append(evidenceGaps, EvidenceGap{
 			GapCode:         GapRawCanonicalUnavailable,
 			Field:           "raw_canonical_values",
 			Reason:          "SiteCrawl normalizes and resolves canonical references before SQLite persistence; raw canonical declaration syntax is unavailable.",
 			SourceComponent: "sitecrawl_pages",
-		},
-		EvidenceGap{
+		})
+	}
+	if len(linkObservations) > 0 {
+		evidenceGaps = append(evidenceGaps, EvidenceGap{
 			GapCode:         GapRawHrefUnavailable,
 			Field:           "href_raw",
 			Reason:          "SiteCrawl resolves link targets before SQLite persistence; original raw href attributes are not preserved.",
 			SourceComponent: "sitecrawl_links",
-		},
+		})
+	}
+
+	evidenceGaps = append(evidenceGaps,
 		EvidenceGap{
 			GapCode:         GapFetchTimingUnavailable,
 			Field:           "requested_at / completed_at",
@@ -396,553 +1104,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		},
 	)
 
-	for urlID, rawURL := range urlsByID {
-		urlIDStr := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, urlID))
-		pr := pagesByURLID[urlID]
-
-		// 7a. Seed URL discovery
-		if rawURL == seedURL {
-			discoveryRecords = append(discoveryRecords, audit.DiscoveryRecord{
-				DiscoveryID:   audit.DiscoveryID(fmt.Sprintf("disc:%s:%d", req.AuditRunID, urlID)),
-				AuditRunID:    req.AuditRunID,
-				URLID:         urlIDStr,
-				DiscoveryType: audit.DiscoveryStartURL,
-				SourceURLID:   nil,
-				SourceRef:     "sitecrawl_runs:" + req.CrawlRunID,
-				DiscoveredAt:  runStartedAt,
-			})
-			continue
-		}
-
-		// 7b. List mode manual list discovery
-		if opts.Mode == sitecrawl.ModeList {
-			discoveryRecords = append(discoveryRecords, audit.DiscoveryRecord{
-				DiscoveryID:   audit.DiscoveryID(fmt.Sprintf("disc:%s:%d", req.AuditRunID, urlID)),
-				AuditRunID:    req.AuditRunID,
-				URLID:         urlIDStr,
-				DiscoveryType: audit.DiscoverySuppliedURLList,
-				SourceURLID:   nil,
-				SourceRef:     "sitecrawl_runs:" + req.CrawlRunID + ":list",
-				DiscoveredAt:  runStartedAt,
-			})
-			continue
-		}
-
-		// 7c. Sitemap discovery
-		if pr != nil && (pr.discoveredBy == sitecrawl.SourceSitemap || pr.page.Source == sitecrawl.SourceSitemap) {
-			obsTime, _ := time.Parse(time.RFC3339, pr.crawledAt)
-			if obsTime.IsZero() {
-				obsTime = runStartedAt
-			}
-			discoveryRecords = append(discoveryRecords, audit.DiscoveryRecord{
-				DiscoveryID:   audit.DiscoveryID(fmt.Sprintf("disc:%s:%d", req.AuditRunID, urlID)),
-				AuditRunID:    req.AuditRunID,
-				URLID:         urlIDStr,
-				DiscoveryType: audit.DiscoverySitemap,
-				SourceURLID:   nil,
-				SourceRef:     fmt.Sprintf("sitecrawl_pages:%s:%d", req.CrawlRunID, urlID),
-				DiscoveredAt:  obsTime,
-			})
-			continue
-		}
-
-		// 7d. Internal link discovery (MUST be verified by an incoming non-resource anchor link)
-		if edges, ok := incomingAnchorEdges[urlID]; ok && len(edges) > 0 {
-			firstEdge := edges[0]
-			srcURLID := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, firstEdge.srcID))
-			obsTime := runStartedAt
-			if p, ok := pagesByURLID[firstEdge.srcID]; ok {
-				t, err := time.Parse(time.RFC3339, p.crawledAt)
-				if err == nil {
-					obsTime = t
-				}
-			}
-
-			discoveryRecords = append(discoveryRecords, audit.DiscoveryRecord{
-				DiscoveryID:   audit.DiscoveryID(fmt.Sprintf("disc:%s:%d", req.AuditRunID, urlID)),
-				AuditRunID:    req.AuditRunID,
-				URLID:         urlIDStr,
-				DiscoveryType: audit.DiscoveryInternalLink,
-				SourceURLID:   &srcURLID,
-				SourceRef:     fmt.Sprintf("sitecrawl_links:%s:%d:%d", req.CrawlRunID, firstEdge.srcID, firstEdge.seq),
-				DiscoveredAt:  obsTime,
-			})
-			continue
-		}
-
-		// 7e. Ambiguous or non-anchor provenance
-		if pr != nil && (pr.discoveredBy == sitecrawl.SourceLink || pr.page.Source == sitecrawl.SourceLink) {
-			evidenceGaps = append(evidenceGaps, EvidenceGap{
-				GapCode:         GapDiscoveryProvenanceAmbiguous,
-				SubjectRef:      string(urlIDStr),
-				Field:           "discovery_record",
-				Reason:          "Page is marked with source 'link' but has no supporting internal anchor edge in sitecrawl_links (e.g. canonical or hreflang reference).",
-				SourceComponent: "sitecrawl_pages",
-			})
-		}
-		// Redirect continuations (SourceRedirect) deliberately do not produce discovery records.
-	}
-
-	// 8. Build FetchObservations, RedirectHops, HtmlObservations, Directives, Canonicals
-	var (
-		fetchObservations           []audit.FetchObservation
-		redirectHops                []audit.RedirectHop
-		htmlObservations            []audit.HtmlObservation
-		robotsDirectiveObservations []audit.RobotsDirectiveObservation
-		canonicalObservations       []audit.CanonicalObservation
-		normalizedObservations      []audit.NormalizedObservation
-		obsSeq                      int
-	)
-
-	nextObsID := func() audit.ObservationID {
-		obsSeq++
-		return audit.ObservationID(fmt.Sprintf("obs:%s:%d", req.SnapshotID, obsSeq))
-	}
-
-	for urlID, pr := range pagesByURLID {
-		urlIDStr := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, urlID))
-		fetchID := audit.FetchID(fmt.Sprintf("fetch:%s:%d", req.AuditRunID, urlID))
-
-		obsTime, err := time.Parse(time.RFC3339, pr.crawledAt)
-		if err != nil {
-			obsTime = runStartedAt
-		}
-
-		// Acquisition purpose determination
-		var purpose audit.AcquisitionPurpose
-		if pr.discoveredBy == sitecrawl.SourceRedirect || pr.page.Source == sitecrawl.SourceRedirect {
-			purpose = audit.PurposeRedirectTarget
-		} else if pr.url == seedURL || pr.discoveredBy == sitecrawl.SourceSitemap || len(incomingAnchorEdges[urlID]) > 0 {
-			purpose = audit.PurposeCrawl
-		} else {
-			purpose = audit.PurposeCrawl
-			evidenceGaps = append(evidenceGaps, EvidenceGap{
-				GapCode:         GapAcquisitionPurposeAmbiguous,
-				SubjectRef:      string(urlIDStr),
-				Field:           "acquisition_purpose",
-				Reason:          "Page fetch occurred without confirmed anchor discovery provenance; defaulted to CRAWL.",
-				SourceComponent: "sitecrawl_pages",
-			})
-		}
-
-		var finalURLID *audit.URLID
-		if pr.redirectTo != "" {
-			if fid, ok := idsByURL[pr.redirectTo]; ok {
-				fidStr := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, fid))
-				finalURLID = &fidStr
-			}
-		} else if len(pr.page.Redirects) > 0 {
-			lastHop := pr.page.Redirects[len(pr.page.Redirects)-1]
-			if fid, ok := idsByURL[lastHop.Location]; ok {
-				fidStr := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, fid))
-				finalURLID = &fidStr
-			}
-		}
-
-		fetchObs := audit.FetchObservation{
-			FetchID:             fetchID,
-			AuditRunID:          req.AuditRunID,
-			URLID:               urlIDStr,
-			AcquisitionPurpose:  purpose,
-			RequestProfile:      audit.ProfileDefault,
-			RequestedAt:         nil, // Not stored
-			CompletedAt:         nil, // Not stored
-			FetchAttempted:      true,
-			Status:              pr.status,
-			FinalURLID:          finalURLID,
-			ContentType:         pr.contentType,
-			ResponseTimeMs:      int64(pr.responseMs),
-			FetchErrorType:      pr.errorType,
-			TLSValid:            nil, // Not verified
-			ChallengeDetected:   nil, // Not verified
-			ResponseHeadersRef:  "",
-			BodyArtifactRef:     "",
-			ObservedAt:          obsTime,
-		}
-		fetchObservations = append(fetchObservations, fetchObs)
-
-		pageSrcRef := fmt.Sprintf("sitecrawl_pages:%s:%d", req.CrawlRunID, urlID)
-
-		// Normalized observations for transport / HTTP
-		normalizedObservations = append(normalizedObservations,
-			audit.NormalizedObservation{
-				ObservationID:      nextObsID(),
-				AuditRunID:         req.AuditRunID,
-				SnapshotID:         req.SnapshotID,
-				SubjectType:        audit.SubjectURL,
-				SubjectRef:         string(urlIDStr),
-				Field:              "url_identity",
-				Value:              pr.url,
-				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{pageSrcRef},
-				ObservedAt:         obsTime,
-			},
-			audit.NormalizedObservation{
-				ObservationID:      nextObsID(),
-				AuditRunID:         req.AuditRunID,
-				SnapshotID:         req.SnapshotID,
-				SubjectType:        audit.SubjectURL,
-				SubjectRef:         string(urlIDStr),
-				Field:              "http_status",
-				Value:              strconv.Itoa(pr.status),
-				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{pageSrcRef},
-				ObservedAt:         obsTime,
-			},
-			audit.NormalizedObservation{
-				ObservationID:      nextObsID(),
-				AuditRunID:         req.AuditRunID,
-				SnapshotID:         req.SnapshotID,
-				SubjectType:        audit.SubjectURL,
-				SubjectRef:         string(urlIDStr),
-				Field:              "content_type",
-				Value:              pr.contentType,
-				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{pageSrcRef},
-				ObservedAt:         obsTime,
-			},
-			audit.NormalizedObservation{
-				ObservationID:      nextObsID(),
-				AuditRunID:         req.AuditRunID,
-				SnapshotID:         req.SnapshotID,
-				SubjectType:        audit.SubjectURL,
-				SubjectRef:         string(urlIDStr),
-				Field:              "crawl_depth",
-				Value:              strconv.Itoa(pr.depth),
-				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{pageSrcRef},
-				ObservedAt:         obsTime,
-			},
-			audit.NormalizedObservation{
-				ObservationID:      nextObsID(),
-				AuditRunID:         req.AuditRunID,
-				SnapshotID:         req.SnapshotID,
-				SubjectType:        audit.SubjectURL,
-				SubjectRef:         string(urlIDStr),
-				Field:              "response_time_ms",
-				Value:              strconv.Itoa(pr.responseMs),
-				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{pageSrcRef},
-				ObservedAt:         obsTime,
-			},
-		)
-
-		if pr.errorType != "" {
-			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-				ObservationID:      nextObsID(),
-				AuditRunID:         req.AuditRunID,
-				SnapshotID:         req.SnapshotID,
-				SubjectType:        audit.SubjectURL,
-				SubjectRef:         string(urlIDStr),
-				Field:              "fetch_error_type",
-				Value:              pr.errorType,
-				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{pageSrcRef},
-				ObservedAt:         obsTime,
-			})
-		}
-
-		// 8b. Redirect Hops
-		if len(pr.page.Redirects) > 0 {
-			for hopIdx, hop := range pr.page.Redirects {
-				resolvedTarget := hop.Location
-				if baseParsed, err := url.Parse(hop.URL); err == nil {
-					if refParsed, err := url.Parse(hop.Location); err == nil {
-						resolvedTarget = baseParsed.ResolveReference(refParsed).String()
-					}
-				}
-
-				redirectHops = append(redirectHops, audit.RedirectHop{
-					RedirectHopID:     audit.RedirectHopID(fmt.Sprintf("hop:%s:%d:%d", req.AuditRunID, urlID, hopIdx)),
-					FetchID:           fetchID,
-					HopIndex:          hopIdx,
-					SourceURL:         hop.URL,
-					Status:            hop.Status,
-					LocationRaw:       hop.Location,
-					ResolvedTargetURL: resolvedTarget,
-					ObservedAt:        obsTime,
-				})
-			}
-		}
-
-		// 8c. HTML Observations
-		isHTML := pr.kind == sitecrawl.KindHTML || strings.Contains(pr.contentType, "html")
-		if isHTML {
-			if pr.rendered == 1 || pr.page.Rendered {
-				evidenceGaps = append(evidenceGaps, EvidenceGap{
-					GapCode:         GapRenderedRawSourceUnavailable,
-					SubjectRef:      string(urlIDStr),
-					Field:           "raw_html_evidence",
-					Reason:          "Page was rendered via headless browser; raw server-rendered HTML was replaced and is unavailable.",
-					SourceComponent: "sitecrawl_pages",
-				})
-			}
-
-			h1Values := pr.page.H1
-			if len(h1Values) == 0 && pr.h1 != "" {
-				h1Values = []string{pr.h1}
-			}
-
-			var metaRobotsRaw, xRobotsRaw []string
-			if pr.page.MetaRobots != "" {
-				metaRobotsRaw = append(metaRobotsRaw, pr.page.MetaRobots)
-			} else if pr.metaRobots != "" {
-				metaRobotsRaw = append(metaRobotsRaw, pr.metaRobots)
-			}
-			if pr.page.XRobotsTag != "" {
-				xRobotsRaw = append(xRobotsRaw, pr.page.XRobotsTag)
-			} else if pr.xRobots != "" {
-				xRobotsRaw = append(xRobotsRaw, pr.xRobots)
-			}
-
-			titleVal := pr.page.Title
-			if titleVal == "" {
-				titleVal = pr.title
-			}
-			metaDescVal := pr.page.MetaDesc
-			if metaDescVal == "" {
-				metaDescVal = pr.metaDesc
-			}
-
-			htmlObs := audit.HtmlObservation{
-				HTMLObservationID:   audit.HtmlObservationID(fmt.Sprintf("html:%s:%d", req.AuditRunID, urlID)),
-				AuditRunID:          req.AuditRunID,
-				URLID:               urlIDStr,
-				FetchID:             fetchID,
-				Title:               titleVal,
-				MetaDescription:     metaDescVal,
-				H1Values:            h1Values,
-				MetaRobotsRaw:       metaRobotsRaw,
-				XRobotsRaw:          xRobotsRaw,
-				CanonicalRawValues:  nil, // Raw canonical unavailable
-				MainTextPresent:     nil, // Not verified
-				MainTextFingerprint: "",
-				ContentFingerprint:  "",
-				ObservedAt:          obsTime,
-			}
-			htmlObservations = append(htmlObservations, htmlObs)
-
-			// Normalized HTML fields
-			if titleVal != "" {
-				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-					ObservationID:      nextObsID(),
-					AuditRunID:         req.AuditRunID,
-					SnapshotID:         req.SnapshotID,
-					SubjectType:        audit.SubjectURL,
-					SubjectRef:         string(urlIDStr),
-					Field:              "title",
-					Value:              titleVal,
-					DerivationType:     audit.DerivationDirect,
-					SourceEvidenceRefs: []string{pageSrcRef},
-					ObservedAt:         obsTime,
-				})
-			}
-			if metaDescVal != "" {
-				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-					ObservationID:      nextObsID(),
-					AuditRunID:         req.AuditRunID,
-					SnapshotID:         req.SnapshotID,
-					SubjectType:        audit.SubjectURL,
-					SubjectRef:         string(urlIDStr),
-					Field:              "meta_description",
-					Value:              metaDescVal,
-					DerivationType:     audit.DerivationDirect,
-					SourceEvidenceRefs: []string{pageSrcRef},
-					ObservedAt:         obsTime,
-				})
-			}
-			for _, h1 := range h1Values {
-				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-					ObservationID:      nextObsID(),
-					AuditRunID:         req.AuditRunID,
-					SnapshotID:         req.SnapshotID,
-					SubjectType:        audit.SubjectURL,
-					SubjectRef:         string(urlIDStr),
-					Field:              "h1",
-					Value:              h1,
-					DerivationType:     audit.DerivationDirect,
-					SourceEvidenceRefs: []string{pageSrcRef},
-					ObservedAt:         obsTime,
-				})
-			}
-
-			// 8d. Robots directives
-			hasNoindex := false
-			if len(metaRobotsRaw) > 0 {
-				for dirIdx, raw := range metaRobotsRaw {
-					tokens := parseDirectiveTokens(raw)
-					isNoindex := containsToken(tokens, "noindex")
-					if isNoindex {
-						hasNoindex = true
-					}
-					robotsDirectiveObservations = append(robotsDirectiveObservations, audit.RobotsDirectiveObservation{
-						RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, dirIdx)),
-						AuditRunID:                   req.AuditRunID,
-						URLID:                        urlIDStr,
-						Source:                       audit.DirectiveSourceMeta,
-						RawValue:                     raw,
-						ParsedTokens:                 tokens,
-						EffectiveNoindex:             isNoindex,
-						ObservedAt:                   obsTime,
-					})
-				}
-				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-					ObservationID:      nextObsID(),
-					AuditRunID:         req.AuditRunID,
-					SnapshotID:         req.SnapshotID,
-					SubjectType:        audit.SubjectURL,
-					SubjectRef:         string(urlIDStr),
-					Field:              "meta_robots_raw",
-					Value:              strings.Join(metaRobotsRaw, ", "),
-					DerivationType:     audit.DerivationDirect,
-					SourceEvidenceRefs: []string{pageSrcRef},
-					ObservedAt:         obsTime,
-				})
-			}
-
-			if len(xRobotsRaw) > 0 {
-				for dirIdx, raw := range xRobotsRaw {
-					tokens := parseDirectiveTokens(raw)
-					isNoindex := containsToken(tokens, "noindex")
-					if isNoindex {
-						hasNoindex = true
-					}
-					robotsDirectiveObservations = append(robotsDirectiveObservations, audit.RobotsDirectiveObservation{
-						RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:header:%d", req.AuditRunID, urlID, dirIdx)),
-						AuditRunID:                   req.AuditRunID,
-						URLID:                        urlIDStr,
-						Source:                       audit.DirectiveSourceHTTPHeader,
-						RawValue:                     raw,
-						ParsedTokens:                 tokens,
-						EffectiveNoindex:             isNoindex,
-						ObservedAt:                   obsTime,
-					})
-				}
-				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-					ObservationID:      nextObsID(),
-					AuditRunID:         req.AuditRunID,
-					SnapshotID:         req.SnapshotID,
-					SubjectType:        audit.SubjectURL,
-					SubjectRef:         string(urlIDStr),
-					Field:              "x_robots_raw",
-					Value:              strings.Join(xRobotsRaw, ", "),
-					DerivationType:     audit.DerivationDirect,
-					SourceEvidenceRefs: []string{pageSrcRef},
-					ObservedAt:         obsTime,
-				})
-			}
-
-			if len(metaRobotsRaw) > 0 || len(xRobotsRaw) > 0 {
-				noindexVal := "false"
-				if hasNoindex {
-					noindexVal = "true"
-				}
-				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-					ObservationID:      nextObsID(),
-					AuditRunID:         req.AuditRunID,
-					SnapshotID:         req.SnapshotID,
-					SubjectType:        audit.SubjectURL,
-					SubjectRef:         string(urlIDStr),
-					Field:              "effective_noindex",
-					Value:              noindexVal,
-					DerivationType:     audit.DerivationNormalized,
-					SourceEvidenceRefs: []string{pageSrcRef},
-					ObservedAt:         obsTime,
-				})
-			}
-
-			// 8e. Canonical observations
-			canonicals := pr.page.Canonicals
-			if len(canonicals) == 0 && (pr.page.Canonical != "" || pr.canonical != "") {
-				c := pr.page.Canonical
-				if c == "" {
-					c = pr.canonical
-				}
-				canonicals = []string{c}
-			}
-
-			if len(canonicals) > 0 {
-				var targetIDs []audit.URLID
-				for _, c := range canonicals {
-					if tid, ok := idsByURL[c]; ok {
-						targetIDs = append(targetIDs, audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, tid)))
-					}
-				}
-
-				canonicalObservations = append(canonicalObservations, audit.CanonicalObservation{
-					CanonicalObservationID: audit.CanonicalObservationID(fmt.Sprintf("canon:%s:%d", req.AuditRunID, urlID)),
-					AuditRunID:             req.AuditRunID,
-					URLID:                  urlIDStr,
-					CanonicalCount:         len(canonicals),
-					RawValues:              nil, // Raw canonical unavailable
-					NormalizedValues:       canonicals,
-					ResolvedTargetURLIDs:   targetIDs,
-					ParseErrors:            nil,
-					ObservedAt:             obsTime,
-				})
-
-				for _, c := range canonicals {
-					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
-						ObservationID:      nextObsID(),
-						AuditRunID:         req.AuditRunID,
-						SnapshotID:         req.SnapshotID,
-						SubjectType:        audit.SubjectURL,
-						SubjectRef:         string(urlIDStr),
-						Field:              "canonical_resolved",
-						Value:              c,
-						DerivationType:     audit.DerivationNormalized,
-						SourceEvidenceRefs: []string{pageSrcRef},
-						ObservedAt:         obsTime,
-					})
-				}
-			}
-		}
-	}
-
-	// 9. Add normalized observations for links
-	for _, lo := range linkObservations {
-		linkSrcRef := fmt.Sprintf("sitecrawl_links:%s", strings.TrimPrefix(string(lo.LinkID), "link:"+string(req.AuditRunID)+":"))
-		normalizedObservations = append(normalizedObservations,
-			audit.NormalizedObservation{
-				ObservationID:      nextObsID(),
-				AuditRunID:         req.AuditRunID,
-				SnapshotID:         req.SnapshotID,
-				SubjectType:        audit.SubjectLink,
-				SubjectRef:         string(lo.LinkID),
-				Field:              "link_target",
-				Value:              lo.TargetURLResolved,
-				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{linkSrcRef},
-				ObservedAt:         lo.ObservedAt,
-			},
-			audit.NormalizedObservation{
-				ObservationID:      nextObsID(),
-				AuditRunID:         req.AuditRunID,
-				SnapshotID:         req.SnapshotID,
-				SubjectType:        audit.SubjectLink,
-				SubjectRef:         string(lo.LinkID),
-				Field:              "link_anchor",
-				Value:              lo.AnchorText,
-				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{linkSrcRef},
-				ObservedAt:         lo.ObservedAt,
-			},
-			audit.NormalizedObservation{
-				ObservationID:      nextObsID(),
-				AuditRunID:         req.AuditRunID,
-				SnapshotID:         req.SnapshotID,
-				SubjectType:        audit.SubjectLink,
-				SubjectRef:         string(lo.LinkID),
-				Field:              "link_location",
-				Value:              lo.LinkLocation,
-				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{linkSrcRef},
-				ObservedAt:         lo.ObservedAt,
-			},
-		)
-	}
-
-	// 10. Freeze EvidenceSnapshot
+	// 11. Lifecycle completion: BUILDING -> FROZEN
 	frozenTime := time.Now().UTC()
 	snapshot := &audit.EvidenceSnapshot{
 		SnapshotID:               req.SnapshotID,
@@ -970,6 +1132,108 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		EvidenceSnapshot:            snapshot,
 		EvidenceGaps:                evidenceGaps,
 	}, nil
+}
+
+// normalizeURL performs truthful deterministic URL normalization according to Audit V1 specifications.
+func normalizeURL(rawURL string) (string, bool, error) {
+	if rawURL == "" {
+		return "", false, errors.New("audit adapter: empty URL")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", false, fmt.Errorf("audit adapter: parse URL %q: %w", rawURL, err)
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false, fmt.Errorf("audit adapter: URL %q has unsupported scheme %q (only http and https supported)", rawURL, parsed.Scheme)
+	}
+
+	hostName := strings.ToLower(parsed.Hostname())
+	if hostName == "" {
+		return "", false, fmt.Errorf("audit adapter: URL %q has empty host", rawURL)
+	}
+
+	port := parsed.Port()
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+
+	host := hostName
+	if port != "" {
+		host = hostName + ":" + port
+	}
+
+	fragRemoved := parsed.Fragment != "" || strings.Contains(rawURL, "#")
+
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+
+	var b strings.Builder
+	b.WriteString(scheme)
+	b.WriteString("://")
+	b.WriteString(host)
+	b.WriteString(path)
+	if parsed.RawQuery != "" {
+		b.WriteString("?")
+		b.WriteString(parsed.RawQuery)
+	}
+
+	return b.String(), fragRemoved, nil
+}
+
+// normalizeFetchError maps persisted SiteCrawl error slugs into Audit evidence vocabulary.
+func normalizeFetchError(errSlug string, urlIDStr string) (string, *EvidenceGap) {
+	if errSlug == "" {
+		return "", nil
+	}
+	switch errSlug {
+	case "dns-not-found":
+		return "DNS_ERROR", nil
+	case "timeout":
+		return "TIMEOUT", nil
+	case "connection-refused", "connection-error":
+		return "CONNECTION_ERROR", nil
+	case "ssl-error":
+		return "TLS_ERROR", nil
+	case "file-too-large":
+		return "", &EvidenceGap{
+			GapCode:         GapFetchErrorUnmappable,
+			SubjectRef:      urlIDStr,
+			Field:           "fetch_error_type",
+			Reason:          fmt.Sprintf("Source error %q is a size limit error, not a network/transport error; mapped to unavailable in Audit evidence vocabulary.", errSlug),
+			SourceComponent: "sitecrawl_pages",
+		}
+	default:
+		return "", &EvidenceGap{
+			GapCode:         GapFetchErrorUnmappable,
+			SubjectRef:      urlIDStr,
+			Field:           "fetch_error_type",
+			Reason:          fmt.Sprintf("Source error %q cannot be truthfully mapped to Audit network error vocabulary.", errSlug),
+			SourceComponent: "sitecrawl_pages",
+		}
+	}
+}
+
+// mapRequestProfile maps configured SiteCrawl user agent preset into Audit RequestProfile.
+func mapRequestProfile(userAgentPreset string) audit.RequestProfile {
+	ua := strings.ToLower(strings.TrimSpace(userAgentPreset))
+	switch {
+	case strings.Contains(ua, "googlebot"):
+		return audit.ProfileGooglebot
+	case ua == "bingbot":
+		return audit.ProfileCustomBot
+	case ua == "oai-searchbot" || ua == "oaisearchbot":
+		return audit.ProfileOAISearchbot
+	case ua == "gptbot":
+		return audit.ProfileGPTBot
+	case ua == "" || ua == "sitecrawl" || ua == "chrome" || ua == "chrome-mobile":
+		return audit.ProfileDefault
+	default:
+		return audit.ProfileCustomBot
+	}
 }
 
 func parseDirectiveTokens(raw string) []string {

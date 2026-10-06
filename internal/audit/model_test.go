@@ -58,11 +58,12 @@ func TestModelOptionality(t *testing.T) {
 	}
 
 	// Test FetchObservation optional fields
+	purpose := audit.PurposeCrawl
 	f := audit.FetchObservation{
 		FetchID:            "fetch:run1:1",
 		AuditRunID:         "run1",
 		URLID:              "url:run1:1",
-		AcquisitionPurpose: audit.PurposeCrawl,
+		AcquisitionPurpose: &purpose,
 		RequestProfile:     audit.ProfileDefault,
 		RequestedAt:        nil,
 		CompletedAt:        nil,
@@ -77,8 +78,31 @@ func TestModelOptionality(t *testing.T) {
 	if err := json.Unmarshal(data, &fDec); err != nil {
 		t.Fatalf("unmarshal FetchObservation failed: %v", err)
 	}
+	if fDec.AcquisitionPurpose == nil || *fDec.AcquisitionPurpose != audit.PurposeCrawl {
+		t.Errorf("expected AcquisitionPurpose to be %v, got %v", audit.PurposeCrawl, fDec.AcquisitionPurpose)
+	}
 	if fDec.RequestedAt != nil || fDec.CompletedAt != nil || fDec.TLSValid != nil || fDec.ChallengeDetected != nil {
 		t.Errorf("expected nil optional fields in FetchObservation")
+	}
+
+	// Test FetchObservation with nil AcquisitionPurpose
+	fNilPurpose := audit.FetchObservation{
+		FetchID:            "fetch:run1:2",
+		AuditRunID:         "run1",
+		URLID:              "url:run1:2",
+		AcquisitionPurpose: nil,
+		RequestProfile:     audit.ProfileDefault,
+	}
+	data, err = json.Marshal(fNilPurpose)
+	if err != nil {
+		t.Fatalf("marshal FetchObservation with nil purpose failed: %v", err)
+	}
+	var fNilDec audit.FetchObservation
+	if err := json.Unmarshal(data, &fNilDec); err != nil {
+		t.Fatalf("unmarshal FetchObservation with nil purpose failed: %v", err)
+	}
+	if fNilDec.AcquisitionPurpose != nil {
+		t.Errorf("expected nil AcquisitionPurpose, got %v", *fNilDec.AcquisitionPurpose)
 	}
 
 	// Test HtmlObservation optional fields

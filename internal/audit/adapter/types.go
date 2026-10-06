@@ -8,13 +8,16 @@ import (
 
 // Common adapter sentinel errors.
 var (
-	ErrRunNotCompleted    = errors.New("audit adapter: crawl run is not completed")
-	ErrRunNotFound        = errors.New("audit adapter: crawl run not found")
-	ErrInvalidPolicy      = errors.New("audit adapter: invalid project policy assignment")
-	ErrEmptyAuditRunID    = errors.New("audit adapter: audit run id cannot be empty")
-	ErrEmptySnapshotID    = errors.New("audit adapter: snapshot id cannot be empty")
-	ErrEmptyCrawlRunID    = errors.New("audit adapter: crawl run id cannot be empty")
-	ErrPolicyRunMismatch  = errors.New("audit adapter: policy assignment audit run id does not match request")
+	ErrRunNotCompleted        = errors.New("audit adapter: crawl run is not completed")
+	ErrRunNotFound            = errors.New("audit adapter: crawl run not found")
+	ErrInvalidPolicy          = errors.New("audit adapter: invalid project policy assignment")
+	ErrEmptyAuditRunID        = errors.New("audit adapter: audit run id cannot be empty")
+	ErrEmptySnapshotID        = errors.New("audit adapter: snapshot id cannot be empty")
+	ErrEmptyCrawlRunID        = errors.New("audit adapter: crawl run id cannot be empty")
+	ErrPolicyRunMismatch      = errors.New("audit adapter: policy assignment audit run id does not match request")
+	ErrMalformedRunTimestamp  = errors.New("audit adapter: malformed run started_at timestamp")
+	ErrMalformedPageTimestamp = errors.New("audit adapter: malformed page crawled_at timestamp")
+	ErrMalformedOptionsJSON   = errors.New("audit adapter: malformed crawl options JSON")
 )
 
 // Standard evidence gap codes representing documented frozen data gaps
@@ -40,6 +43,7 @@ const (
 	GapAcquisitionPurposeAmbiguous        = "GAP_ACQUISITION_PURPOSE_AMBIGUOUS"
 	GapPaginationProvenanceUnavailable    = "GAP_PAGINATION_PROVENANCE_UNAVAILABLE"
 	GapDiscoveryProvenanceAmbiguous       = "GAP_DISCOVERY_PROVENANCE_AMBIGUOUS"
+	GapFetchErrorUnmappable               = "GAP_FETCH_ERROR_UNMAPPABLE"
 )
 
 // EvidenceGap records an implementation-level diagnostic stating that the
