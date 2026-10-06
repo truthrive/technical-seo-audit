@@ -20,4 +20,13 @@ var (
 
 	// ErrRuleNotImplemented is returned when a rule is defined in the registry but has no executable evaluator.
 	ErrRuleNotImplemented = errors.New("audit engine: rule is defined in registry but not implemented")
+
+	// ErrConflictingPolicy is returned when contradictory policy assignments exist for the same scope, target, and key.
+	ErrConflictingPolicy = errors.New("audit engine: conflicting policy assignments")
+
+	// ErrInvalidPolicy is returned when a ProjectPolicyAssignment fails schema or controlled-vocabulary validation.
+	ErrInvalidPolicy = errors.New("audit engine: invalid project policy assignment")
+
+	// ErrPolicyRunMismatch is returned when a policy assignment's AuditRunID does not match the evaluation run ID.
+	ErrPolicyRunMismatch = errors.New("audit engine: policy assignment audit run id does not match evaluation run id")
 )

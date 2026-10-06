@@ -10,11 +10,19 @@ import (
 	"github.com/truthrive/technical-seo-audit/internal/audit"
 )
 
+// EvaluationContext bundles the frozen EvidenceSnapshot with an immutable PolicyIndex,
+// forming the explicit, normalized boundary for rule evaluation.
+type EvaluationContext struct {
+	Snapshot *audit.EvidenceSnapshot
+	Policies *PolicyIndex
+}
+
 // Evaluator is the typed signature for an atomic rule execution handler.
 type Evaluator func(
 	ctx context.Context,
 	rule audit.RuleDefinition,
-	idx *EvidenceIndex,
+	evidence *EvidenceIndex,
+	policies *PolicyIndex,
 	snapshot *audit.EvidenceSnapshot,
 	evalTime time.Time,
 ) ([]audit.RuleResult, error)
@@ -75,7 +83,7 @@ func (e *Engine) register(ruleID string, fn Evaluator) {
 }
 
 // ImplementedRuleIDs returns the deterministically sorted list of rule IDs currently
-// supported with an executable evaluator. For Audit V1.3a, this is exactly ["AR-ACC-004"].
+// supported with an executable evaluator. For Audit V1.3a / V1.3b1, this is exactly ["AR-ACC-004"].
 func (e *Engine) ImplementedRuleIDs() []string {
 	ids := make([]string, 0, len(e.evaluators))
 	for id := range e.evaluators {
@@ -85,7 +93,8 @@ func (e *Engine) ImplementedRuleIDs() []string {
 	return ids
 }
 
-// EvaluateRule evaluates a single atomic rule against a frozen EvidenceSnapshot.
+// EvaluateRule evaluates a single atomic rule against a frozen EvidenceSnapshot
+// with an empty policy set. This is a backward-compatible wrapper around EvaluateRuleWithContext.
 // Returns ErrRuleNotFound if the rule is not in the registry,
 // or ErrRuleNotImplemented if the rule is registered but lacks a typed evaluator in this slice.
 func (e *Engine) EvaluateRule(
@@ -93,37 +102,70 @@ func (e *Engine) EvaluateRule(
 	snapshot *audit.EvidenceSnapshot,
 	ruleID string,
 ) ([]audit.RuleResult, error) {
+	return e.EvaluateRuleWithContext(ctx, EvaluationContext{
+		Snapshot: snapshot,
+		Policies: NewEmptyPolicyIndex(),
+	}, ruleID)
+}
+
+// EvaluateRuleWithContext evaluates a single atomic rule against a frozen EvidenceSnapshot
+// and explicit ProjectPolicyAssignments bundled within an EvaluationContext.
+//
+// Validation and execution order:
+//  1. Validate frozen snapshot and build read-only indexed evidence view (Steps 1 & 2)
+//  2. Normalize and validate policies (Step 3)
+//  3. Validate AuditRunID consistency between policies and snapshot (Step 4)
+//  4. Resolve rule metadata from registry (Step 5)
+//  5. Resolve typed evaluator
+//  6. Execute the typed evaluator with snapshot, evidence index, and policies (Step 6)
+//  7. Structural validation of generated results
+func (e *Engine) EvaluateRuleWithContext(
+	ctx context.Context,
+	eval EvaluationContext,
+	ruleID string,
+) ([]audit.RuleResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	// 1. Resolve rule metadata from registry
+	// 1. Validate frozen snapshot and build read-only indexed evidence view
+	idx, err := NewEvidenceIndex(eval.Snapshot)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Normalize policies (PolicyIndex must never be nil internally)
+	policies := eval.Policies
+	if policies == nil {
+		policies = NewEmptyPolicyIndex()
+	}
+
+	// 3. Validate AuditRunID consistency between policies and snapshot
+	if err := policies.ValidateForRun(eval.Snapshot.AuditRunID); err != nil {
+		return nil, err
+	}
+
+	// 4. Resolve rule metadata from registry
 	ruleDef, exists := e.registry.Get(ruleID)
 	if !exists {
 		return nil, fmt.Errorf("%w: %q", ErrRuleNotFound, ruleID)
 	}
 
-	// 2. Resolve typed evaluator
+	// 5. Resolve typed evaluator
 	evaluator, implemented := e.evaluators[ruleID]
 	if !implemented {
 		return nil, fmt.Errorf("%w: %q", ErrRuleNotImplemented, ruleID)
 	}
 
-	// 3. Validate snapshot and build read-only indexed evidence view
-	idx, err := NewEvidenceIndex(snapshot)
-	if err != nil {
-		return nil, err
-	}
-
 	evalTime := e.clock()
 
-	// 4. Execute the typed evaluator
-	results, err := evaluator(ctx, ruleDef, idx, snapshot, evalTime)
+	// 6. Execute the typed evaluator
+	results, err := evaluator(ctx, ruleDef, idx, policies, eval.Snapshot, evalTime)
 	if err != nil {
 		return nil, err
 	}
 
-	// 5. Structural validation of generated results
+	// 7. Structural validation of generated results
 	for i, rr := range results {
 		if err := validateRuleResult(rr); err != nil {
 			return nil, fmt.Errorf("audit engine: result %d failed validation: %w", i, err)

@@ -30,6 +30,7 @@ func evaluateACC004(
 	ctx context.Context,
 	rule audit.RuleDefinition,
 	idx *EvidenceIndex,
+	policies *PolicyIndex,
 	snapshot *audit.EvidenceSnapshot,
 	evalTime time.Time,
 ) ([]audit.RuleResult, error) {
