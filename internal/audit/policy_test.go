@@ -237,6 +237,59 @@ func TestPolicyKeysAndControlledValues(t *testing.T) {
 			scope:   audit.PolicyScopeSite,
 			wantErr: true,
 		},
+		// Wrong-scope tests for all site policy keys
+		{
+			name:    "sitemap_expected wrong scope",
+			key:     audit.PolicyKeySitemapExpected,
+			value:   "true",
+			scope:   audit.PolicyScopeURL,
+			wantErr: true,
+		},
+		{
+			name:    "snippet_policy wrong scope",
+			key:     audit.PolicyKeySnippetPolicy,
+			value:   "allow_unrestricted",
+			scope:   audit.PolicyScopeURL,
+			wantErr: true,
+		},
+		{
+			name:    "googlebot_access_policy wrong scope",
+			key:     audit.PolicyKeyGooglebotAccessPolicy,
+			value:   "allow",
+			scope:   audit.PolicyScopeURL,
+			wantErr: true,
+		},
+		{
+			name:    "oai_searchbot_access_policy wrong scope",
+			key:     audit.PolicyKeyOAISearchbotAccessPolicy,
+			value:   "allow",
+			scope:   audit.PolicyScopeURL,
+			wantErr: true,
+		},
+		{
+			name:    "gptbot_training_policy wrong scope",
+			key:     audit.PolicyKeyGPTBotTrainingPolicy,
+			value:   "block",
+			scope:   audit.PolicyScopeURL,
+			wantErr: true,
+		},
+
+		// Wrong-scope tests for URL policy keys
+		{
+			name:    "expected_crawlable wrong scope",
+			key:     audit.PolicyKeyExpectedCrawlable,
+			value:   "true",
+			scope:   audit.PolicyScopeSite,
+			wantErr: true,
+		},
+		{
+			name:    "expected_indexable wrong scope",
+			key:     audit.PolicyKeyExpectedIndexable,
+			value:   "true",
+			scope:   audit.PolicyScopeSite,
+			wantErr: true,
+		},
+
 		{
 			name:    "unrecognized key",
 			key:     "unknown_policy_key",
@@ -272,11 +325,32 @@ func TestProjectPolicyAssignment_Validate(t *testing.T) {
 		t.Fatalf("expected valid assignment, got error: %v", err)
 	}
 
-	// Missing ID
+	// Missing PolicyAssignmentID
 	invalid := valid
 	invalid.PolicyAssignmentID = ""
 	if err := invalid.Validate(); err == nil {
 		t.Errorf("expected error for empty policy_assignment_id")
+	}
+
+	// Missing AuditRunID
+	invalid = valid
+	invalid.AuditRunID = ""
+	if err := invalid.Validate(); err == nil {
+		t.Errorf("expected error for empty audit_run_id")
+	}
+
+	// Missing TargetRef
+	invalid = valid
+	invalid.TargetRef = ""
+	if err := invalid.Validate(); err == nil {
+		t.Errorf("expected error for empty target_ref")
+	}
+
+	// Invalid scope
+	invalid = valid
+	invalid.Scope = "INVALID_SCOPE"
+	if err := invalid.Validate(); err == nil {
+		t.Errorf("expected error for invalid policy scope")
 	}
 
 	// Invalid provenance

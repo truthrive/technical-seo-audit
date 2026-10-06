@@ -15,9 +15,10 @@ var (
 	ErrEmptySnapshotID        = errors.New("audit adapter: snapshot id cannot be empty")
 	ErrEmptyCrawlRunID        = errors.New("audit adapter: crawl run id cannot be empty")
 	ErrPolicyRunMismatch      = errors.New("audit adapter: policy assignment audit run id does not match request")
-	ErrMalformedRunTimestamp  = errors.New("audit adapter: malformed run started_at timestamp")
-	ErrMalformedPageTimestamp = errors.New("audit adapter: malformed page crawled_at timestamp")
-	ErrMalformedOptionsJSON   = errors.New("audit adapter: malformed crawl options JSON")
+	ErrMalformedRunTimestamp          = errors.New("audit adapter: malformed run started_at timestamp")
+	ErrMalformedPageTimestamp         = errors.New("audit adapter: malformed page crawled_at timestamp")
+	ErrMalformedOptionsJSON           = errors.New("audit adapter: malformed crawl options JSON")
+	ErrMalformedPageJSON              = errors.New("audit adapter: malformed page data JSON")
 )
 
 // Standard evidence gap codes representing documented frozen data gaps
@@ -44,6 +45,8 @@ const (
 	GapPaginationProvenanceUnavailable    = "GAP_PAGINATION_PROVENANCE_UNAVAILABLE"
 	GapDiscoveryProvenanceAmbiguous       = "GAP_DISCOVERY_PROVENANCE_AMBIGUOUS"
 	GapFetchErrorUnmappable               = "GAP_FETCH_ERROR_UNMAPPABLE"
+	GapBotResponseNotPreserved            = "GAP_BOT_RESPONSE_NOT_PRESERVED"
+	GapUnresolvedLinkTargetUnavailable    = "GAP_UNRESOLVED_LINK_TARGET_UNAVAILABLE"
 )
 
 // EvidenceGap records an implementation-level diagnostic stating that the

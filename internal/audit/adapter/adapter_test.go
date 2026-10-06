@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1397,5 +1398,309 @@ func TestAdapter_EvidenceGapPrecision(t *testing.T) {
 		if g.GapCode == adapter.GapRawHrefUnavailable {
 			t.Errorf("GapRawHrefUnavailable was emitted for run with NO hyperlink evidence")
 		}
+	}
+}
+
+// 26. Snapshot lifecycle: BUILDING -> FROZEN and no leak on failure
+func TestAdapter_SnapshotLifecycle(t *testing.T) {
+	db := newTestDB(t)
+	runID := "run-lifecycle"
+	seed := "https://example.com/"
+
+	_, _ = db.Exec(`INSERT INTO sitecrawl_runs(id, seed_url, host, options, state, started_at)
+		VALUES(?, ?, 'example.com', '{}', 'completed', '2026-10-01T00:00:00Z')`, runID, seed)
+	_, _ = db.Exec(`INSERT INTO sitecrawl_urls(run_id, id, url) VALUES(?, 1, ?)`, runID, seed)
+
+	pageJSON, _ := json.Marshal(sitecrawl.Page{
+		URL:       seed,
+		Status:    200,
+		CrawledAt: "2026-10-01T00:01:00Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, crawled_at)
+		VALUES(?, 1, ?, ?, 200, '2026-10-01T00:01:00Z')`, runID, seed, string(pageJSON))
+
+	before := time.Now().UTC().Add(-1 * time.Second)
+
+	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: "audit:run:life",
+		SnapshotID: "snap:run:life",
+	})
+	if err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+
+	snap := res.EvidenceSnapshot
+	if snap == nil {
+		t.Fatalf("expected non-nil snapshot")
+	}
+	if snap.SnapshotStatus != audit.SnapshotFrozen {
+		t.Errorf("expected SnapshotFrozen, got %s", snap.SnapshotStatus)
+	}
+	if snap.FrozenAt == nil {
+		t.Fatalf("expected FrozenAt to be non-nil")
+	}
+	if snap.FrozenAt.Before(before) {
+		t.Errorf("expected FrozenAt after %v, got %v", before, *snap.FrozenAt)
+	}
+
+	// On error, no partial snapshot must be returned to the caller
+	badRes, badErr := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: "non-existent-run",
+		AuditRunID: "audit:run:bad",
+		SnapshotID: "snap:run:bad",
+	})
+	if badErr == nil {
+		t.Errorf("expected error for non-existent run, got nil")
+	}
+	if badRes != nil {
+		t.Errorf("expected nil BuildResult on error, got %+v", badRes)
+	}
+}
+
+// 27. Single consistent SQLite read view
+func TestAdapter_ConsistentReadView(t *testing.T) {
+	db := newTestDB(t)
+	runID := "run-readview"
+	seed := "https://example.com/"
+
+	_, _ = db.Exec(`INSERT INTO sitecrawl_runs(id, seed_url, host, options, state, started_at)
+		VALUES(?, ?, 'example.com', '{}', 'completed', '2026-10-01T00:00:00Z')`, runID, seed)
+	_, _ = db.Exec(`INSERT INTO sitecrawl_urls(run_id, id, url) VALUES(?, 1, ?)`, runID, seed)
+
+	pageJSON, _ := json.Marshal(sitecrawl.Page{
+		URL:       seed,
+		Status:    200,
+		CrawledAt: "2026-10-01T00:01:00Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, crawled_at)
+		VALUES(?, 1, ?, ?, 200, '2026-10-01T00:01:00Z')`, runID, seed, string(pageJSON))
+
+	// Verify successful acquisition under read-only transaction
+	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: "audit:run:rv",
+		SnapshotID: "snap:run:rv",
+	})
+	if err != nil {
+		t.Fatalf("build with read view failed: %v", err)
+	}
+	if res == nil || res.EvidenceSnapshot == nil {
+		t.Fatalf("expected non-nil result from consistent read view")
+	}
+
+	// Verify cancelled context aborts and rolls back read transaction cleanly
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+	_, cancelErr := adapter.Build(ctx, db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: "audit:run:rv2",
+		SnapshotID: "snap:run:rv2",
+	})
+	if cancelErr == nil {
+		t.Errorf("expected error when context is pre-cancelled")
+	}
+}
+
+// 28. Bot-profile fallback provenance
+func TestAdapter_BotFallbackProfileProvenance(t *testing.T) {
+	tests := []struct {
+		name            string
+		configuredUA    string
+		botBlocked      bool
+		expectedProfile audit.RequestProfile
+		expectGap       bool
+	}{
+		{
+			name:            "googlebot_without_fallback",
+			configuredUA:    "googlebot",
+			botBlocked:      false,
+			expectedProfile: audit.ProfileGooglebot,
+			expectGap:       false,
+		},
+		{
+			name:            "googlebot_with_bot_blocked_fallback",
+			configuredUA:    "googlebot",
+			botBlocked:      true,
+			expectedProfile: audit.ProfileDefault, // Chrome fallback response
+			expectGap:       true,
+		},
+		{
+			name:            "default_sitecrawl_profile",
+			configuredUA:    "",
+			botBlocked:      false,
+			expectedProfile: audit.ProfileDefault,
+			expectGap:       false,
+		},
+		{
+			name:            "custom_bot_fallback",
+			configuredUA:    "bingbot",
+			botBlocked:      true,
+			expectedProfile: audit.ProfileDefault, // Chrome fallback response
+			expectGap:       true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newTestDB(t)
+			runID := "run-" + tc.name
+			optsJSON, _ := json.Marshal(sitecrawl.Options{
+				UserAgent: tc.configuredUA,
+			})
+			_, _ = db.Exec(`INSERT INTO sitecrawl_runs(id, seed_url, host, options, state, started_at)
+				VALUES(?, 'https://example.com/', 'example.com', ?, 'completed', '2026-10-01T00:00:00Z')`, runID, string(optsJSON))
+			_, _ = db.Exec(`INSERT INTO sitecrawl_urls(run_id, id, url) VALUES(?, 1, 'https://example.com/')`, runID)
+
+			page := sitecrawl.Page{
+				URL:        "https://example.com/",
+				Status:     200,
+				BotBlocked: tc.botBlocked,
+				CrawledAt:  "2026-10-01T00:01:00Z",
+			}
+			pageJSON, _ := json.Marshal(page)
+			_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, crawled_at)
+				VALUES(?, 1, 'https://example.com/', ?, 200, '2026-10-01T00:01:00Z')`, runID, string(pageJSON))
+
+			res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+				CrawlRunID: runID,
+				AuditRunID: audit.AuditRunID("audit:" + runID),
+				SnapshotID: audit.SnapshotID("snap:" + runID),
+			})
+			if err != nil {
+				t.Fatalf("build failed: %v", err)
+			}
+
+			if len(res.FetchObservations) != 1 {
+				t.Fatalf("expected 1 FetchObservation, got %d", len(res.FetchObservations))
+			}
+			obs := res.FetchObservations[0]
+			if obs.RequestProfile != tc.expectedProfile {
+				t.Errorf("expected RequestProfile %q, got %q", tc.expectedProfile, obs.RequestProfile)
+			}
+
+			foundGap := false
+			for _, g := range res.EvidenceGaps {
+				if g.GapCode == adapter.GapBotResponseNotPreserved && g.SubjectRef == string(obs.URLID) {
+					foundGap = true
+					break
+				}
+			}
+			if foundGap != tc.expectGap {
+				t.Errorf("expected GapBotResponseNotPreserved = %v, got %v", tc.expectGap, foundGap)
+			}
+		})
+	}
+}
+
+// 29. Reject malformed persisted Page JSON
+func TestAdapter_RejectMalformedPageJSON(t *testing.T) {
+	db := newTestDB(t)
+
+	// 1. Invalid JSON in sitecrawl_pages.data
+	runID := "run-malformed-page"
+	_, _ = db.Exec(`INSERT INTO sitecrawl_runs(id, seed_url, host, options, state, started_at)
+		VALUES(?, 'https://example.com/', 'example.com', '{}', 'completed', '2026-10-01T00:00:00Z')`, runID)
+	_, _ = db.Exec(`INSERT INTO sitecrawl_urls(run_id, id, url) VALUES(?, 1, 'https://example.com/')`, runID)
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, crawled_at)
+		VALUES(?, 1, 'https://example.com/', '{invalid-json-content', 200, '2026-10-01T00:01:00Z')`, runID)
+
+	_, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: "audit:run:malformed",
+		SnapshotID: "snap:run:malformed",
+	})
+	if err == nil {
+		t.Fatalf("expected error for malformed Page JSON, got nil")
+	}
+	if !errors.Is(err, adapter.ErrMalformedPageJSON) {
+		t.Errorf("expected ErrMalformedPageJSON, got %v", err)
+	}
+
+	// 2. Valid empty JSON object "{}" must be accepted
+	runID2 := "run-valid-empty-json"
+	_, _ = db.Exec(`INSERT INTO sitecrawl_runs(id, seed_url, host, options, state, started_at)
+		VALUES(?, 'https://example.com/', 'example.com', '{}', 'completed', '2026-10-01T00:00:00Z')`, runID2)
+	_, _ = db.Exec(`INSERT INTO sitecrawl_urls(run_id, id, url) VALUES(?, 1, 'https://example.com/')`, runID2)
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, crawled_at)
+		VALUES(?, 1, 'https://example.com/', '{}', 200, '2026-10-01T00:01:00Z')`, runID2)
+
+	res2, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID2,
+		AuditRunID: "audit:run:emptyjson",
+		SnapshotID: "snap:run:emptyjson",
+	})
+	if err != nil {
+		t.Fatalf("expected valid '{}' to succeed, got %v", err)
+	}
+	if res2 == nil {
+		t.Fatalf("expected non-nil BuildResult")
+	}
+}
+
+// 30. Dangling link guard: dst_id = 0 or unallocated target ID
+func TestAdapter_DanglingLinkGuard(t *testing.T) {
+	db := newTestDB(t)
+	runID := "run-dangling-link"
+	seed := "https://example.com/"
+
+	_, _ = db.Exec(`INSERT INTO sitecrawl_runs(id, seed_url, host, options, state, started_at)
+		VALUES(?, ?, 'example.com', '{}', 'completed', '2026-10-01T00:00:00Z')`, runID, seed)
+	_, _ = db.Exec(`INSERT INTO sitecrawl_urls(run_id, id, url) VALUES(?, 1, ?)`, runID, seed)
+
+	pageJSON, _ := json.Marshal(sitecrawl.Page{
+		URL:       seed,
+		Status:    200,
+		CrawledAt: "2026-10-01T00:01:00Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, crawled_at)
+		VALUES(?, 1, ?, ?, 200, '2026-10-01T00:01:00Z')`, runID, seed, string(pageJSON))
+
+	// Link 1: dst_id = 0 (URL dictionary cap hit in crawler)
+	_, _ = db.Exec(`INSERT INTO sitecrawl_links(run_id, src_id, dst_id, seq, placement, flags, anchor)
+		VALUES(?, 1, 0, 0, 1, 1, 'Capped Link')`, runID)
+
+	// Link 2: dst_id = 999 (target ID not in sitecrawl_urls)
+	_, _ = db.Exec(`INSERT INTO sitecrawl_links(run_id, src_id, dst_id, seq, placement, flags, anchor)
+		VALUES(?, 1, 999, 1, 1, 1, 'Missing Link')`, runID)
+
+	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: "audit:run:dang",
+		SnapshotID: "snap:run:dang",
+	})
+	if err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+
+	if len(res.LinkObservations) != 2 {
+		t.Fatalf("expected 2 LinkObservations, got %d", len(res.LinkObservations))
+	}
+
+	for _, l := range res.LinkObservations {
+		if l.TargetURLID != nil {
+			t.Errorf("expected TargetURLID = nil for unresolved link, got %v", *l.TargetURLID)
+		}
+		if l.TargetURLResolved != "" {
+			t.Errorf("expected TargetURLResolved to be empty, got %q", l.TargetURLResolved)
+		}
+	}
+
+	// Verify no fake DiscoveryRecords were created for dst_id 0 or 999
+	for _, d := range res.DiscoveryRecords {
+		if d.URLID == "url:audit:run:dang:0" || d.URLID == "url:audit:run:dang:999" {
+			t.Errorf("illegal discovery record created for dangling target: %+v", d)
+		}
+	}
+
+	// Verify EvidenceGap was emitted for unresolved targets
+	gapCount := 0
+	for _, g := range res.EvidenceGaps {
+		if g.GapCode == adapter.GapUnresolvedLinkTargetUnavailable && strings.HasPrefix(g.SubjectRef, "link:audit:run:dang:1:") {
+			gapCount++
+		}
+	}
+	if gapCount != 2 {
+		t.Errorf("expected 2 GapUnresolvedLinkTargetUnavailable gaps, got %d", gapCount)
 	}
 }

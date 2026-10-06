@@ -41,13 +41,22 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		}
 	}
 
-	// 2. Query and verify crawl run state
+	// 2. Open single read-only transaction for consistent source view
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("audit adapter: begin read tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	// Query and verify crawl run state
 	var (
 		runState, seedURL, host, optJSON, startedAtStr string
 		finishedAtStr                                 sql.NullString
 		foundCount, crawledCount                      int
 	)
-	err := db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT state, seed_url, host, options, started_at, finished_at, found, crawled
 		 FROM sitecrawl_runs WHERE id = ?`, req.CrawlRunID).
 		Scan(&runState, &seedURL, &host, &optJSON, &startedAtStr, &finishedAtStr, &foundCount, &crawledCount)
@@ -76,7 +85,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 	}
 
 	// 3. Load URL dictionary
-	urlRows, err := db.QueryContext(ctx,
+	urlRows, err := tx.QueryContext(ctx,
 		`SELECT id, url FROM sitecrawl_urls WHERE run_id = ? ORDER BY id ASC`, req.CrawlRunID)
 	if err != nil {
 		return nil, fmt.Errorf("audit adapter: query urls: %w", err)
@@ -136,7 +145,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		page         sitecrawl.Page
 	}
 
-	pageRows, err := db.QueryContext(ctx,
+	pageRows, err := tx.QueryContext(ctx,
 		`SELECT url_id, url, data, kind, is_internal, depth, discovered_by,
 		        status, content_type, size_bytes, response_ms, redirect_to,
 		        redirect_hops, error_type, title, meta_desc, h1, lang, canonical,
@@ -167,7 +176,9 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		}
 
 		if pr.dataJSON != "" {
-			_ = json.Unmarshal([]byte(pr.dataJSON), &pr.page)
+			if err := json.Unmarshal([]byte(pr.dataJSON), &pr.page); err != nil {
+				return nil, fmt.Errorf("%w: page url_id %d: %v", ErrMalformedPageJSON, pr.urlID, err)
+			}
 		}
 		pagesByURLID[pr.urlID] = &pr
 	}
@@ -185,7 +196,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		anchor    string
 	}
 
-	linkRows, err := db.QueryContext(ctx,
+	linkRows, err := tx.QueryContext(ctx,
 		`SELECT src_id, dst_id, seq, placement, flags, anchor
 		 FROM sitecrawl_links WHERE run_id = ? ORDER BY src_id ASC, seq ASC`, req.CrawlRunID)
 	if err != nil {
@@ -193,8 +204,11 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 	}
 	defer linkRows.Close()
 
+	var (
+		evidenceGaps     []EvidenceGap
+		linkObservations []audit.LinkObservation
+	)
 	incomingAnchorEdges := make(map[int][]linkRow)
-	var linkObservations []audit.LinkObservation
 
 	for linkRows.Next() {
 		var lr linkRow
@@ -205,15 +219,36 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		isResource := (lr.flags&(sitecrawl.FlagImageLink|sitecrawl.FlagStylesheet|sitecrawl.FlagScript) != 0) ||
 			(lr.placement == sitecrawl.PlacementImage)
 
-		// Record legitimate internal anchor links for discovery provenance
-		if !isResource && (lr.flags&sitecrawl.FlagInternal != 0) {
+		// Record legitimate internal anchor links for discovery provenance (only if dstID > 0)
+		if !isResource && (lr.flags&sitecrawl.FlagInternal != 0) && lr.dstID > 0 {
 			incomingAnchorEdges[lr.dstID] = append(incomingAnchorEdges[lr.dstID], lr)
 		}
 
 		// Build LinkObservation only for non-resource anchor edges
 		if !isResource {
-			targetURLResolved := urlsByID[lr.dstID]
-			targetURLID := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, lr.dstID))
+			var (
+				targetURLID       *audit.URLID
+				targetURLResolved string
+			)
+
+			if lr.dstID > 0 {
+				if resolved, ok := urlsByID[lr.dstID]; ok && resolved != "" {
+					tid := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, lr.dstID))
+					targetURLID = &tid
+					targetURLResolved = resolved
+				}
+			}
+
+			// Dangling link target guard: dst_id == 0 or unallocated dictionary target
+			if targetURLID == nil {
+				evidenceGaps = append(evidenceGaps, EvidenceGap{
+					GapCode:         GapUnresolvedLinkTargetUnavailable,
+					SubjectRef:      fmt.Sprintf("link:%s:%d:%d", req.AuditRunID, lr.srcID, lr.seq),
+					Field:           "target_url_id",
+					Reason:          fmt.Sprintf("Link edge from url %d at seq %d points to destination id %d which is not present in URL dictionary (e.g. allocation cap reached); target URL ID is unavailable.", lr.srcID, lr.seq, lr.dstID),
+					SourceComponent: "sitecrawl_links",
+				})
+			}
 
 			var location string
 			switch lr.placement {
@@ -244,7 +279,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				LinkID:              audit.LinkID(fmt.Sprintf("link:%s:%d:%d", req.AuditRunID, lr.srcID, lr.seq)),
 				AuditRunID:          req.AuditRunID,
 				SourceURLID:         audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, lr.srcID)),
-				TargetURLID:         &targetURLID,
+				TargetURLID:         targetURLID,
 				TargetURLRaw:        "", // Raw href not persisted by SiteCrawl
 				TargetURLResolved:   targetURLResolved,
 				ElementTag:          "a",
@@ -261,7 +296,25 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		return nil, fmt.Errorf("audit adapter: read links: %w", err)
 	}
 
-	// 6. Build UrlResource objects in deterministic order
+	// Commit read transaction after all source records are safely read
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("audit adapter: commit read tx: %w", err)
+	}
+
+	// 6. Initialize EvidenceSnapshot in BUILDING state
+	snapshot := &audit.EvidenceSnapshot{
+		SnapshotID:               req.SnapshotID,
+		AuditRunID:               req.AuditRunID,
+		CreatedAt:                time.Now().UTC(),
+		SnapshotStatus:           audit.SnapshotBuilding,
+		NormalizationVersion:     "v1.2.0",
+		CrawlComplete:            false,
+		SitemapDiscoveryComplete: false,
+		RenderSelectionComplete:  false,
+		ProbeCollectionComplete:  false,
+	}
+
+	// 7. Build UrlResource objects in deterministic order
 	var urlResources []audit.UrlResource
 	for _, urlID := range urlIDs {
 		rawURL := urlsByID[urlID]
@@ -304,11 +357,8 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		urlResources = append(urlResources, ur)
 	}
 
-	// 7. Build DiscoveryRecords with strict provenance and multiple-record support
-	var (
-		discoveryRecords []audit.DiscoveryRecord
-		evidenceGaps     []EvidenceGap
-	)
+	// 8. Build DiscoveryRecords with strict provenance and multiple-record support
+	var discoveryRecords []audit.DiscoveryRecord
 
 	for _, urlID := range urlIDs {
 		rawURL := urlsByID[urlID]
@@ -316,7 +366,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		pr := pagesByURLID[urlID]
 		provenanceCount := 0
 
-		// 7a. Seed URL discovery
+		// 8a. Seed URL discovery
 		if rawURL == seedURL {
 			discoveryRecords = append(discoveryRecords, audit.DiscoveryRecord{
 				DiscoveryID:   audit.DiscoveryID(fmt.Sprintf("disc:%s:%d:%s", req.AuditRunID, urlID, audit.DiscoveryStartURL)),
@@ -330,7 +380,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			provenanceCount++
 		}
 
-		// 7b. Supplied URL list discovery (only when proven by SourceManual / list admission)
+		// 8b. Supplied URL list discovery (only when proven by SourceManual / list admission)
 		if pr != nil && (pr.discoveredBy == sitecrawl.SourceManual || pr.page.Source == sitecrawl.SourceManual) {
 			discoveryRecords = append(discoveryRecords, audit.DiscoveryRecord{
 				DiscoveryID:   audit.DiscoveryID(fmt.Sprintf("disc:%s:%d:%s", req.AuditRunID, urlID, audit.DiscoverySuppliedURLList)),
@@ -344,7 +394,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			provenanceCount++
 		}
 
-		// 7c. Sitemap discovery
+		// 8c. Sitemap discovery
 		if pr != nil && (pr.discoveredBy == sitecrawl.SourceSitemap || pr.page.Source == sitecrawl.SourceSitemap) {
 			obsTime, _ := time.Parse(time.RFC3339, pr.crawledAt)
 			if obsTime.IsZero() {
@@ -362,7 +412,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			provenanceCount++
 		}
 
-		// 7d. Internal link discovery (MUST be verified by an incoming non-resource anchor link)
+		// 8d. Internal link discovery (MUST be verified by an incoming non-resource anchor link)
 		if edges, ok := incomingAnchorEdges[urlID]; ok && len(edges) > 0 {
 			firstEdge := edges[0]
 			srcURLID := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, firstEdge.srcID))
@@ -386,7 +436,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			provenanceCount++
 		}
 
-		// 7e. Ambiguous or non-anchor provenance
+		// 8e. Ambiguous or non-anchor provenance
 		if provenanceCount == 0 && pr != nil && (pr.discoveredBy == sitecrawl.SourceLink || pr.page.Source == sitecrawl.SourceLink) {
 			evidenceGaps = append(evidenceGaps, EvidenceGap{
 				GapCode:         GapDiscoveryProvenanceAmbiguous,
@@ -398,7 +448,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		}
 	}
 
-	// 8. Build FetchObservations, RedirectHops, HtmlObservations, Directives, Canonicals in deterministic order
+	// 9. Build FetchObservations, RedirectHops, HtmlObservations, Directives, Canonicals in deterministic order
 	var (
 		fetchObservations           []audit.FetchObservation
 		redirectHops                []audit.RedirectHop
@@ -414,7 +464,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		return audit.ObservationID(fmt.Sprintf("obs:%s:%d", req.SnapshotID, obsSeq))
 	}
 
-	requestProfile := mapRequestProfile(opts.UserAgent)
+	configuredProfile := mapRequestProfile(opts.UserAgent)
 
 	for _, urlID := range urlIDs {
 		pr, exists := pagesByURLID[urlID]
@@ -461,6 +511,19 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			evidenceGaps = append(evidenceGaps, *errGap)
 		}
 
+		// Effective request profile: account for bot-blocked Chrome fallback
+		effectiveProfile := configuredProfile
+		if pr.page.BotBlocked {
+			effectiveProfile = audit.ProfileDefault
+			evidenceGaps = append(evidenceGaps, EvidenceGap{
+				GapCode:         GapBotResponseNotPreserved,
+				SubjectRef:      string(urlIDStr),
+				Field:           "request_profile",
+				Reason:          fmt.Sprintf("Configured bot request (%s) was refused with 403 and retried with browser fallback (%s); the original bot response was discarded by crawler and is not preserved as a FetchObservation.", configuredProfile, audit.ProfileDefault),
+				SourceComponent: "sitecrawl_fetch",
+			})
+		}
+
 		var finalURLID *audit.URLID
 		if pr.redirectTo != "" {
 			if fid, ok := idsByURL[pr.redirectTo]; ok {
@@ -480,7 +543,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			AuditRunID:          req.AuditRunID,
 			URLID:               urlIDStr,
 			AcquisitionPurpose:  purpose,
-			RequestProfile:      requestProfile,
+			RequestProfile:      effectiveProfile,
 			RequestedAt:         nil, // Not stored
 			CompletedAt:         nil, // Not stored
 			FetchAttempted:      fetchAttempted,
@@ -611,7 +674,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			})
 		}
 
-		// 8b. Redirect Hops
+		// 9b. Redirect Hops
 		if len(pr.page.Redirects) > 0 {
 			for hopIdx, hop := range pr.page.Redirects {
 				resolvedTarget := hop.Location
@@ -634,7 +697,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			}
 		}
 
-		// 8c. HTML Observations
+		// 9c. HTML Observations
 		isHTML := pr.kind == sitecrawl.KindHTML || strings.Contains(pr.contentType, "html")
 		if isHTML {
 			isRendered := (pr.rendered == 1 || pr.page.Rendered)
@@ -956,22 +1019,26 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		}
 	}
 
-	// 9. Add normalized observations for links
+	// 10. Add normalized observations for links
 	for _, lo := range linkObservations {
 		linkSrcRef := fmt.Sprintf("sitecrawl_links:%s", strings.TrimPrefix(string(lo.LinkID), "link:"+string(req.AuditRunID)+":"))
+		if lo.TargetURLResolved != "" {
+			normalizedObservations = append(normalizedObservations,
+				audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectLink,
+					SubjectRef:         string(lo.LinkID),
+					Field:              "link_target",
+					Value:              lo.TargetURLResolved,
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{linkSrcRef},
+					ObservedAt:         lo.ObservedAt,
+				},
+			)
+		}
 		normalizedObservations = append(normalizedObservations,
-			audit.NormalizedObservation{
-				ObservationID:      nextObsID(),
-				AuditRunID:         req.AuditRunID,
-				SnapshotID:         req.SnapshotID,
-				SubjectType:        audit.SubjectLink,
-				SubjectRef:         string(lo.LinkID),
-				Field:              "link_target",
-				Value:              lo.TargetURLResolved,
-				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{linkSrcRef},
-				ObservedAt:         lo.ObservedAt,
-			},
 			audit.NormalizedObservation{
 				ObservationID:      nextObsID(),
 				AuditRunID:         req.AuditRunID,
@@ -999,7 +1066,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		)
 	}
 
-	// 10. Append conditional and global capability-level evidence gaps
+	// 11. Append conditional and global capability-level evidence gaps
 	if len(canonicalObservations) > 0 {
 		evidenceGaps = append(evidenceGaps, EvidenceGap{
 			GapCode:         GapRawCanonicalUnavailable,
@@ -1104,21 +1171,8 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		},
 	)
 
-	// 11. Lifecycle completion: BUILDING -> FROZEN
-	frozenTime := time.Now().UTC()
-	snapshot := &audit.EvidenceSnapshot{
-		SnapshotID:               req.SnapshotID,
-		AuditRunID:               req.AuditRunID,
-		CreatedAt:                frozenTime,
-		FrozenAt:                 &frozenTime,
-		SnapshotStatus:           audit.SnapshotFrozen,
-		NormalizationVersion:     "v1.2.0",
-		CrawlComplete:            true,
-		SitemapDiscoveryComplete: false,
-		RenderSelectionComplete:  false,
-		ProbeCollectionComplete:  false,
-		NormalizedObservations:   normalizedObservations,
-	}
+	// 12. Finalize snapshot lifecycle: BUILDING -> FROZEN
+	finalizeSnapshot(snapshot, normalizedObservations)
 
 	return &BuildResult{
 		UrlResources:                urlResources,
@@ -1132,6 +1186,15 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		EvidenceSnapshot:            snapshot,
 		EvidenceGaps:                evidenceGaps,
 	}, nil
+}
+
+// finalizeSnapshot completes the BUILDING -> FROZEN lifecycle transition for an EvidenceSnapshot.
+func finalizeSnapshot(s *audit.EvidenceSnapshot, normalizedObs []audit.NormalizedObservation) {
+	now := time.Now().UTC()
+	s.FrozenAt = &now
+	s.SnapshotStatus = audit.SnapshotFrozen
+	s.CrawlComplete = true
+	s.NormalizedObservations = normalizedObs
 }
 
 // normalizeURL performs truthful deterministic URL normalization according to Audit V1 specifications.

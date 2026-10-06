@@ -107,6 +107,9 @@ func (p ProjectPolicyAssignment) Validate() error {
 	if p.AuditRunID == "" {
 		return fmt.Errorf("audit: audit_run_id cannot be empty")
 	}
+	if p.TargetRef == "" {
+		return fmt.Errorf("audit: target_ref cannot be empty")
+	}
 	if err := ValidatePolicyScope(p.Scope); err != nil {
 		return err
 	}
@@ -141,6 +144,9 @@ func ValidatePolicyKeyValue(key PolicyKey, value string, scope PolicyScope) erro
 		}
 
 	case PolicyKeySnippetPolicy:
+		if scope != PolicyScopeSite {
+			return fmt.Errorf("audit: policy %q requires scope SITE, got %q", key, scope)
+		}
 		switch value {
 		case PolicyValueSnippetAllowUnrestricted, PolicyValueSnippetRestrict, PolicyValueSnippetUnspecified:
 			return nil
@@ -149,6 +155,9 @@ func ValidatePolicyKeyValue(key PolicyKey, value string, scope PolicyScope) erro
 		}
 
 	case PolicyKeyGooglebotAccessPolicy, PolicyKeyOAISearchbotAccessPolicy, PolicyKeyGPTBotTrainingPolicy:
+		if scope != PolicyScopeSite {
+			return fmt.Errorf("audit: policy %q requires scope SITE, got %q", key, scope)
+		}
 		switch value {
 		case PolicyValueAccessAllow, PolicyValueAccessBlock, PolicyValueAccessUnspecified:
 			return nil
@@ -169,6 +178,9 @@ func ValidatePolicyKeyValue(key PolicyKey, value string, scope PolicyScope) erro
 		}
 
 	case PolicyKeyExpectedCrawlable, PolicyKeyExpectedIndexable:
+		if scope != PolicyScopeURL {
+			return fmt.Errorf("audit: policy %q requires scope URL, got %q", key, scope)
+		}
 		switch value {
 		case PolicyValueTrue, PolicyValueFalse, PolicyValueUnspecified:
 			return nil
