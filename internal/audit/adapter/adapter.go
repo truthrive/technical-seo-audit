@@ -1267,16 +1267,26 @@ func isParameterizedDirective(name string) bool {
 	}
 }
 
-func isValidAgentToken(token string) bool {
-	if token == "" {
-		return false
-	}
-	for _, r := range token {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
-			return false
+// isSupportedAgentToken returns the normalized agent name and true if the token is an
+// explicit agent prefix recognized by the current frozen V1 vocabulary.
+// Minimal supported vocabulary: googlebot, oai-searchbot, gptbot, bingbot.
+func isSupportedAgentToken(token string) (string, bool) {
+	t := strings.ToLower(strings.TrimSpace(token))
+	switch t {
+	case "googlebot", "googlebot-image", "googlebot-news", "googlebot-video":
+		return t, true
+	case "oai-searchbot", "oaisearchbot":
+		return "oai-searchbot", true
+	case "gptbot":
+		return "gptbot", true
+	case "bingbot":
+		return "bingbot", true
+	default:
+		if strings.HasPrefix(t, "googlebot-") || strings.HasPrefix(t, "googlebot_") {
+			return t, true
 		}
+		return "", false
 	}
-	return true
 }
 
 type parsedHeaderSegment struct {
@@ -1312,14 +1322,6 @@ func parseXRobotsSegment(seg string, prevHadAgentPrefix bool) (parsedHeaderSegme
 
 	if isParameterizedDirective(firstPartLower) {
 		tokens := []string{strings.ToLower(seg)}
-		if prevHadAgentPrefix {
-			return parsedHeaderSegment{
-				target:       "",
-				scopeUnknown: true,
-				rawValue:     seg,
-				tokens:       tokens,
-			}, false
-		}
 		return parsedHeaderSegment{
 			target:       "*",
 			scopeUnknown: false,
@@ -1328,7 +1330,7 @@ func parseXRobotsSegment(seg string, prevHadAgentPrefix bool) (parsedHeaderSegme
 		}, false
 	}
 
-	if isValidAgentToken(firstPartLower) && rest != "" {
+	if agentName, ok := isSupportedAgentToken(firstPartLower); ok && rest != "" {
 		var tokens []string
 		restColonIdx := strings.Index(rest, ":")
 		if restColonIdx != -1 {
@@ -1342,13 +1344,14 @@ func parseXRobotsSegment(seg string, prevHadAgentPrefix bool) (parsedHeaderSegme
 			tokens = parseDirectiveTokens(rest)
 		}
 		return parsedHeaderSegment{
-			target:       firstPartLower,
+			target:       agentName,
 			scopeUnknown: false,
 			rawValue:     seg,
 			tokens:       tokens,
 		}, true
 	}
 
+	// Unknown prefix-like syntax (e.g. foo: bar) must remain conservative / unknown scope.
 	return parsedHeaderSegment{
 		target:       "",
 		scopeUnknown: true,
@@ -1378,6 +1381,10 @@ func processPageDirectives(
 
 	// 1. Meta directives (suppressed on rendered pages where raw server HTML was replaced)
 	metaRobotsRawStr := ""
+	var (
+		genericMetaRaw string
+		agentMetaRaw   = make(map[string]string)
+	)
 	if !isRendered {
 		if pageMetaRobots != "" {
 			metaRobotsRawStr = pageMetaRobots
@@ -1387,29 +1394,29 @@ func processPageDirectives(
 		metaRobotsRawStr = strings.TrimSpace(metaRobotsRawStr)
 
 		var (
-			robotsVal    string
-			hasRobots    bool
-			googlebotVal string
-			hasGooglebot bool
+			robotsVal string
+			hasRobots bool
 		)
 		if pageMetaTags != nil {
 			for k, v := range pageMetaTags {
-				switch strings.ToLower(strings.TrimSpace(k)) {
+				val := strings.TrimSpace(v)
+				if val == "" {
+					continue
+				}
+				kLower := strings.ToLower(strings.TrimSpace(k))
+				switch kLower {
 				case "robots":
-					if strings.TrimSpace(v) != "" {
-						robotsVal = strings.TrimSpace(v)
-						hasRobots = true
-					}
-				case "googlebot":
-					if strings.TrimSpace(v) != "" {
-						googlebotVal = strings.TrimSpace(v)
-						hasGooglebot = true
+					robotsVal = val
+					hasRobots = true
+				default:
+					if agent, ok := isSupportedAgentToken(kLower); ok {
+						agentMetaRaw[agent] = val
 					}
 				}
 			}
 		}
 
-		if hasRobots || hasGooglebot {
+		if hasRobots || len(agentMetaRaw) > 0 {
 			if hasRobots {
 				tokens := parseDirectiveTokens(robotsVal)
 				isNoindex := containsToken(tokens, "noindex") || containsToken(tokens, "none")
@@ -1428,16 +1435,23 @@ func processPageDirectives(
 				metaDirIdx++
 			}
 
-			if hasGooglebot {
-				tokens := parseDirectiveTokens(googlebotVal)
+			// Emit agent meta directives in deterministic order
+			var agentKeys []string
+			for k := range agentMetaRaw {
+				agentKeys = append(agentKeys, k)
+			}
+			sort.Strings(agentKeys)
+			for _, agent := range agentKeys {
+				val := agentMetaRaw[agent]
+				tokens := parseDirectiveTokens(val)
 				directives = append(directives, audit.RobotsDirectiveObservation{
 					RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
 					AuditRunID:                   req.AuditRunID,
 					URLID:                        urlIDStr,
 					Source:                       audit.DirectiveSourceMeta,
-					Target:                       "googlebot",
+					Target:                       agent,
 					ScopeUnknown:                 false,
-					RawValue:                     googlebotVal,
+					RawValue:                     val,
 					ParsedTokens:                 tokens,
 					EffectiveNoindex:             false, // agent-scoped evidence does not produce unqualified noindex
 					ObservedAt:                   obsTime,
@@ -1449,36 +1463,71 @@ func processPageDirectives(
 			if metaRobotsRawStr != "" {
 				allTokens := parseDirectiveTokens(metaRobotsRawStr)
 				rTokens := parseDirectiveTokens(robotsVal)
-				gTokens := parseDirectiveTokens(googlebotVal)
+				var agentTokens []string
+				for _, val := range agentMetaRaw {
+					agentTokens = append(agentTokens, parseDirectiveTokens(val)...)
+				}
 				var extraTokens []string
 				for _, t := range allTokens {
-					if !containsToken(rTokens, t) && !containsToken(gTokens, t) {
+					if !containsToken(rTokens, t) && !containsToken(agentTokens, t) {
 						extraTokens = append(extraTokens, t)
 					}
 				}
 				if len(extraTokens) > 0 {
 					extraRaw := strings.Join(extraTokens, ", ")
-					directives = append(directives, audit.RobotsDirectiveObservation{
-						RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
-						AuditRunID:                   req.AuditRunID,
-						URLID:                        urlIDStr,
-						Source:                       audit.DirectiveSourceMeta,
-						Target:                       "",
-						ScopeUnknown:                 true,
-						RawValue:                     extraRaw,
-						ParsedTokens:                 extraTokens,
-						EffectiveNoindex:             false,
-						ObservedAt:                   obsTime,
-					})
-					metaDirIdx++
-					gaps = append(gaps, EvidenceGap{
-						GapCode:         GapDirectiveScopeAmbiguous,
-						SubjectRef:      string(urlIDStr),
-						Field:           "meta_robots",
-						Reason:          fmt.Sprintf("Flattened MetaRobots contains unrecovered extra tokens: %s", extraRaw),
-						SourceComponent: "sitecrawl_pages",
-					})
+					if hasRobots && len(agentMetaRaw) == 0 {
+						// Fix 2: If robots is the ONLY relevant meta directive scope present,
+						// extra flattened meta content remains generic scope.
+						// Do not mark it unknown merely because repeated generic tags were collapsed.
+						isNoindex := containsToken(extraTokens, "noindex") || containsToken(extraTokens, "none")
+						directives = append(directives, audit.RobotsDirectiveObservation{
+							RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+							AuditRunID:                   req.AuditRunID,
+							URLID:                        urlIDStr,
+							Source:                       audit.DirectiveSourceMeta,
+							Target:                       "*",
+							ScopeUnknown:                 false,
+							RawValue:                     extraRaw,
+							ParsedTokens:                 extraTokens,
+							EffectiveNoindex:             isNoindex,
+							ObservedAt:                   obsTime,
+						})
+						metaDirIdx++
+					} else {
+						// Both generic and agent scopes exist (or extra content cannot be assigned);
+						// extra content cannot be assigned, keep it unknown.
+						directives = append(directives, audit.RobotsDirectiveObservation{
+							RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+							AuditRunID:                   req.AuditRunID,
+							URLID:                        urlIDStr,
+							Source:                       audit.DirectiveSourceMeta,
+							Target:                       "",
+							ScopeUnknown:                 true,
+							RawValue:                     extraRaw,
+							ParsedTokens:                 extraTokens,
+							EffectiveNoindex:             false,
+							ObservedAt:                   obsTime,
+						})
+						metaDirIdx++
+						gaps = append(gaps, EvidenceGap{
+							GapCode:         GapDirectiveScopeAmbiguous,
+							SubjectRef:      string(urlIDStr),
+							Field:           "meta_robots",
+							Reason:          fmt.Sprintf("Flattened MetaRobots contains unrecovered extra tokens: %s", extraRaw),
+							SourceComponent: "sitecrawl_pages",
+						})
+					}
 				}
+			}
+
+			// Proven generic meta raw evidence determination (Fix 4):
+			if hasRobots && len(agentMetaRaw) == 0 {
+				genericMetaRaw = metaRobotsRawStr
+				if genericMetaRaw == "" {
+					genericMetaRaw = robotsVal
+				}
+			} else if hasRobots {
+				genericMetaRaw = robotsVal
 			}
 		} else if metaRobotsRawStr != "" {
 			// Legacy Page JSON with only MetaRobots: scope cannot be recovered, remain unknown
@@ -1508,6 +1557,10 @@ func processPageDirectives(
 
 	// 2. HTTP Header X-Robots-Tag directives (preserved for both rendered and non-rendered)
 	headerDirIdx := 0
+	var (
+		genericHeaderRawSegments []string
+		agentHeaderRawSegments   = make(map[string][]string)
+	)
 	for _, headerStr := range xRobotsRaw {
 		trimmedHeader := strings.TrimSpace(headerStr)
 		if trimmedHeader == "" {
@@ -1523,6 +1576,14 @@ func processPageDirectives(
 			parsed, introducedAgent := parseXRobotsSegment(s, hadAgentPrefix)
 			if introducedAgent {
 				hadAgentPrefix = true
+			} else if parsed.target == "*" {
+				hadAgentPrefix = false
+			}
+
+			if parsed.target == "*" && !parsed.scopeUnknown {
+				genericHeaderRawSegments = append(genericHeaderRawSegments, parsed.rawValue)
+			} else if parsed.target != "" && !parsed.scopeUnknown {
+				agentHeaderRawSegments[parsed.target] = append(agentHeaderRawSegments[parsed.target], parsed.rawValue)
 			}
 
 			isNoindex := false
@@ -1675,8 +1736,8 @@ func processPageDirectives(
 		}
 	}
 
-	// 4. URL-level Raw Observations
-	if metaRobotsRawStr != "" && !isRendered {
+	// 4. URL-level Raw Observations (Fix 4: separated scoped raw fields)
+	if genericMetaRaw != "" && !isRendered {
 		normalized = append(normalized, audit.NormalizedObservation{
 			ObservationID:      nextObsID(),
 			AuditRunID:         req.AuditRunID,
@@ -1684,13 +1745,36 @@ func processPageDirectives(
 			SubjectType:        audit.SubjectURL,
 			SubjectRef:         string(urlIDStr),
 			Field:              "meta_robots_raw",
-			Value:              metaRobotsRawStr,
+			Value:              genericMetaRaw,
 			DerivationType:     audit.DerivationDirect,
 			SourceEvidenceRefs: []string{pageSrcRef},
 			ObservedAt:         obsTime,
 		})
 	}
-	if len(xRobotsRaw) > 0 {
+
+	if !isRendered {
+		var agentMetaKeys []string
+		for k := range agentMetaRaw {
+			agentMetaKeys = append(agentMetaKeys, k)
+		}
+		sort.Strings(agentMetaKeys)
+		for _, agent := range agentMetaKeys {
+			normalized = append(normalized, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              fmt.Sprintf("%s_meta_robots_raw", agent),
+				Value:              agentMetaRaw[agent],
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+	}
+
+	if len(genericHeaderRawSegments) > 0 {
 		normalized = append(normalized, audit.NormalizedObservation{
 			ObservationID:      nextObsID(),
 			AuditRunID:         req.AuditRunID,
@@ -1698,18 +1782,39 @@ func processPageDirectives(
 			SubjectType:        audit.SubjectURL,
 			SubjectRef:         string(urlIDStr),
 			Field:              "x_robots_raw",
-			Value:              strings.Join(xRobotsRaw, ", "),
+			Value:              strings.Join(genericHeaderRawSegments, ", "),
 			DerivationType:     audit.DerivationDirect,
 			SourceEvidenceRefs: []string{pageSrcRef},
 			ObservedAt:         obsTime,
 		})
 	}
 
-	// 5. Effective Noindex:
-	// Only emit when generic directive evidence is complete and unambiguous.
-	// Do not derive unqualified effective_noindex from agent-scoped or unknown-scope evidence.
-	// No directive evidence must not become effective_noindex=false.
+	var agentHeaderKeys []string
+	for k := range agentHeaderRawSegments {
+		agentHeaderKeys = append(agentHeaderKeys, k)
+	}
+	sort.Strings(agentHeaderKeys)
+	for _, agent := range agentHeaderKeys {
+		normalized = append(normalized, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              fmt.Sprintf("%s_x_robots_raw", agent),
+			Value:              strings.Join(agentHeaderRawSegments[agent], ", "),
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{pageSrcRef},
+			ObservedAt:         obsTime,
+		})
+	}
+
+	// 5. Effective Noindex (Fix 1: emit only when all directive evidence is known generic scope)
+	// Do NOT emit unqualified effective_noindex when ANY known agent-scoped directive exists on the URL.
+	// Also withhold it when scope is unknown.
+	// Emit it only when all directive evidence is known generic scope.
 	hasGenericDirective := false
+	hasAgentDirective := false
 	hasAmbiguousDirective := false
 	genericNoindex := false
 
@@ -1721,10 +1826,12 @@ func processPageDirectives(
 			if containsToken(d.ParsedTokens, "noindex") || containsToken(d.ParsedTokens, "none") {
 				genericNoindex = true
 			}
+		} else {
+			hasAgentDirective = true
 		}
 	}
 
-	if hasGenericDirective && !hasAmbiguousDirective {
+	if hasGenericDirective && !hasAmbiguousDirective && !hasAgentDirective {
 		noindexVal := "false"
 		if genericNoindex {
 			noindexVal = "true"

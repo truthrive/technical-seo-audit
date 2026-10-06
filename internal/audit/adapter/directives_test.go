@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/truthrive/technical-seo-audit/internal/audit"
@@ -209,18 +210,40 @@ func TestAdapter_Directives_GenericAndGooglebotMetaSeparation(t *testing.T) {
 		t.Errorf("googlebot observation EffectiveNoindex must remain false (unqualified noindex cannot come from agent-scoped evidence)")
 	}
 
-	// Verify URL-level effective_noindex is false (generic is index, not noindex)
-	effectiveNoindexCount := 0
-	effectiveNoindexVal := ""
+	// Unqualified effective_noindex must NOT be emitted because agent directive (googlebot) exists on URL (Fix 1)
 	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
 		if no.Field == "effective_noindex" && no.SubjectRef == "url:audit:meta:sep:1" {
-			effectiveNoindexCount++
-			effectiveNoindexVal = no.Value
+			t.Errorf("effective_noindex must be withheld when agent directive exists on URL, got: %+v", no)
 		}
 	}
 
-	if effectiveNoindexCount != 1 || effectiveNoindexVal != "false" {
-		t.Errorf("expected effective_noindex 'false', got count=%d, val=%q", effectiveNoindexCount, effectiveNoindexVal)
+	// Verify URL-level raw fields separation (Fix 4)
+	var (
+		foundMetaRobotsRaw     bool
+		metaRobotsRawVal       string
+		foundGbotMetaRobotsRaw bool
+		gbotMetaRobotsRawVal   string
+	)
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if no.SubjectRef == "url:audit:meta:sep:1" {
+			if no.Field == "meta_robots_raw" {
+				foundMetaRobotsRaw = true
+				metaRobotsRawVal = no.Value
+			}
+			if no.Field == "googlebot_meta_robots_raw" {
+				foundGbotMetaRobotsRaw = true
+				gbotMetaRobotsRawVal = no.Value
+			}
+			if no.Field == "x_robots_raw" {
+				t.Errorf("unexpected x_robots_raw on meta-only page")
+			}
+		}
+	}
+	if !foundMetaRobotsRaw || metaRobotsRawVal != "index, follow" {
+		t.Errorf("expected generic meta_robots_raw 'index, follow', got found=%v, val=%q", foundMetaRobotsRaw, metaRobotsRawVal)
+	}
+	if !foundGbotMetaRobotsRaw || gbotMetaRobotsRawVal != "noindex" {
+		t.Errorf("expected googlebot_meta_robots_raw 'noindex', got found=%v, val=%q", foundGbotMetaRobotsRaw, gbotMetaRobotsRawVal)
 	}
 }
 
@@ -579,6 +602,7 @@ func TestAdapter_Directives_SafeAndUnsafeEffectiveNoindex(t *testing.T) {
 	insertURL(t, db, runID, 3, "https://example.com/3")
 	insertURL(t, db, runID, 4, "https://example.com/4")
 	insertURL(t, db, runID, 5, "https://example.com/5")
+	insertURL(t, db, runID, 6, "https://example.com/6")
 
 	auditRunID := audit.AuditRunID("audit:eff:scenarios")
 	snapID := audit.SnapshotID("snap:eff:scenarios")
@@ -598,7 +622,7 @@ func TestAdapter_Directives_SafeAndUnsafeEffectiveNoindex(t *testing.T) {
 	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
 		VALUES(?, 2, 'https://example.com/2', ?, 'html', 'noindex', '2026-10-01T00:00:10Z')`, runID, string(p2))
 
-	// URL 3: Generic robots: index + googlebot: noindex -> effective_noindex = "false" (not derived from googlebot)
+	// URL 3: Generic robots: index + googlebot: noindex -> effective_noindex WITHHELD (Fix 1: agent directive present)
 	p3, _ := json.Marshal(sitecrawl.Page{
 		URL:        "https://example.com/3",
 		MetaRobots: "index, noindex",
@@ -629,6 +653,16 @@ func TestAdapter_Directives_SafeAndUnsafeEffectiveNoindex(t *testing.T) {
 	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, x_robots, crawled_at)
 		VALUES(?, 5, 'https://example.com/5', ?, 'html', 'index', 'googlebot: noindex, follow', '2026-10-01T00:00:10Z')`, runID, string(p5))
 
+	// URL 6: Generic robots: index alone -> effective_noindex = "false"
+	p6, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/6",
+		MetaRobots: "index",
+		MetaTags:   map[string]string{"robots": "index"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 6, 'https://example.com/6', ?, 'html', 'index', '2026-10-01T00:00:10Z')`, runID, string(p6))
+
 	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
 		CrawlRunID: runID,
 		AuditRunID: auditRunID,
@@ -655,9 +689,9 @@ func TestAdapter_Directives_SafeAndUnsafeEffectiveNoindex(t *testing.T) {
 		t.Errorf("URL 2: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
 	}
 
-	// URL 3: effective_noindex = "false"
-	if v, exists := effBySubj["url:audit:eff:scenarios:3"]; !exists || v != "false" {
-		t.Errorf("URL 3: expected effective_noindex 'false', got exists=%v, val=%q", exists, v)
+	// URL 3: must not have effective_noindex (agent directive googlebot suppresses unqualified effective_noindex)
+	if v, exists := effBySubj["url:audit:eff:scenarios:3"]; exists {
+		t.Errorf("URL 3: expected no effective_noindex observation, got %q", v)
 	}
 
 	// URL 4: must not have effective_noindex
@@ -668,6 +702,11 @@ func TestAdapter_Directives_SafeAndUnsafeEffectiveNoindex(t *testing.T) {
 	// URL 5: must not have effective_noindex
 	if v, exists := effBySubj["url:audit:eff:scenarios:5"]; exists {
 		t.Errorf("URL 5: expected no effective_noindex observation, got %q", v)
+	}
+
+	// URL 6: effective_noindex = "false"
+	if v, exists := effBySubj["url:audit:eff:scenarios:6"]; !exists || v != "false" {
+		t.Errorf("URL 6: expected effective_noindex 'false', got exists=%v, val=%q", exists, v)
 	}
 }
 
@@ -880,18 +919,30 @@ func TestAdapter_Directives_HermeticCrawlToSnapshot(t *testing.T) {
 			hasGeneric, hasGooglebot)
 	}
 
-	// Verify effective_noindex for home page is "false" (not contaminated by googlebot)
-	foundHomeEff := false
+	// Verify effective_noindex for home page is WITHHELD (Fix 1: googlebot agent directive present)
 	for _, no := range snap.NormalizedObservations {
 		if no.SubjectRef == "url:audit:hermetic:crawl:1" && no.Field == "effective_noindex" {
-			foundHomeEff = true
-			if no.Value != "false" {
-				t.Errorf("home page effective_noindex should be 'false', got %q", no.Value)
+			t.Errorf("home page effective_noindex must be withheld when agent directive is present, got %q", no.Value)
+		}
+	}
+
+	// Verify home page raw fields separation (Fix 4)
+	var homeMetaRaw, homeGbotRaw string
+	for _, no := range snap.NormalizedObservations {
+		if no.SubjectRef == "url:audit:hermetic:crawl:1" {
+			if no.Field == "meta_robots_raw" {
+				homeMetaRaw = no.Value
+			}
+			if no.Field == "googlebot_meta_robots_raw" {
+				homeGbotRaw = no.Value
 			}
 		}
 	}
-	if !foundHomeEff {
-		t.Errorf("expected effective_noindex for home page")
+	if homeMetaRaw != "index, follow" {
+		t.Errorf("home page meta_robots_raw: expected 'index, follow', got %q", homeMetaRaw)
+	}
+	if homeGbotRaw != "noindex" {
+		t.Errorf("home page googlebot_meta_robots_raw: expected 'noindex', got %q", homeGbotRaw)
 	}
 
 	// Verify Page 2 has generic parameterized max-snippet: 100 and noarchive
@@ -912,30 +963,46 @@ func TestAdapter_Directives_HermeticCrawlToSnapshot(t *testing.T) {
 			t.Errorf("page 2: expected ScopeUnknown false")
 		}
 	}
+
+	// Page 2 has purely generic directives; effective_noindex is "false"
+	foundP2Eff := false
+	for _, no := range snap.NormalizedObservations {
+		if no.SubjectRef == "url:audit:hermetic:crawl:2" && no.Field == "effective_noindex" {
+			foundP2Eff = true
+			if no.Value != "false" {
+				t.Errorf("page 2 effective_noindex: expected 'false', got %q", no.Value)
+			}
+		}
+	}
+	if !foundP2Eff {
+		t.Errorf("expected effective_noindex for page 2")
+	}
 }
 
-// 13. Flattened MetaRobots extra tokens: unrecovered tokens become unknown scope + GapDirectiveScopeAmbiguous
-func TestAdapter_Directives_FlattenedMetaRobotsExtraTokens(t *testing.T) {
+// 13. Flattened MetaRobots extra tokens with both generic and agent scopes:
+// unrecovered tokens cannot be assigned, keep unknown scope + GapDirectiveScopeAmbiguous (Fix 2)
+func TestAdapter_Directives_FlattenedMetaRobotsExtraTokensBothScopes(t *testing.T) {
 	db := newTestDB(t)
-	runID := "run:flattened:extra"
+	runID := "run:flattened:both"
 	seed := "https://example.com/"
 	setupTestRun(t, db, runID, seed)
 	insertURL(t, db, runID, 1, seed)
 
-	auditRunID := audit.AuditRunID("audit:flat:extra")
-	snapID := audit.SnapshotID("snap:flat:extra")
+	auditRunID := audit.AuditRunID("audit:flat:both")
+	snapID := audit.SnapshotID("snap:flat:both")
 
-	// MetaTags has robots: "index", but MetaRobots has extra token "noarchive"
+	// MetaTags has robots: "index", googlebot: "noindex", but MetaRobots has extra token "noarchive"
 	pageData, _ := json.Marshal(sitecrawl.Page{
 		URL:        seed,
-		MetaRobots: "index, noarchive",
+		MetaRobots: "index, noindex, noarchive",
 		MetaTags: map[string]string{
-			"robots": "index",
+			"robots":    "index",
+			"googlebot": "noindex",
 		},
 		CrawledAt: "2026-10-01T00:00:10Z",
 	})
 	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
-		VALUES(?, 1, ?, ?, 'html', 'index, noarchive', '2026-10-01T00:00:10Z')`, runID, seed, string(pageData))
+		VALUES(?, 1, ?, ?, 'html', 'index, noindex, noarchive', '2026-10-01T00:00:10Z')`, runID, seed, string(pageData))
 
 	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
 		CrawlRunID: runID,
@@ -946,15 +1013,17 @@ func TestAdapter_Directives_FlattenedMetaRobotsExtraTokens(t *testing.T) {
 		t.Fatalf("build failed: %v", err)
 	}
 
-	if len(res.RobotsDirectiveObservations) != 2 {
-		t.Fatalf("expected 2 RobotsDirectiveObservations (1 generic, 1 unknown extra), got %d", len(res.RobotsDirectiveObservations))
+	if len(res.RobotsDirectiveObservations) != 3 {
+		t.Fatalf("expected 3 RobotsDirectiveObservations (1 generic, 1 agent, 1 unknown extra), got %d", len(res.RobotsDirectiveObservations))
 	}
 
-	var genericObs, extraObs *audit.RobotsDirectiveObservation
+	var genericObs, googlebotObs, extraObs *audit.RobotsDirectiveObservation
 	for i := range res.RobotsDirectiveObservations {
 		o := &res.RobotsDirectiveObservations[i]
 		if o.Target == "*" {
 			genericObs = o
+		} else if o.Target == "googlebot" {
+			googlebotObs = o
 		} else if o.ScopeUnknown {
 			extraObs = o
 		}
@@ -962,6 +1031,9 @@ func TestAdapter_Directives_FlattenedMetaRobotsExtraTokens(t *testing.T) {
 
 	if genericObs == nil {
 		t.Fatalf("expected generic observation")
+	}
+	if googlebotObs == nil {
+		t.Fatalf("expected googlebot observation")
 	}
 	if extraObs == nil {
 		t.Fatalf("expected unknown scope extra observation")
@@ -971,22 +1043,339 @@ func TestAdapter_Directives_FlattenedMetaRobotsExtraTokens(t *testing.T) {
 		t.Errorf("unexpected extra tokens: %v", extraObs.ParsedTokens)
 	}
 
-	// GapDirectiveScopeAmbiguous emitted for extra tokens
+	// GapDirectiveScopeAmbiguous emitted for extra tokens because both scopes exist and it cannot be assigned
 	foundGap := false
 	for _, g := range res.EvidenceGaps {
-		if g.GapCode == adapter.GapDirectiveScopeAmbiguous && g.SubjectRef == "url:audit:flat:extra:1" {
+		if g.GapCode == adapter.GapDirectiveScopeAmbiguous && g.SubjectRef == "url:audit:flat:both:1" {
 			foundGap = true
 		}
 	}
 	if !foundGap {
-		t.Errorf("expected GapDirectiveScopeAmbiguous for extra tokens")
+		t.Errorf("expected GapDirectiveScopeAmbiguous for unassignable extra tokens")
 	}
 
-	// effective_noindex must be withheld because an ambiguous directive exists
+	// effective_noindex must be withheld
 	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
-		if no.Field == "effective_noindex" && no.SubjectRef == "url:audit:flat:extra:1" {
-			t.Errorf("effective_noindex must be withheld when ambiguous extra tokens exist, got: %+v", no)
+		if no.Field == "effective_noindex" && no.SubjectRef == "url:audit:flat:both:1" {
+			t.Errorf("effective_noindex must be withheld when ambiguous extra tokens and agent directives exist, got: %+v", no)
 		}
+	}
+
+	// Fix 4: meta_robots_raw contains proven generic ("index") only, not unrecovered or agent tokens
+	var metaRobotsRawVal, gbotMetaRawVal string
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if no.SubjectRef == "url:audit:flat:both:1" {
+			if no.Field == "meta_robots_raw" {
+				metaRobotsRawVal = no.Value
+			}
+			if no.Field == "googlebot_meta_robots_raw" {
+				gbotMetaRawVal = no.Value
+			}
+		}
+	}
+	if metaRobotsRawVal != "index" {
+		t.Errorf("expected meta_robots_raw 'index', got %q", metaRobotsRawVal)
+	}
+	if gbotMetaRawVal != "noindex" {
+		t.Errorf("expected googlebot_meta_robots_raw 'noindex', got %q", gbotMetaRawVal)
+	}
+}
+
+// 14. Fix 2: Repeated generic meta where robots is the ONLY relevant scope present
+// Extra flattened tokens remain generic scope, not unknown.
+func TestAdapter_Directives_RepeatedGenericMetaPreservesGenericScope(t *testing.T) {
+	db := newTestDB(t)
+	runID := "run:generic:repeated"
+	seed := "https://example.com/"
+	setupTestRun(t, db, runID, seed)
+	insertURL(t, db, runID, 1, seed)
+
+	auditRunID := audit.AuditRunID("audit:gen:rep")
+	snapID := audit.SnapshotID("snap:gen:rep")
+
+	// SiteCrawl collapsed: <meta name="robots" content="index"> + <meta name="robots" content="noindex">
+	// MetaRobots: "index, noindex", MetaTags["robots"]: "noindex" (only last value retained by crawler map)
+	pageData, _ := json.Marshal(sitecrawl.Page{
+		URL:        seed,
+		MetaRobots: "index, noindex",
+		MetaTags: map[string]string{
+			"robots": "noindex",
+		},
+		CrawledAt: "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 1, ?, ?, 'html', 'index, noindex', '2026-10-01T00:00:10Z')`, runID, seed, string(pageData))
+
+	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: auditRunID,
+		SnapshotID: snapID,
+	})
+	if err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+
+	// Both observations should be generic scope Target "*" with ScopeUnknown false
+	if len(res.RobotsDirectiveObservations) != 2 {
+		t.Fatalf("expected 2 RobotsDirectiveObservations, got %d", len(res.RobotsDirectiveObservations))
+	}
+
+	for i, o := range res.RobotsDirectiveObservations {
+		if o.Target != "*" {
+			t.Errorf("directive %d: expected Target '*', got %q", i, o.Target)
+		}
+		if o.ScopeUnknown {
+			t.Errorf("directive %d: expected ScopeUnknown false (collapsed generic tags remain generic)", i)
+		}
+	}
+
+	// Zero GapDirectiveScopeAmbiguous gaps should be emitted
+	for _, g := range res.EvidenceGaps {
+		if g.GapCode == adapter.GapDirectiveScopeAmbiguous && g.SubjectRef == "url:audit:gen:rep:1" {
+			t.Errorf("unexpected GapDirectiveScopeAmbiguous for repeated generic meta: %+v", g)
+		}
+	}
+
+	// EffectiveNoindex is "true" because noindex was present in generic directives and all evidence is known generic
+	foundEff := false
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if no.Field == "effective_noindex" && no.SubjectRef == "url:audit:gen:rep:1" {
+			foundEff = true
+			if no.Value != "true" {
+				t.Errorf("expected effective_noindex 'true', got %q", no.Value)
+			}
+		}
+	}
+	if !foundEff {
+		t.Errorf("expected effective_noindex observation")
+	}
+
+	// meta_robots_raw contains the full flattened generic raw value ("index, noindex")
+	var foundMetaRaw bool
+	var metaRawVal string
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if no.SubjectRef == "url:audit:gen:rep:1" && no.Field == "meta_robots_raw" {
+			foundMetaRaw = true
+			metaRawVal = no.Value
+		}
+	}
+	if !foundMetaRaw || metaRawVal != "index, noindex" {
+		t.Errorf("expected meta_robots_raw 'index, noindex', got found=%v, val=%q", foundMetaRaw, metaRawVal)
+	}
+}
+
+// 15. Fix 3: Unknown X-Robots prefixes (e.g. foo: bar) must NOT be classified as agent directives.
+// They must remain conservative / unknown scope.
+func TestAdapter_Directives_UnknownXRobotsPrefixRemainsUnknownScope(t *testing.T) {
+	db := newTestDB(t)
+	runID := "run:prefix:unknown"
+	seed := "https://example.com/"
+	setupTestRun(t, db, runID, seed)
+	insertURL(t, db, runID, 1, seed)
+
+	auditRunID := audit.AuditRunID("audit:pfx:unk")
+	snapID := audit.SnapshotID("snap:pfx:unk")
+
+	// Header contains unknown prefix "foo: bar", supported agent "googlebot: noindex", and parameterized "max-snippet: 50"
+	pageData, _ := json.Marshal(sitecrawl.Page{
+		URL:        seed,
+		XRobotsTag: "foo: bar, googlebot: noindex, max-snippet: 50",
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
+		VALUES(?, 1, ?, ?, 'html', 'foo: bar, googlebot: noindex, max-snippet: 50', '2026-10-01T00:00:10Z')`, runID, seed, string(pageData))
+
+	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: auditRunID,
+		SnapshotID: snapID,
+	})
+	if err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+
+	if len(res.RobotsDirectiveObservations) != 3 {
+		t.Fatalf("expected 3 RobotsDirectiveObservations, got %d", len(res.RobotsDirectiveObservations))
+	}
+
+	// Observation 0: "foo: bar" -> must NOT have Target "foo", must be unknown scope
+	obs0 := res.RobotsDirectiveObservations[0]
+	if obs0.Target != "" {
+		t.Errorf("obs0: expected empty Target, got %q (must not invent 'foo' as an agent)", obs0.Target)
+	}
+	if !obs0.ScopeUnknown {
+		t.Errorf("obs0: expected ScopeUnknown true for unrecognized prefix")
+	}
+
+	// Observation 1: "googlebot: noindex" -> Target "googlebot", ScopeUnknown false
+	obs1 := res.RobotsDirectiveObservations[1]
+	if obs1.Target != "googlebot" || obs1.ScopeUnknown {
+		t.Errorf("obs1: expected Target 'googlebot', ScopeUnknown false, got %q, %v", obs1.Target, obs1.ScopeUnknown)
+	}
+
+	// Observation 2: "max-snippet: 50" -> Target "*", ScopeUnknown false
+	obs2 := res.RobotsDirectiveObservations[2]
+	if obs2.Target != "*" || obs2.ScopeUnknown {
+		t.Errorf("obs2: expected Target '*', ScopeUnknown false, got %q, %v", obs2.Target, obs2.ScopeUnknown)
+	}
+
+	// GapDirectiveScopeAmbiguous must be emitted for foo: bar
+	foundGap := false
+	for _, g := range res.EvidenceGaps {
+		if g.GapCode == adapter.GapDirectiveScopeAmbiguous && g.SubjectRef == "url:audit:pfx:unk:1" {
+			foundGap = true
+		}
+	}
+	if !foundGap {
+		t.Errorf("expected GapDirectiveScopeAmbiguous for unknown prefix")
+	}
+
+	// Fix 4: x_robots_raw contains proven generic header evidence ONLY ("max-snippet: 50")
+	// Neither foo: bar nor googlebot: noindex must appear in x_robots_raw!
+	var foundXRobotsRaw bool
+	var xRobotsRawVal string
+	var foundGbotXRaw bool
+	var gbotXRawVal string
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if no.SubjectRef == "url:audit:pfx:unk:1" {
+			if no.Field == "x_robots_raw" {
+				foundXRobotsRaw = true
+				xRobotsRawVal = no.Value
+			}
+			if no.Field == "googlebot_x_robots_raw" {
+				foundGbotXRaw = true
+				gbotXRawVal = no.Value
+			}
+		}
+	}
+	if !foundXRobotsRaw || xRobotsRawVal != "max-snippet: 50" {
+		t.Errorf("expected generic x_robots_raw 'max-snippet: 50', got found=%v, val=%q", foundXRobotsRaw, xRobotsRawVal)
+	}
+	if !foundGbotXRaw || gbotXRawVal != "googlebot: noindex" {
+		t.Errorf("expected googlebot_x_robots_raw 'googlebot: noindex', got found=%v, val=%q", foundGbotXRaw, gbotXRawVal)
+	}
+
+	// effective_noindex must be withheld
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if no.Field == "effective_noindex" && no.SubjectRef == "url:audit:pfx:unk:1" {
+			t.Errorf("effective_noindex must be withheld, got: %+v", no)
+		}
+	}
+}
+
+// 16. Fix 4: Strict separation of generic vs agent-scoped vs unknown-scope raw fields.
+func TestAdapter_Directives_RawNormalizedFieldsSeparation(t *testing.T) {
+	db := newTestDB(t)
+	runID := "run:raw:separation"
+	seed := "https://example.com/1"
+	setupTestRun(t, db, runID, seed)
+
+	insertURL(t, db, runID, 1, "https://example.com/1")
+	insertURL(t, db, runID, 2, "https://example.com/2")
+	insertURL(t, db, runID, 3, "https://example.com/3")
+
+	auditRunID := audit.AuditRunID("audit:raw:sep")
+	snapID := audit.SnapshotID("snap:raw:sep")
+
+	// URL 1: Multi-agent X-Robots header
+	// X-Robots-Tag: "noindex, googlebot: nofollow, oai-searchbot: noarchive, gptbot: unavailable_after, unknownprefix: test"
+	p1, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/1",
+		XRobotsTag: "noindex, googlebot: nofollow, oai-searchbot: noarchive, gptbot: unavailable_after, unknownprefix: test",
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
+		VALUES(?, 1, 'https://example.com/1', ?, 'html', 'noindex, googlebot: nofollow, oai-searchbot: noarchive, gptbot: unavailable_after, unknownprefix: test', '2026-10-01T00:00:10Z')`,
+		runID, string(p1))
+
+	// URL 2: Meta with robots and googlebot
+	p2, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/2",
+		MetaRobots: "index, follow, noarchive",
+		MetaTags: map[string]string{
+			"robots":    "index, follow",
+			"googlebot": "noarchive",
+		},
+		CrawledAt: "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 2, 'https://example.com/2', ?, 'html', 'index, follow, noarchive', '2026-10-01T00:00:10Z')`,
+		runID, string(p2))
+
+	// URL 3: Legacy meta without MetaTags (scope unknown)
+	p3, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/3",
+		MetaRobots: "noindex",
+		MetaTags:   nil,
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 3, 'https://example.com/3', ?, 'html', 'noindex', '2026-10-01T00:00:10Z')`,
+		runID, string(p3))
+
+	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: auditRunID,
+		SnapshotID: snapID,
+	})
+	if err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+
+	rawFieldsBySubj := make(map[string]map[string]string)
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if strings.HasSuffix(no.Field, "_raw") {
+			if _, ok := rawFieldsBySubj[no.SubjectRef]; !ok {
+				rawFieldsBySubj[no.SubjectRef] = make(map[string]string)
+			}
+			rawFieldsBySubj[no.SubjectRef][no.Field] = no.Value
+		}
+	}
+
+	// URL 1:
+	// x_robots_raw must contain "noindex" only.
+	// googlebot_x_robots_raw must contain "googlebot: nofollow".
+	// oai-searchbot_x_robots_raw must contain "oai-searchbot: noarchive".
+	// gptbot_x_robots_raw must contain "gptbot: unavailable_after".
+	// unknownprefix must NOT be in any field.
+	// meta_robots_raw must not be emitted.
+	u1Fields := rawFieldsBySubj["url:audit:raw:sep:1"]
+	if u1Fields["x_robots_raw"] != "noindex" {
+		t.Errorf("URL 1 x_robots_raw: expected 'noindex', got %q", u1Fields["x_robots_raw"])
+	}
+	if u1Fields["googlebot_x_robots_raw"] != "googlebot: nofollow" {
+		t.Errorf("URL 1 googlebot_x_robots_raw: expected 'googlebot: nofollow', got %q", u1Fields["googlebot_x_robots_raw"])
+	}
+	if u1Fields["oai-searchbot_x_robots_raw"] != "oai-searchbot: noarchive" {
+		t.Errorf("URL 1 oai-searchbot_x_robots_raw: expected 'oai-searchbot: noarchive', got %q", u1Fields["oai-searchbot_x_robots_raw"])
+	}
+	if u1Fields["gptbot_x_robots_raw"] != "gptbot: unavailable_after" {
+		t.Errorf("URL 1 gptbot_x_robots_raw: expected 'gptbot: unavailable_after', got %q", u1Fields["gptbot_x_robots_raw"])
+	}
+	if _, exists := u1Fields["meta_robots_raw"]; exists {
+		t.Errorf("URL 1: meta_robots_raw should not exist")
+	}
+
+	// URL 2:
+	// meta_robots_raw must contain "index, follow" only (generic).
+	// googlebot_meta_robots_raw must contain "noarchive".
+	// x_robots_raw must not be emitted.
+	u2Fields := rawFieldsBySubj["url:audit:raw:sep:2"]
+	if u2Fields["meta_robots_raw"] != "index, follow" {
+		t.Errorf("URL 2 meta_robots_raw: expected 'index, follow', got %q", u2Fields["meta_robots_raw"])
+	}
+	if u2Fields["googlebot_meta_robots_raw"] != "noarchive" {
+		t.Errorf("URL 2 googlebot_meta_robots_raw: expected 'noarchive', got %q", u2Fields["googlebot_meta_robots_raw"])
+	}
+	if _, exists := u2Fields["x_robots_raw"]; exists {
+		t.Errorf("URL 2: x_robots_raw should not exist")
+	}
+
+	// URL 3:
+	// Legacy meta without scoped tags: meta_robots_raw must NOT be emitted (unknown-scope raw evidence must not appear inside generic fields).
+	u3Fields := rawFieldsBySubj["url:audit:raw:sep:3"]
+	if _, exists := u3Fields["meta_robots_raw"]; exists {
+		t.Errorf("URL 3: meta_robots_raw must NOT appear for legacy unknown scope, got %q", u3Fields["meta_robots_raw"])
 	}
 }
 
