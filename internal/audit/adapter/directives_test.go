@@ -1176,14 +1176,14 @@ func TestAdapter_Directives_UnknownXRobotsPrefixRemainsUnknownScope(t *testing.T
 	auditRunID := audit.AuditRunID("audit:pfx:unk")
 	snapID := audit.SnapshotID("snap:pfx:unk")
 
-	// Header contains unknown prefix "foo: bar", supported agent "googlebot: noindex", and parameterized "max-snippet: 50"
+	// Header contains initial generic "max-snippet: 50", unknown prefix "foo: bar", and supported agent "googlebot: noindex"
 	pageData, _ := json.Marshal(sitecrawl.Page{
 		URL:        seed,
-		XRobotsTag: "foo: bar, googlebot: noindex, max-snippet: 50",
+		XRobotsTag: "max-snippet: 50, foo: bar, googlebot: noindex",
 		CrawledAt:  "2026-10-01T00:00:10Z",
 	})
 	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
-		VALUES(?, 1, ?, ?, 'html', 'foo: bar, googlebot: noindex, max-snippet: 50', '2026-10-01T00:00:10Z')`, runID, seed, string(pageData))
+		VALUES(?, 1, ?, ?, 'html', 'max-snippet: 50, foo: bar, googlebot: noindex', '2026-10-01T00:00:10Z')`, runID, seed, string(pageData))
 
 	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
 		CrawlRunID: runID,
@@ -1198,25 +1198,25 @@ func TestAdapter_Directives_UnknownXRobotsPrefixRemainsUnknownScope(t *testing.T
 		t.Fatalf("expected 3 RobotsDirectiveObservations, got %d", len(res.RobotsDirectiveObservations))
 	}
 
-	// Observation 0: "foo: bar" -> must NOT have Target "foo", must be unknown scope
+	// Observation 0: "max-snippet: 50" -> Target "*", ScopeUnknown false
 	obs0 := res.RobotsDirectiveObservations[0]
-	if obs0.Target != "" {
-		t.Errorf("obs0: expected empty Target, got %q (must not invent 'foo' as an agent)", obs0.Target)
-	}
-	if !obs0.ScopeUnknown {
-		t.Errorf("obs0: expected ScopeUnknown true for unrecognized prefix")
+	if obs0.Target != "*" || obs0.ScopeUnknown {
+		t.Errorf("obs0: expected Target '*', ScopeUnknown false, got %q, %v", obs0.Target, obs0.ScopeUnknown)
 	}
 
-	// Observation 1: "googlebot: noindex" -> Target "googlebot", ScopeUnknown false
+	// Observation 1: "foo: bar" -> must NOT have Target "foo", must be unknown scope
 	obs1 := res.RobotsDirectiveObservations[1]
-	if obs1.Target != "googlebot" || obs1.ScopeUnknown {
-		t.Errorf("obs1: expected Target 'googlebot', ScopeUnknown false, got %q, %v", obs1.Target, obs1.ScopeUnknown)
+	if obs1.Target != "" {
+		t.Errorf("obs1: expected empty Target, got %q (must not invent 'foo' as an agent)", obs1.Target)
+	}
+	if !obs1.ScopeUnknown {
+		t.Errorf("obs1: expected ScopeUnknown true for unrecognized prefix")
 	}
 
-	// Observation 2: "max-snippet: 50" -> Target "*", ScopeUnknown false
+	// Observation 2: "googlebot: noindex" -> Target "googlebot", ScopeUnknown false
 	obs2 := res.RobotsDirectiveObservations[2]
-	if obs2.Target != "*" || obs2.ScopeUnknown {
-		t.Errorf("obs2: expected Target '*', ScopeUnknown false, got %q, %v", obs2.Target, obs2.ScopeUnknown)
+	if obs2.Target != "googlebot" || obs2.ScopeUnknown {
+		t.Errorf("obs2: expected Target 'googlebot', ScopeUnknown false, got %q, %v", obs2.Target, obs2.ScopeUnknown)
 	}
 
 	// GapDirectiveScopeAmbiguous must be emitted for foo: bar
@@ -1376,6 +1376,199 @@ func TestAdapter_Directives_RawNormalizedFieldsSeparation(t *testing.T) {
 	u3Fields := rawFieldsBySubj["url:audit:raw:sep:3"]
 	if _, exists := u3Fields["meta_robots_raw"]; exists {
 		t.Errorf("URL 3: meta_robots_raw must NOT appear for legacy unknown scope, got %q", u3Fields["meta_robots_raw"])
+	}
+}
+
+// 17. Fix 1: X-Robots continuation scope after agent prefix or unknown prefix
+// Verifies:
+// 1. standalone max-snippet: 50 -> generic
+// 2. googlebot: noindex, max-snippet: 50 -> second segment unknown
+// 3. explicit new agent prefix after agent prefix remains scoped (oai-searchbot: noarchive)
+// 4. ambiguity emits GapDirectiveScopeAmbiguous
+// 5. ambiguous segment does not enter generic x_robots_raw
+// 6. conservative continuation after unknown prefix-like segment (foo: bar, max-snippet: 50)
+func TestAdapter_Directives_XRobotsContinuationScopeAmbiguity(t *testing.T) {
+	db := newTestDB(t)
+	runID := "run:xr:continuation"
+	seed := "https://example.com/1"
+	setupTestRun(t, db, runID, seed)
+
+	insertURL(t, db, runID, 1, "https://example.com/1")
+	insertURL(t, db, runID, 2, "https://example.com/2")
+	insertURL(t, db, runID, 3, "https://example.com/3")
+
+	auditRunID := audit.AuditRunID("audit:xr:cont")
+	snapID := audit.SnapshotID("snap:xr:cont")
+
+	// URL 1: Continuation after agent prefix: "googlebot: noindex, max-snippet: 50, oai-searchbot: noarchive"
+	// Expected:
+	// - segment 0 ("googlebot: noindex") -> target "googlebot", scopeUnknown false
+	// - segment 1 ("max-snippet: 50") -> target "", scopeUnknown true (must NOT be generic!)
+	// - segment 2 ("oai-searchbot: noarchive") -> target "oai-searchbot", scopeUnknown false
+	p1, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/1",
+		XRobotsTag: "googlebot: noindex, max-snippet: 50, oai-searchbot: noarchive",
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
+		VALUES(?, 1, 'https://example.com/1', ?, 'html', 'googlebot: noindex, max-snippet: 50, oai-searchbot: noarchive', '2026-10-01T00:00:10Z')`,
+		runID, string(p1))
+
+	// URL 2: Continuation after unknown prefix: "foo: bar, max-snippet: 50"
+	// Expected:
+	// - segment 0 ("foo: bar") -> target "", scopeUnknown true
+	// - segment 1 ("max-snippet: 50") -> target "", scopeUnknown true (scope cannot be proven generic!)
+	p2, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/2",
+		XRobotsTag: "foo: bar, max-snippet: 50",
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
+		VALUES(?, 2, 'https://example.com/2', ?, 'html', 'foo: bar, max-snippet: 50', '2026-10-01T00:00:10Z')`,
+		runID, string(p2))
+
+	// URL 3: Standalone parameterized directive: "max-snippet: 50"
+	// Expected:
+	// - segment 0 ("max-snippet: 50") -> target "*", scopeUnknown false (remains generic)
+	p3, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/3",
+		XRobotsTag: "max-snippet: 50",
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
+		VALUES(?, 3, 'https://example.com/3', ?, 'html', 'max-snippet: 50', '2026-10-01T00:00:10Z')`,
+		runID, string(p3))
+
+	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: auditRunID,
+		SnapshotID: snapID,
+	})
+	if err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+
+	// 1. Inspect URL 1 directives
+	var u1Directives []audit.RobotsDirectiveObservation
+	for _, d := range res.RobotsDirectiveObservations {
+		if d.URLID == "url:audit:xr:cont:1" {
+			u1Directives = append(u1Directives, d)
+		}
+	}
+	if len(u1Directives) != 3 {
+		t.Fatalf("URL 1: expected 3 directives, got %d", len(u1Directives))
+	}
+	// seg 0: googlebot: noindex
+	if u1Directives[0].Target != "googlebot" || u1Directives[0].ScopeUnknown {
+		t.Errorf("URL 1 seg 0: expected googlebot / false, got %q / %v", u1Directives[0].Target, u1Directives[0].ScopeUnknown)
+	}
+	// seg 1: max-snippet: 50 -> must be UNKNOWN scope!
+	if u1Directives[1].Target != "" || !u1Directives[1].ScopeUnknown {
+		t.Errorf("URL 1 seg 1: expected empty target and ScopeUnknown true, got %q / %v", u1Directives[1].Target, u1Directives[1].ScopeUnknown)
+	}
+	// seg 2: oai-searchbot: noarchive -> explicit new agent prefix remains scoped
+	if u1Directives[2].Target != "oai-searchbot" || u1Directives[2].ScopeUnknown {
+		t.Errorf("URL 1 seg 2: expected oai-searchbot / false, got %q / %v", u1Directives[2].Target, u1Directives[2].ScopeUnknown)
+	}
+
+	// 2. Inspect URL 2 directives (unknown prefix continuation)
+	var u2Directives []audit.RobotsDirectiveObservation
+	for _, d := range res.RobotsDirectiveObservations {
+		if d.URLID == "url:audit:xr:cont:2" {
+			u2Directives = append(u2Directives, d)
+		}
+	}
+	if len(u2Directives) != 2 {
+		t.Fatalf("URL 2: expected 2 directives, got %d", len(u2Directives))
+	}
+	if u2Directives[0].Target != "" || !u2Directives[0].ScopeUnknown {
+		t.Errorf("URL 2 seg 0 (foo: bar): expected unknown scope, got %q / %v", u2Directives[0].Target, u2Directives[0].ScopeUnknown)
+	}
+	if u2Directives[1].Target != "" || !u2Directives[1].ScopeUnknown {
+		t.Errorf("URL 2 seg 1 (max-snippet: 50): expected unknown scope after unknown prefix, got %q / %v", u2Directives[1].Target, u2Directives[1].ScopeUnknown)
+	}
+
+	// 3. Inspect URL 3 directives (standalone max-snippet: 50 remains generic)
+	var u3Directives []audit.RobotsDirectiveObservation
+	for _, d := range res.RobotsDirectiveObservations {
+		if d.URLID == "url:audit:xr:cont:3" {
+			u3Directives = append(u3Directives, d)
+		}
+	}
+	if len(u3Directives) != 1 {
+		t.Fatalf("URL 3: expected 1 directive, got %d", len(u3Directives))
+	}
+	if u3Directives[0].Target != "*" || u3Directives[0].ScopeUnknown {
+		t.Errorf("URL 3: expected standalone max-snippet: 50 to have Target '*' and ScopeUnknown false, got %q / %v", u3Directives[0].Target, u3Directives[0].ScopeUnknown)
+	}
+
+	// 4. Verify gaps emitted
+	var u1Gaps, u2Gaps, u3Gaps []adapter.EvidenceGap
+	for _, g := range res.EvidenceGaps {
+		if g.GapCode == adapter.GapDirectiveScopeAmbiguous {
+			switch g.SubjectRef {
+			case "url:audit:xr:cont:1":
+				u1Gaps = append(u1Gaps, g)
+			case "url:audit:xr:cont:2":
+				u2Gaps = append(u2Gaps, g)
+			case "url:audit:xr:cont:3":
+				u3Gaps = append(u3Gaps, g)
+			}
+		}
+	}
+	if len(u1Gaps) != 1 {
+		t.Errorf("URL 1: expected 1 GapDirectiveScopeAmbiguous for max-snippet: 50, got %d", len(u1Gaps))
+	}
+	if len(u2Gaps) != 2 {
+		t.Errorf("URL 2: expected 2 GapDirectiveScopeAmbiguous (foo: bar and max-snippet: 50), got %d", len(u2Gaps))
+	}
+	if len(u3Gaps) != 0 {
+		t.Errorf("URL 3: expected 0 GapDirectiveScopeAmbiguous for standalone generic directive, got %d", len(u3Gaps))
+	}
+
+	// 5. Verify raw normalized observations
+	// For URL 1: ambiguous max-snippet: 50 MUST NOT enter generic x_robots_raw!
+	// x_robots_raw must not exist on URL 1.
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if no.SubjectRef == "url:audit:xr:cont:1" && no.Field == "x_robots_raw" {
+			t.Errorf("URL 1: ambiguous segment must NOT enter generic x_robots_raw, found: %q", no.Value)
+		}
+		if no.SubjectRef == "url:audit:xr:cont:2" && no.Field == "x_robots_raw" {
+			t.Errorf("URL 2: ambiguous segment must NOT enter generic x_robots_raw, found: %q", no.Value)
+		}
+	}
+
+	// URL 1 should have googlebot_x_robots_raw and oai-searchbot_x_robots_raw
+	var foundGbotRaw, foundOaiRaw bool
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if no.SubjectRef == "url:audit:xr:cont:1" {
+			if no.Field == "googlebot_x_robots_raw" && no.Value == "googlebot: noindex" {
+				foundGbotRaw = true
+			}
+			if no.Field == "oai-searchbot_x_robots_raw" && no.Value == "oai-searchbot: noarchive" {
+				foundOaiRaw = true
+			}
+		}
+	}
+	if !foundGbotRaw {
+		t.Errorf("URL 1: missing googlebot_x_robots_raw")
+	}
+	if !foundOaiRaw {
+		t.Errorf("URL 1: missing oai-searchbot_x_robots_raw")
+	}
+
+	// URL 3 should have generic x_robots_raw = "max-snippet: 50"
+	var foundU3XRaw bool
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if no.SubjectRef == "url:audit:xr:cont:3" && no.Field == "x_robots_raw" {
+			foundU3XRaw = true
+			if no.Value != "max-snippet: 50" {
+				t.Errorf("URL 3: expected x_robots_raw 'max-snippet: 50', got %q", no.Value)
+			}
+		}
+	}
+	if !foundU3XRaw {
+		t.Errorf("URL 3: missing generic x_robots_raw")
 	}
 }
 

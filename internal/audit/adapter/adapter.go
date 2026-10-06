@@ -1296,17 +1296,17 @@ type parsedHeaderSegment struct {
 	tokens       []string
 }
 
-func parseXRobotsSegment(seg string, prevHadAgentPrefix bool) (parsedHeaderSegment, bool) {
+func parseXRobotsSegment(seg string, prevHadPrefix bool) (parsedHeaderSegment, bool) {
 	colonIdx := strings.Index(seg, ":")
 	if colonIdx == -1 {
 		tokens := parseDirectiveTokens(seg)
-		if prevHadAgentPrefix {
+		if prevHadPrefix {
 			return parsedHeaderSegment{
 				target:       "",
 				scopeUnknown: true,
 				rawValue:     seg,
 				tokens:       tokens,
-			}, false
+			}, true
 		}
 		return parsedHeaderSegment{
 			target:       "*",
@@ -1322,6 +1322,14 @@ func parseXRobotsSegment(seg string, prevHadAgentPrefix bool) (parsedHeaderSegme
 
 	if isParameterizedDirective(firstPartLower) {
 		tokens := []string{strings.ToLower(seg)}
+		if prevHadPrefix {
+			return parsedHeaderSegment{
+				target:       "",
+				scopeUnknown: true,
+				rawValue:     seg,
+				tokens:       tokens,
+			}, true
+		}
 		return parsedHeaderSegment{
 			target:       "*",
 			scopeUnknown: false,
@@ -1357,7 +1365,7 @@ func parseXRobotsSegment(seg string, prevHadAgentPrefix bool) (parsedHeaderSegme
 		scopeUnknown: true,
 		rawValue:     seg,
 		tokens:       parseDirectiveTokens(seg),
-	}, false
+	}, true
 }
 
 func processPageDirectives(
@@ -1567,18 +1575,14 @@ func processPageDirectives(
 			continue
 		}
 		segments := strings.Split(trimmedHeader, ",")
-		hadAgentPrefix := false
+		hadPrefix := false
 		for _, seg := range segments {
 			s := strings.TrimSpace(seg)
 			if s == "" {
 				continue
 			}
-			parsed, introducedAgent := parseXRobotsSegment(s, hadAgentPrefix)
-			if introducedAgent {
-				hadAgentPrefix = true
-			} else if parsed.target == "*" {
-				hadAgentPrefix = false
-			}
+			parsed, nextHadPrefix := parseXRobotsSegment(s, hadPrefix)
+			hadPrefix = nextHadPrefix
 
 			if parsed.target == "*" && !parsed.scopeUnknown {
 				genericHeaderRawSegments = append(genericHeaderRawSegments, parsed.rawValue)
