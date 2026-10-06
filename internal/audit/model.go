@@ -329,6 +329,9 @@ type EvidenceSnapshot struct {
 	FrozenAt                 *time.Time               `json:"frozen_at,omitempty"`
 	SnapshotStatus           SnapshotStatus           `json:"snapshot_status"`
 	NormalizationVersion     string                   `json:"normalization_version"`
+	// CrawlComplete is the canonical metadata indicator in Audit V1 of whether the crawler
+	// achieved clean completion (frontier fully exhausted without hitting stop limits such as
+	// max-urls, max-depth, seed-unreachable, robots-blocked, etc.).
 	CrawlComplete            bool                     `json:"crawl_complete"`
 	SitemapDiscoveryComplete bool                     `json:"sitemap_discovery_complete"`
 	RenderSelectionComplete  bool                     `json:"render_selection_complete"`

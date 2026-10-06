@@ -52,14 +52,14 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 
 	// Query and verify crawl run state
 	var (
-		runState, seedURL, host, optJSON, startedAtStr string
-		finishedAtStr                                 sql.NullString
-		foundCount, crawledCount                      int
+		runState, stopReason, seedURL, host, optJSON, startedAtStr string
+		finishedAtStr                                             sql.NullString
+		foundCount, crawledCount                                  int
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT state, seed_url, host, options, started_at, finished_at, found, crawled
+		`SELECT state, stop_reason, seed_url, host, options, started_at, finished_at, found, crawled
 		 FROM sitecrawl_runs WHERE id = ?`, req.CrawlRunID).
-		Scan(&runState, &seedURL, &host, &optJSON, &startedAtStr, &finishedAtStr, &foundCount, &crawledCount)
+		Scan(&runState, &stopReason, &seedURL, &host, &optJSON, &startedAtStr, &finishedAtStr, &foundCount, &crawledCount)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("%w: %q", ErrRunNotFound, req.CrawlRunID)
 	}
@@ -71,6 +71,15 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		return nil, fmt.Errorf("%w: current run state is %q (only %q runs can be audited)",
 			ErrRunNotCompleted, runState, sitecrawl.StateCompleted)
 	}
+
+	// Crawl completeness semantics:
+	// Snapshot metadata (EvidenceSnapshot.CrawlComplete) is the canonical source for
+	// crawl completeness. In Audit V1.2, CrawlComplete is true if and only if
+	// the crawl run reached StateCompleted AND stop_reason is empty (i.e. frontier
+	// was fully exhausted without hitting limits such as max-urls, max-depth, etc.).
+	// Completed runs with a non-empty stop_reason still produce a frozen snapshot
+	// with CrawlComplete = false and emit a crawl_stop_reason observation.
+	crawlComplete := (runState == sitecrawl.StateCompleted && strings.TrimSpace(stopReason) == "")
 
 	var opts sitecrawl.Options
 	if optJSON != "" && optJSON != "{}" {
@@ -308,7 +317,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		CreatedAt:                time.Now().UTC(),
 		SnapshotStatus:           audit.SnapshotBuilding,
 		NormalizationVersion:     "v1.2.0",
-		CrawlComplete:            false,
+		CrawlComplete:            crawlComplete,
 		SitemapDiscoveryComplete: false,
 		RenderSelectionComplete:  false,
 		ProbeCollectionComplete:  false,
@@ -1066,6 +1075,36 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		)
 	}
 
+	// 10b. Site-level normalized observations for crawl completeness and stop reason
+	siteSrcRef := fmt.Sprintf("sitecrawl_runs:%s", req.CrawlRunID)
+	normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+		ObservationID:      nextObsID(),
+		AuditRunID:         req.AuditRunID,
+		SnapshotID:         req.SnapshotID,
+		SubjectType:        audit.SubjectSite,
+		SubjectRef:         "site",
+		Field:              "crawl_complete",
+		Value:              strconv.FormatBool(crawlComplete),
+		DerivationType:     audit.DerivationDirect,
+		SourceEvidenceRefs: []string{siteSrcRef},
+		ObservedAt:         runStartedAt,
+	})
+
+	if strings.TrimSpace(stopReason) != "" {
+		normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectSite,
+			SubjectRef:         "site",
+			Field:              "crawl_stop_reason",
+			Value:              stopReason,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{siteSrcRef},
+			ObservedAt:         runStartedAt,
+		})
+	}
+
 	// 11. Append conditional and global capability-level evidence gaps
 	if len(canonicalObservations) > 0 {
 		evidenceGaps = append(evidenceGaps, EvidenceGap{
@@ -1193,7 +1232,6 @@ func finalizeSnapshot(s *audit.EvidenceSnapshot, normalizedObs []audit.Normalize
 	now := time.Now().UTC()
 	s.FrozenAt = &now
 	s.SnapshotStatus = audit.SnapshotFrozen
-	s.CrawlComplete = true
 	s.NormalizedObservations = normalizedObs
 }
 

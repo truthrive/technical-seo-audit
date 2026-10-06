@@ -1704,3 +1704,135 @@ func TestAdapter_DanglingLinkGuard(t *testing.T) {
 		t.Errorf("expected 2 GapUnresolvedLinkTargetUnavailable gaps, got %d", gapCount)
 	}
 }
+
+// 31. Crawl completeness semantics based on state and stop_reason
+func TestAdapter_CrawlCompletenessSemantics(t *testing.T) {
+	testCases := []struct {
+		name                string
+		stopReason          string
+		expectCrawlComplete bool
+		expectStopReasonObs bool
+	}{
+		{
+			name:                "clean_completion",
+			stopReason:          "",
+			expectCrawlComplete: true,
+			expectStopReasonObs: false,
+		},
+		{
+			name:                "max_urls_limit",
+			stopReason:          sitecrawl.StopMaxURLs, // "max-urls"
+			expectCrawlComplete: false,
+			expectStopReasonObs: true,
+		},
+		{
+			name:                "max_depth_limit",
+			stopReason:          sitecrawl.StopMaxDepth, // "max-depth"
+			expectCrawlComplete: false,
+			expectStopReasonObs: true,
+		},
+		{
+			name:                "seed_unreachable",
+			stopReason:          sitecrawl.StopSeedUnreachable, // "seed-unreachable"
+			expectCrawlComplete: false,
+			expectStopReasonObs: true,
+		},
+		{
+			name:                "robots_blocked",
+			stopReason:          sitecrawl.StopRobotsBlocked, // "robots-blocked"
+			expectCrawlComplete: false,
+			expectStopReasonObs: true,
+		},
+		{
+			name:                "seed_redirect",
+			stopReason:          sitecrawl.StopSeedRedirect, // "seed-redirect"
+			expectCrawlComplete: false,
+			expectStopReasonObs: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newTestDB(t)
+			runID := "run-complete-" + tc.name
+			seed := "https://example.com/"
+
+			_, err := db.Exec(`INSERT INTO sitecrawl_runs(id, seed_url, host, options, state, stop_reason, started_at)
+				VALUES(?, ?, 'example.com', '{}', 'completed', ?, '2026-10-01T00:00:00Z')`, runID, seed, tc.stopReason)
+			if err != nil {
+				t.Fatalf("insert run failed: %v", err)
+			}
+			_, _ = db.Exec(`INSERT INTO sitecrawl_urls(run_id, id, url) VALUES(?, 1, ?)`, runID, seed)
+
+			pageJSON, _ := json.Marshal(sitecrawl.Page{
+				URL:       seed,
+				Status:    200,
+				CrawledAt: "2026-10-01T00:01:00Z",
+			})
+			_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, crawled_at)
+				VALUES(?, 1, ?, ?, 200, '2026-10-01T00:01:00Z')`, runID, seed, string(pageJSON))
+
+			res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+				CrawlRunID: runID,
+				AuditRunID: audit.AuditRunID("audit:" + runID),
+				SnapshotID: audit.SnapshotID("snap:" + runID),
+			})
+			if err != nil {
+				t.Fatalf("expected snapshot build to succeed, got error: %v", err)
+			}
+
+			snap := res.EvidenceSnapshot
+			if snap == nil {
+				t.Fatalf("expected non-nil EvidenceSnapshot")
+			}
+			if snap.SnapshotStatus != audit.SnapshotFrozen {
+				t.Errorf("expected SnapshotStatus %q, got %q", audit.SnapshotFrozen, snap.SnapshotStatus)
+			}
+			if snap.FrozenAt == nil {
+				t.Errorf("expected FrozenAt to be non-nil")
+			}
+
+			// Verify canonical metadata CrawlComplete
+			if snap.CrawlComplete != tc.expectCrawlComplete {
+				t.Errorf("expected CrawlComplete = %v, got %v", tc.expectCrawlComplete, snap.CrawlComplete)
+			}
+
+			// Verify normalized observations for site
+			var (
+				foundCompleteObs   bool
+				crawlCompleteValue string
+				foundStopReasonObs bool
+				stopReasonValue    string
+			)
+
+			for _, obs := range snap.NormalizedObservations {
+				if obs.SubjectType == audit.SubjectSite && obs.SubjectRef == "site" {
+					if obs.Field == "crawl_complete" {
+						foundCompleteObs = true
+						crawlCompleteValue = obs.Value
+					}
+					if obs.Field == "crawl_stop_reason" {
+						foundStopReasonObs = true
+						stopReasonValue = obs.Value
+					}
+				}
+			}
+
+			if !foundCompleteObs {
+				t.Errorf("expected crawl_complete normalized observation")
+			} else {
+				expectedVal := fmt.Sprintf("%v", tc.expectCrawlComplete)
+				if crawlCompleteValue != expectedVal {
+					t.Errorf("expected crawl_complete observation %q, got %q", expectedVal, crawlCompleteValue)
+				}
+			}
+
+			if foundStopReasonObs != tc.expectStopReasonObs {
+				t.Errorf("expected crawl_stop_reason observation presence %v, got %v", tc.expectStopReasonObs, foundStopReasonObs)
+			}
+			if tc.expectStopReasonObs && stopReasonValue != tc.stopReason {
+				t.Errorf("expected crawl_stop_reason observation value %q, got %q", tc.stopReason, stopReasonValue)
+			}
+		})
+	}
+}
