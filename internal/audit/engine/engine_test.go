@@ -184,7 +184,7 @@ func TestEngine_RuleSelection(t *testing.T) {
 	}
 
 	// 3b. Known in registry but unimplemented rule
-	unimplementedRules := []string{"AR-ACC-001", "AR-ACC-002", "AR-INDEX-001", "AR-CANON-001"}
+	unimplementedRules := []string{"AR-ACC-001", "AR-ACC-002", "AR-INDEX-003", "AR-CANON-001"}
 	for _, ruleID := range unimplementedRules {
 		_, err = eng.EvaluateRule(ctx, snap, ruleID)
 		if !errors.Is(err, engine.ErrRuleNotImplemented) {
@@ -200,6 +200,15 @@ func TestEngine_RuleSelection(t *testing.T) {
 	if len(results) != 1 {
 		t.Errorf("expected 1 result, got %d", len(results))
 	}
+
+	// 3d. Implemented rule AR-INDEX-001
+	results, err = eng.EvaluateRule(ctx, snap, "AR-INDEX-001")
+	if err != nil {
+		t.Fatalf("expected AR-INDEX-001 to execute successfully, got: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
 }
 
 // 4. Implemented rule set API
@@ -210,8 +219,8 @@ func TestEngine_ImplementedRuleIDs(t *testing.T) {
 	}
 
 	ids := eng.ImplementedRuleIDs()
-	if len(ids) != 2 || ids[0] != "AR-ACC-004" || ids[1] != "AR-INDEX-002" {
-		t.Errorf("expected exactly [\"AR-ACC-004\", \"AR-INDEX-002\"], got %v", ids)
+	if len(ids) != 3 || ids[0] != "AR-ACC-004" || ids[1] != "AR-INDEX-001" || ids[2] != "AR-INDEX-002" {
+		t.Errorf("expected exactly [\"AR-ACC-004\", \"AR-INDEX-001\", \"AR-INDEX-002\"], got %v", ids)
 	}
 }
 
