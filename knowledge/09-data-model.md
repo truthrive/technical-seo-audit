@@ -465,7 +465,11 @@ Target values:
 - explicit agent: normalized user-agent token (e.g. `googlebot`)
 - unknown applicability: empty string with `scope_unknown = true`
 
-Preserve source-level evidence before deriving effective state. Do not infer scope. Unqualified `effective_noindex` is only derived when generic directive evidence is complete and unambiguous.
+Preserve source-level evidence before deriving effective state. Do not infer scope. V1 `effective_noindex` represents Googlebot-effective page-level noindex state derived from:
+- generic scope (`*`);
+- explicit googlebot scope (`googlebot`);
+- cumulative restrictive-rule accumulation (an applicable `noindex` or `none` cannot be cancelled by `index`).
+Other agent scopes (e.g. GPTBot, OAI-SearchBot, Bingbot) do not affect Googlebot text search indexability. Unknown evidence, ambiguous scopes, and incomplete/raw-render evidence must remain absent (do not encode unknown as false).
 
 ## 15. CanonicalObservation
 

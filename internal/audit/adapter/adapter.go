@@ -316,7 +316,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		AuditRunID:               req.AuditRunID,
 		CreatedAt:                time.Now().UTC(),
 		SnapshotStatus:           audit.SnapshotBuilding,
-		NormalizationVersion:     "v1.3.0",
+		NormalizationVersion:     "v1.4.0",
 		CrawlComplete:            crawlComplete,
 		SitemapDiscoveryComplete: false,
 		RenderSelectionComplete:  false,
@@ -1813,31 +1813,36 @@ func processPageDirectives(
 		})
 	}
 
-	// 5. Effective Noindex (Fix 1: emit only when all directive evidence is known generic scope)
-	// Do NOT emit unqualified effective_noindex when ANY known agent-scoped directive exists on the URL.
-	// Also withhold it when scope is unknown.
-	// Emit it only when all directive evidence is known generic scope.
-	hasGenericDirective := false
-	hasAgentDirective := false
+	// 5. Effective Noindex (V1.3d: Googlebot-effective page-level noindex normalization)
+	// Applicable directive scopes are generic (*) and explicit googlebot.
+	// Other agent scopes (e.g. gptbot, oai-searchbot, bingbot, googlebot-news) do not affect Googlebot text search.
+	// Google applies restrictive rules cumulatively: noindex/none cannot be cancelled by index.
+	// A known applicable noindex remains TRUE even if unrelated ambiguous evidence exists.
+	// FALSE is emitted only when:
+	// - Googlebot-applicable directive acquisition is complete enough (raw server HTML observable, not rendered);
+	// - no relevant unknown-scope evidence exists (!hasAmbiguousDirective);
+	// - no applicable generic/googlebot directive contains noindex or none.
+	hasGooglebotApplicableDirective := false
+	hasGooglebotNoindex := false
 	hasAmbiguousDirective := false
-	genericNoindex := false
 
 	for _, d := range directives {
 		if d.ScopeUnknown {
 			hasAmbiguousDirective = true
-		} else if d.Target == "*" {
-			hasGenericDirective = true
+		} else if d.Target == "*" || d.Target == "googlebot" {
+			hasGooglebotApplicableDirective = true
 			if containsToken(d.ParsedTokens, "noindex") || containsToken(d.ParsedTokens, "none") {
-				genericNoindex = true
+				hasGooglebotNoindex = true
 			}
-		} else {
-			hasAgentDirective = true
 		}
 	}
 
-	if hasGenericDirective && !hasAmbiguousDirective && !hasAgentDirective {
+	canProveNoindex := hasGooglebotNoindex
+	canProveIndexable := !isRendered && !hasAmbiguousDirective && !hasGooglebotNoindex && (hasGooglebotApplicableDirective || pageMetaTags != nil)
+
+	if canProveNoindex || canProveIndexable {
 		noindexVal := "false"
-		if genericNoindex {
+		if canProveNoindex {
 			noindexVal = "true"
 		}
 		normalized = append(normalized, audit.NormalizedObservation{

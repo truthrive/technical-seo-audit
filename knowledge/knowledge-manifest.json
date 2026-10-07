@@ -30,7 +30,7 @@
     "AI": 10,
     "OBS": 11
   },
-  "revision": "v1.4.1",
+  "revision": "v1.4.2",
   "notes": "V1 specification freeze updated for SiteCrawl-based implementation: existing SiteCrawl is the evidence-acquisition foundation; legacy issue semantics remain non-authoritative; 47-rule contract unchanged.",
   "atomic_rules_v1": {
     "total_executable": 47,

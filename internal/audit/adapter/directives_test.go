@@ -210,11 +210,18 @@ func TestAdapter_Directives_GenericAndGooglebotMetaSeparation(t *testing.T) {
 		t.Errorf("googlebot observation EffectiveNoindex must remain false (unqualified noindex cannot come from agent-scoped evidence)")
 	}
 
-	// Unqualified effective_noindex must NOT be emitted because agent directive (googlebot) exists on URL (Fix 1)
+	// In V1.3d: Googlebot-applicable noindex is proven by googlebot: noindex (effective_noindex = true)
+	var foundEff1 bool
 	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
 		if no.Field == "effective_noindex" && no.SubjectRef == "url:audit:meta:sep:1" {
-			t.Errorf("effective_noindex must be withheld when agent directive exists on URL, got: %+v", no)
+			foundEff1 = true
+			if no.Value != "true" {
+				t.Errorf("expected effective_noindex 'true', got %q", no.Value)
+			}
 		}
+	}
+	if !foundEff1 {
+		t.Errorf("expected effective_noindex observation for url:audit:meta:sep:1")
 	}
 
 	// Verify URL-level raw fields separation (Fix 4)
@@ -289,11 +296,18 @@ func TestAdapter_Directives_GooglebotOnlyMeta(t *testing.T) {
 		t.Errorf("expected ScopeUnknown false")
 	}
 
-	// Unqualified effective_noindex must NOT be emitted because generic directive evidence is absent
+	// In V1.3d: googlebot: noindex produces effective_noindex = "true"
+	var foundEff2 bool
 	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
 		if no.Field == "effective_noindex" && no.SubjectRef == "url:audit:gbot:only:1" {
-			t.Errorf("effective_noindex must be withheld when generic directive evidence is absent, got: %+v", no)
+			foundEff2 = true
+			if no.Value != "true" {
+				t.Errorf("expected effective_noindex 'true', got %q", no.Value)
+			}
 		}
+	}
+	if !foundEff2 {
+		t.Errorf("expected effective_noindex observation for url:audit:gbot:only:1")
 	}
 }
 
@@ -519,11 +533,18 @@ func TestAdapter_Directives_ExplicitGooglebotXRobots(t *testing.T) {
 		t.Errorf("unexpected ParsedTokens: %v", obs.ParsedTokens)
 	}
 
-	// effective_noindex must be withheld
+	// In V1.3d: googlebot: noindex header produces effective_noindex = "true"
+	var foundEff3 bool
 	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
 		if no.Field == "effective_noindex" && no.SubjectRef == "url:audit:gbot:xr:1" {
-			t.Errorf("effective_noindex must be withheld when generic directive evidence is absent, got: %+v", no)
+			foundEff3 = true
+			if no.Value != "true" {
+				t.Errorf("expected effective_noindex 'true', got %q", no.Value)
+			}
 		}
+	}
+	if !foundEff3 {
+		t.Errorf("expected effective_noindex observation for url:audit:gbot:xr:1")
 	}
 }
 
@@ -582,11 +603,18 @@ func TestAdapter_Directives_AmbiguousJoinedXRobots(t *testing.T) {
 		t.Errorf("expected GapDirectiveScopeAmbiguous for ambiguous segment 1")
 	}
 
-	// effective_noindex must be withheld because ambiguous directive evidence is present
+	// In V1.3d: known applicable noindex (googlebot: noindex) remains TRUE even with ambiguous segment
+	var foundEff4 bool
 	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
 		if no.Field == "effective_noindex" && no.SubjectRef == "url:audit:ambig:xr:1" {
-			t.Errorf("effective_noindex must be withheld when ambiguous directive evidence is present, got: %+v", no)
+			foundEff4 = true
+			if no.Value != "true" {
+				t.Errorf("expected effective_noindex 'true', got %q", no.Value)
+			}
 		}
+	}
+	if !foundEff4 {
+		t.Errorf("expected effective_noindex observation for url:audit:ambig:xr:1")
 	}
 }
 
@@ -689,19 +717,19 @@ func TestAdapter_Directives_SafeAndUnsafeEffectiveNoindex(t *testing.T) {
 		t.Errorf("URL 2: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
 	}
 
-	// URL 3: must not have effective_noindex (agent directive googlebot suppresses unqualified effective_noindex)
-	if v, exists := effBySubj["url:audit:eff:scenarios:3"]; exists {
-		t.Errorf("URL 3: expected no effective_noindex observation, got %q", v)
+	// URL 3: effective_noindex = "true" (googlebot noindex is present)
+	if v, exists := effBySubj["url:audit:eff:scenarios:3"]; !exists || v != "true" {
+		t.Errorf("URL 3: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
 	}
 
-	// URL 4: must not have effective_noindex
-	if v, exists := effBySubj["url:audit:eff:scenarios:4"]; exists {
-		t.Errorf("URL 4: expected no effective_noindex observation, got %q", v)
+	// URL 4: effective_noindex = "true" (googlebot noindex is present)
+	if v, exists := effBySubj["url:audit:eff:scenarios:4"]; !exists || v != "true" {
+		t.Errorf("URL 4: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
 	}
 
-	// URL 5: must not have effective_noindex
-	if v, exists := effBySubj["url:audit:eff:scenarios:5"]; exists {
-		t.Errorf("URL 5: expected no effective_noindex observation, got %q", v)
+	// URL 5: effective_noindex = "true" (googlebot noindex segment is present)
+	if v, exists := effBySubj["url:audit:eff:scenarios:5"]; !exists || v != "true" {
+		t.Errorf("URL 5: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
 	}
 
 	// URL 6: effective_noindex = "false"
@@ -919,11 +947,18 @@ func TestAdapter_Directives_HermeticCrawlToSnapshot(t *testing.T) {
 			hasGeneric, hasGooglebot)
 	}
 
-	// Verify effective_noindex for home page is WITHHELD (Fix 1: googlebot agent directive present)
+	// In V1.3d: home page has googlebot: noindex, so effective_noindex = "true"
+	var foundHomeEff bool
 	for _, no := range snap.NormalizedObservations {
 		if no.SubjectRef == "url:audit:hermetic:crawl:1" && no.Field == "effective_noindex" {
-			t.Errorf("home page effective_noindex must be withheld when agent directive is present, got %q", no.Value)
+			foundHomeEff = true
+			if no.Value != "true" {
+				t.Errorf("expected home page effective_noindex 'true', got %q", no.Value)
+			}
 		}
+	}
+	if !foundHomeEff {
+		t.Errorf("expected effective_noindex observation for home page")
 	}
 
 	// Verify home page raw fields separation (Fix 4)
@@ -1054,11 +1089,18 @@ func TestAdapter_Directives_FlattenedMetaRobotsExtraTokensBothScopes(t *testing.
 		t.Errorf("expected GapDirectiveScopeAmbiguous for unassignable extra tokens")
 	}
 
-	// effective_noindex must be withheld
+	// In V1.3d: known Googlebot noindex remains "true" even when ambiguous extra tokens exist
+	var foundFlatEff bool
 	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
 		if no.Field == "effective_noindex" && no.SubjectRef == "url:audit:flat:both:1" {
-			t.Errorf("effective_noindex must be withheld when ambiguous extra tokens and agent directives exist, got: %+v", no)
+			foundFlatEff = true
+			if no.Value != "true" {
+				t.Errorf("expected effective_noindex 'true', got %q", no.Value)
+			}
 		}
+	}
+	if !foundFlatEff {
+		t.Errorf("expected effective_noindex observation for url:audit:flat:both:1")
 	}
 
 	// Fix 4: meta_robots_raw contains proven generic ("index") only, not unrecovered or agent tokens
@@ -1255,11 +1297,18 @@ func TestAdapter_Directives_UnknownXRobotsPrefixRemainsUnknownScope(t *testing.T
 		t.Errorf("expected googlebot_x_robots_raw 'googlebot: noindex', got found=%v, val=%q", foundGbotXRaw, gbotXRawVal)
 	}
 
-	// effective_noindex must be withheld
+	// In V1.3d: known Googlebot noindex remains "true" even with unknown prefix
+	var foundPfxEff bool
 	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
 		if no.Field == "effective_noindex" && no.SubjectRef == "url:audit:pfx:unk:1" {
-			t.Errorf("effective_noindex must be withheld, got: %+v", no)
+			foundPfxEff = true
+			if no.Value != "true" {
+				t.Errorf("expected effective_noindex 'true', got %q", no.Value)
+			}
 		}
+	}
+	if !foundPfxEff {
+		t.Errorf("expected effective_noindex observation for url:audit:pfx:unk:1")
 	}
 }
 
@@ -1572,3 +1621,285 @@ func TestAdapter_Directives_XRobotsContinuationScopeAmbiguity(t *testing.T) {
 	}
 }
 
+// 18. V1.3d: Googlebot Effective Noindex Normalization
+// Comprehensive verification of all 14 required cases for URL-level effective_noindex.
+func TestAdapter_GooglebotEffectiveNoindex_Normalization(t *testing.T) {
+	db := newTestDB(t)
+	runID := "run:gbot:eff:norm"
+	seed := "https://example.com/1"
+	setupTestRun(t, db, runID, seed)
+
+	// Register 15 distinct URLs for the test cases
+	for i := 1; i <= 15; i++ {
+		insertURL(t, db, runID, i, fmt.Sprintf("https://example.com/%d", i))
+	}
+
+	auditRunID := audit.AuditRunID("audit:gbot:eff:norm")
+	snapID := audit.SnapshotID("snap:gbot:eff:norm")
+
+	// 1. generic noindex -> true
+	p1, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/1",
+		MetaRobots: "noindex",
+		MetaTags:   map[string]string{"robots": "noindex"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 1, 'https://example.com/1', ?, 'html', 'noindex', '2026-10-01T00:00:10Z')`, runID, string(p1))
+
+	// 2. googlebot noindex -> true
+	p2, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/2",
+		MetaRobots: "noindex",
+		MetaTags:   map[string]string{"googlebot": "noindex"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 2, 'https://example.com/2', ?, 'html', 'noindex', '2026-10-01T00:00:10Z')`, runID, string(p2))
+
+	// 3. generic index -> false
+	p3, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/3",
+		MetaRobots: "index",
+		MetaTags:   map[string]string{"robots": "index"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 3, 'https://example.com/3', ?, 'html', 'index', '2026-10-01T00:00:10Z')`, runID, string(p3))
+
+	// 4. googlebot index -> false
+	p4, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/4",
+		MetaRobots: "index",
+		MetaTags:   map[string]string{"googlebot": "index"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 4, 'https://example.com/4', ?, 'html', 'index', '2026-10-01T00:00:10Z')`, runID, string(p4))
+
+	// 5. generic index + googlebot noindex -> true
+	p5, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/5",
+		MetaRobots: "index, noindex",
+		MetaTags:   map[string]string{"robots": "index", "googlebot": "noindex"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 5, 'https://example.com/5', ?, 'html', 'index, noindex', '2026-10-01T00:00:10Z')`, runID, string(p5))
+
+	// 6. generic noindex + googlebot index -> true
+	p6, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/6",
+		MetaRobots: "noindex, index",
+		MetaTags:   map[string]string{"robots": "noindex", "googlebot": "index"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 6, 'https://example.com/6', ?, 'html', 'noindex, index', '2026-10-01T00:00:10Z')`, runID, string(p6))
+
+	// 7. generic index + GPTBot noindex -> false
+	p7, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/7",
+		MetaRobots: "index",
+		MetaTags:   map[string]string{"robots": "index", "gptbot": "noindex"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 7, 'https://example.com/7', ?, 'html', 'index', '2026-10-01T00:00:10Z')`, runID, string(p7))
+
+	// 8. none -> true
+	p8, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/8",
+		MetaRobots: "none",
+		MetaTags:   map[string]string{"robots": "none"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 8, 'https://example.com/8', ?, 'html', 'none', '2026-10-01T00:00:10Z')`, runID, string(p8))
+
+	// 9. index + noindex same scope -> true
+	p9, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/9",
+		MetaRobots: "index, noindex",
+		MetaTags:   map[string]string{"robots": "index, noindex"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 9, 'https://example.com/9', ?, 'html', 'index, noindex', '2026-10-01T00:00:10Z')`, runID, string(p9))
+
+	// 10. unknown scope without known noindex -> effective_noindex absent
+	p10, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/10",
+		XRobotsTag: "foo: bar, index",
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
+		VALUES(?, 10, 'https://example.com/10', ?, 'html', 'foo: bar, index', '2026-10-01T00:00:10Z')`, runID, string(p10))
+
+	// 11. known Googlebot noindex + unknown scope -> true
+	p11, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/11",
+		XRobotsTag: "googlebot: noindex, foo: bar",
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
+		VALUES(?, 11, 'https://example.com/11', ?, 'html', 'googlebot: noindex, foo: bar', '2026-10-01T00:00:10Z')`, runID, string(p11))
+
+	// 12. no-directive complete evidence -> false
+	p12, _ := json.Marshal(sitecrawl.Page{
+		URL:       "https://example.com/12",
+		MetaTags:  map[string]string{},
+		CrawledAt: "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, crawled_at)
+		VALUES(?, 12, 'https://example.com/12', ?, 'html', '2026-10-01T00:00:10Z')`, runID, string(p12))
+
+	// 13a. incomplete/raw-render evidence -> effective_noindex absent (rendered page, no header noindex)
+	p13a, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/13",
+		Rendered:   true,
+		MetaRobots: "index",
+		MetaTags:   map[string]string{"robots": "index"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, rendered, meta_robots, crawled_at)
+		VALUES(?, 13, 'https://example.com/13', ?, 'html', 1, 'index', '2026-10-01T00:00:10Z')`, runID, string(p13a))
+
+	// 13b. incomplete/raw-render evidence -> effective_noindex absent (MetaTags nil, no directives)
+	p13b, _ := json.Marshal(sitecrawl.Page{
+		URL:       "https://example.com/14",
+		MetaTags:  nil,
+		CrawledAt: "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, crawled_at)
+		VALUES(?, 14, 'https://example.com/14', ?, 'html', '2026-10-01T00:00:10Z')`, runID, string(p13b))
+
+	// URL 15: only unrelated GPTBot directive with complete evidence (MetaTags non-nil) -> false
+	p15, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/15",
+		MetaTags:   map[string]string{"description": "A page with no Googlebot directives"},
+		XRobotsTag: "gptbot: noindex",
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
+		VALUES(?, 15, 'https://example.com/15', ?, 'html', 'gptbot: noindex', '2026-10-01T00:00:10Z')`, runID, string(p15))
+
+	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: auditRunID,
+		SnapshotID: snapID,
+	})
+	if err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+
+	// Verify snapshot NormalizationVersion is bumped to v1.4.0
+	if res.EvidenceSnapshot.NormalizationVersion != "v1.4.0" {
+		t.Errorf("expected NormalizationVersion 'v1.4.0', got %q", res.EvidenceSnapshot.NormalizationVersion)
+	}
+
+	effBySubj := make(map[string]string)
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if no.Field == "effective_noindex" {
+			effBySubj[no.SubjectRef] = no.Value
+		}
+	}
+
+	// 1. generic noindex -> true
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:1"]; !exists || v != "true" {
+		t.Errorf("Case 1: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
+	}
+
+	// 2. googlebot noindex -> true
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:2"]; !exists || v != "true" {
+		t.Errorf("Case 2: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
+	}
+
+	// 3. generic index -> false
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:3"]; !exists || v != "false" {
+		t.Errorf("Case 3: expected effective_noindex 'false', got exists=%v, val=%q", exists, v)
+	}
+
+	// 4. googlebot index -> false
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:4"]; !exists || v != "false" {
+		t.Errorf("Case 4: expected effective_noindex 'false', got exists=%v, val=%q", exists, v)
+	}
+
+	// 5. generic index + googlebot noindex -> true
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:5"]; !exists || v != "true" {
+		t.Errorf("Case 5: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
+	}
+
+	// 6. generic noindex + googlebot index -> true
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:6"]; !exists || v != "true" {
+		t.Errorf("Case 6: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
+	}
+
+	// 7. generic index + GPTBot noindex -> false
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:7"]; !exists || v != "false" {
+		t.Errorf("Case 7: expected effective_noindex 'false', got exists=%v, val=%q", exists, v)
+	}
+
+	// 8. none -> true
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:8"]; !exists || v != "true" {
+		t.Errorf("Case 8: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
+	}
+
+	// 9. index + noindex same scope -> true
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:9"]; !exists || v != "true" {
+		t.Errorf("Case 9: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
+	}
+
+	// 10. unknown scope without known noindex -> absent
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:10"]; exists {
+		t.Errorf("Case 10: expected effective_noindex to be absent, got %q", v)
+	}
+
+	// 11. known Googlebot noindex + unknown scope -> true
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:11"]; !exists || v != "true" {
+		t.Errorf("Case 11: expected effective_noindex 'true', got exists=%v, val=%q", exists, v)
+	}
+
+	// 12. no-directive complete evidence -> false
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:12"]; !exists || v != "false" {
+		t.Errorf("Case 12: expected effective_noindex 'false', got exists=%v, val=%q", exists, v)
+	}
+
+	// 13a. incomplete/raw-render evidence -> absent
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:13"]; exists {
+		t.Errorf("Case 13a: expected effective_noindex to be absent for rendered page, got %q", v)
+	}
+
+	// 13b. incomplete/raw-render evidence -> absent
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:14"]; exists {
+		t.Errorf("Case 13b: expected effective_noindex to be absent for MetaTags nil, got %q", v)
+	}
+
+	// URL 15: only unrelated GPTBot directive with complete evidence -> false
+	if v, exists := effBySubj["url:audit:gbot:eff:norm:15"]; !exists || v != "false" {
+		t.Errorf("URL 15: expected effective_noindex 'false', got exists=%v, val=%q", exists, v)
+	}
+
+	// 14. deterministic normalized output: repeated build produces identical output
+	res2, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: auditRunID,
+		SnapshotID: snapID,
+	})
+	if err != nil {
+		t.Fatalf("second build failed: %v", err)
+	}
+	if len(res.EvidenceSnapshot.NormalizedObservations) != len(res2.EvidenceSnapshot.NormalizedObservations) {
+		t.Fatalf("non-deterministic count: %d vs %d",
+			len(res.EvidenceSnapshot.NormalizedObservations),
+			len(res2.EvidenceSnapshot.NormalizedObservations))
+	}
+	for i := range res.EvidenceSnapshot.NormalizedObservations {
+		o1 := res.EvidenceSnapshot.NormalizedObservations[i]
+		o2 := res2.EvidenceSnapshot.NormalizedObservations[i]
+		if o1.ObservationID != o2.ObservationID || o1.Field != o2.Field || o1.Value != o2.Value || o1.SubjectRef != o2.SubjectRef {
+			t.Errorf("determinism mismatch at index %d: %+v vs %+v", i, o1, o2)
+			break
+		}
+	}
+}

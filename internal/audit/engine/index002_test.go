@@ -133,7 +133,7 @@ func newSnapshotWithDirectives(
 		SnapshotID:             "snap:run:index002",
 		AuditRunID:             "audit:run:index002",
 		SnapshotStatus:         audit.SnapshotFrozen,
-		NormalizationVersion:   "v1.3.0",
+		NormalizationVersion:   "v1.4.0",
 		CrawlComplete:          true,
 		CreatedAt:              now.Add(-1 * time.Minute),
 		FrozenAt:               &now,
