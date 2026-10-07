@@ -210,8 +210,8 @@ func TestEngine_ImplementedRuleIDs(t *testing.T) {
 	}
 
 	ids := eng.ImplementedRuleIDs()
-	if len(ids) != 1 || ids[0] != "AR-ACC-004" {
-		t.Errorf("expected exactly [\"AR-ACC-004\"], got %v", ids)
+	if len(ids) != 2 || ids[0] != "AR-ACC-004" || ids[1] != "AR-INDEX-002" {
+		t.Errorf("expected exactly [\"AR-ACC-004\", \"AR-INDEX-002\"], got %v", ids)
 	}
 }
 

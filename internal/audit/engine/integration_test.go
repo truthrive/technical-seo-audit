@@ -155,3 +155,141 @@ func TestEngine_AR_ACC_004_EndToEndIntegration(t *testing.T) {
 		}
 	}
 }
+
+// TestEngine_AR_INDEX_002_EndToEndIntegration performs a hermetic integration test:
+// httptest.Server -> sitecrawl.Runner -> completed crawl -> adapter.Build -> FROZEN snapshot -> engine.EvaluateRule(AR-INDEX-002) -> RuleResults
+func TestEngine_AR_INDEX_002_EndToEndIntegration(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Home</title></head>
+<body><nav>
+<a href="/no-directive">No Directive</a>
+<a href="/meta-pass">Meta Pass</a>
+<a href="/meta-conflict">Meta Conflict</a>
+<a href="/cross-conflict">Cross Conflict</a>
+<a href="/diff-scope">Diff Scope</a>
+</nav><h1>Home</h1></body></html>`)
+	})
+	mux.HandleFunc("/no-directive", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>No Directive</title></head><body><h1>No Directive</h1></body></html>`)
+	})
+	mux.HandleFunc("/meta-pass", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Meta Pass</title><meta name="robots" content="index, follow"></head><body><h1>Meta Pass</h1></body></html>`)
+	})
+	mux.HandleFunc("/meta-conflict", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Meta Conflict</title><meta name="robots" content="index, noindex"></head><body><h1>Meta Conflict</h1></body></html>`)
+	})
+	mux.HandleFunc("/cross-conflict", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("X-Robots-Tag", "noindex")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Cross Conflict</title><meta name="robots" content="index"></head><body><h1>Cross Conflict</h1></body></html>`)
+	})
+	mux.HandleFunc("/diff-scope", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Diff Scope</title><meta name="robots" content="index"><meta name="googlebot" content="noindex"></head><body><h1>Diff Scope</h1></body></html>`)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// 1. Crawl via SiteCrawl
+	db, err := standalone.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	runner := sitecrawl.NewRunner(db)
+	if err := runner.EnsureSchema(); err != nil {
+		t.Fatalf("failed to ensure schema: %v", err)
+	}
+
+	opts := sitecrawl.Options{
+		Mode:        sitecrawl.ModeSpider,
+		MaxDepth:    2,
+		MaxURLs:     10,
+		Concurrency: 1,
+	}
+
+	started, err := runner.Crawl(context.Background(), []string{srv.URL}, opts)
+	if err != nil {
+		t.Fatalf("crawl execution failed: %v", err)
+	}
+
+	// 2. Adapt to Frozen EvidenceSnapshot
+	buildReq := adapter.BuildRequest{
+		CrawlRunID: started.ID,
+		AuditRunID: "audit:run:integration:index002",
+		SnapshotID: "snap:run:integration:index002",
+	}
+
+	buildRes, err := adapter.Build(context.Background(), db, buildReq)
+	if err != nil {
+		t.Fatalf("adapter.Build failed: %v", err)
+	}
+
+	snap := buildRes.EvidenceSnapshot
+	if snap == nil || snap.SnapshotStatus != audit.SnapshotFrozen {
+		t.Fatalf("expected non-nil FROZEN snapshot")
+	}
+
+	// 3. Initialize Rule Engine and evaluate AR-INDEX-002
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	results, err := eng.EvaluateRule(context.Background(), snap, "AR-INDEX-002")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-INDEX-002 failed: %v", err)
+	}
+
+	// Map URL string to rule result
+	resultsByURL := make(map[string]audit.RuleResult)
+	for _, r := range results {
+		for _, ref := range r.EvidenceRefs {
+			if ref.Field == "url" {
+				resultsByURL[ref.ObservedValue] = r
+			}
+		}
+	}
+
+	// Verify /no-directive is NOT_APPLICABLE
+	if r, ok := resultsByURL[srv.URL+"/no-directive"]; !ok {
+		t.Errorf("missing /no-directive result")
+	} else if r.Status != audit.StatusNotApplicable {
+		t.Errorf("expected /no-directive NOT_APPLICABLE, got %s", r.Status)
+	}
+
+	// Verify /meta-pass is PASS
+	if r, ok := resultsByURL[srv.URL+"/meta-pass"]; !ok {
+		t.Errorf("missing /meta-pass result")
+	} else if r.Status != audit.StatusPass {
+		t.Errorf("expected /meta-pass PASS, got %s", r.Status)
+	}
+
+	// Verify /meta-conflict is FAIL
+	if r, ok := resultsByURL[srv.URL+"/meta-conflict"]; !ok {
+		t.Errorf("missing /meta-conflict result")
+	} else if r.Status != audit.StatusFail {
+		t.Errorf("expected /meta-conflict FAIL, got %s", r.Status)
+	}
+
+	// Verify /cross-conflict is FAIL
+	if r, ok := resultsByURL[srv.URL+"/cross-conflict"]; !ok {
+		t.Errorf("missing /cross-conflict result")
+	} else if r.Status != audit.StatusFail {
+		t.Errorf("expected /cross-conflict FAIL, got %s", r.Status)
+	}
+
+	// Verify /diff-scope is PASS
+	if r, ok := resultsByURL[srv.URL+"/diff-scope"]; !ok {
+		t.Errorf("missing /diff-scope result")
+	} else if r.Status != audit.StatusPass {
+		t.Errorf("expected /diff-scope PASS, got %s", r.Status)
+	}
+}
