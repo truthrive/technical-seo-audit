@@ -1,6 +1,7 @@
 # V1 Logical Data Model
 
 **Status:** Frozen for V1 design
+**Revision:** v1.4.3
 **Depends on:** `07-v1-atomic-rule-manifest.md`, `08-system-architecture.md`
 **Scope:** Logical data model only
 **Database / ORM / storage engine:** Not selected
@@ -484,6 +485,22 @@ resolved_target_url_ids[]
 parse_errors[]
 observed_at
 ```
+
+### Canonical acquisition and normalization semantics
+
+1. **Raw canonical syntax is unavailable**: Frozen SiteCrawl resolves relative canonical references before persistence. Original raw `href` declaration syntax and raw syntax errors are not preserved; `raw_values` remains empty and `parse_errors` is not fabricated.
+2. **SiteCrawl values are already resolved**: Values preserved by SiteCrawl represent crawler-resolved URLs, not raw declaration strings.
+3. **Adapter-level normalized target semantics**: For trustworthy non-rendered HTML, the adapter normalizes each preserved declaration through Audit V1 URL normalization rules (`normalizeURL`), verifying valid absolute HTTP(S) schemes, hostnames, default port stripping, fragment removal, and case normalization. Each valid declaration emits `canonical_normalized_target`.
+4. **Canonical count vs. distinct target count**:
+   - `canonical_count`: Total number of canonical declarations preserved by SiteCrawl for the URL (including duplicates). Emits `canonical_count = 0` for non-rendered HTML with no canonical declarations. Rendered pages where raw head evidence is unavailable do not emit `canonical_count`.
+   - `canonical_normalization_complete`: Emitted when `canonical_count > 0`. Evaluates to `true` only if every preserved declaration successfully normalizes to a valid HTTP(S) target; otherwise `false`.
+   - `canonical_distinct_normalized_count`: Emitted only when `canonical_normalization_complete = true`. Represents the count of unique, distinct normalized targets (e.g. 2 declarations pointing to the same normalized target yield count=2, distinct=1).
+5. **Source → target subject correlation**:
+   - When canonical evidence resolves to exactly one distinct valid normalized target (`canonical_normalization_complete = true` and `canonical_distinct_normalized_count = 1`), the adapter attempts to correlate the target with an existing `UrlResource` in the snapshot using deterministic Audit URL normalization.
+   - If exactly one URL resource matches, the adapter emits `canonical_target_subject_ref` with that resource's subject ref (`url:<audit_run_id>:<target_url_id>`).
+   - If the target does not exist in the snapshot, no subject ref is synthesized.
+   - If matching is ambiguous (multiple URL resources normalize to the same URL), `canonical_target_subject_ref` is withheld.
+   - Target HTTP status and indexability are NOT duplicated onto the source URL; subsequent evaluators (`AR-CANON-006`, `AR-CANON-007`) traverse `canonical_target_subject_ref` to inspect the target's own evidence.
 
 Target status is sourced from FetchObservation for the target URL.
 

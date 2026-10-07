@@ -316,7 +316,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		AuditRunID:               req.AuditRunID,
 		CreatedAt:                time.Now().UTC(),
 		SnapshotStatus:           audit.SnapshotBuilding,
-		NormalizationVersion:     "v1.4.0",
+		NormalizationVersion:     "v1.5.0",
 		CrawlComplete:            crawlComplete,
 		SitemapDiscoveryComplete: false,
 		RenderSelectionComplete:  false,
@@ -364,6 +364,12 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			CreatedAt:       nil, // Not persisted in SQLite
 		}
 		urlResources = append(urlResources, ur)
+	}
+
+	// Build normalized URL to URLID mapping for exact target correlation
+	normURLToSubjectRefs := make(map[string][]string)
+	for _, ur := range urlResources {
+		normURLToSubjectRefs[ur.NormalizedURL] = append(normURLToSubjectRefs[ur.NormalizedURL], string(ur.URLID))
 	}
 
 	// 8. Build DiscoveryRecords with strict provenance and multiple-record support
@@ -889,6 +895,22 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					canonicals = []string{c}
 				}
 
+				// canonical_count: count declarations preserved by SiteCrawl.
+				// Duplicates must remain counted.
+				// For trustworthy non-rendered HTML with no canonical: canonical_count = 0.
+				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "canonical_count",
+					Value:              strconv.Itoa(len(canonicals)),
+					DerivationType:     audit.DerivationNormalized,
+					SourceEvidenceRefs: []string{pageSrcRef},
+					ObservedAt:         obsTime,
+				})
+
 				if len(canonicals) > 0 {
 					var targetIDs []audit.URLID
 					for _, c := range canonicals {
@@ -909,6 +931,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 						ObservedAt:             obsTime,
 					})
 
+					// Keep existing canonical_resolved semantics unchanged
 					for _, c := range canonicals {
 						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
 							ObservationID:      nextObsID(),
@@ -922,6 +945,97 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 							SourceEvidenceRefs: []string{pageSrcRef},
 							ObservedAt:         obsTime,
 						})
+					}
+
+					// Normalize each usable canonical through Audit URL normalization rules.
+					allNormalized := true
+					var (
+						normTargets      []string
+						seenDistinctNorm = make(map[string]struct{})
+						distinctTargets  []string
+					)
+					for _, c := range canonicals {
+						normTarget, err := normalizeCanonicalTarget(c, pr.url)
+						if err != nil {
+							allNormalized = false
+							continue
+						}
+						normTargets = append(normTargets, normTarget)
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "canonical_normalized_target",
+							Value:              normTarget,
+							DerivationType:     audit.DerivationNormalized,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+						if _, exists := seenDistinctNorm[normTarget]; !exists {
+							seenDistinctNorm[normTarget] = struct{}{}
+							distinctTargets = append(distinctTargets, normTarget)
+						}
+					}
+
+					// canonical_normalization_complete:
+					// When canonical_count > 0, emit true only if every preserved declaration
+					// can be normalized to a valid HTTP(S) target. Otherwise emit false.
+					completeVal := "false"
+					if allNormalized && len(normTargets) == len(canonicals) {
+						completeVal = "true"
+					}
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "canonical_normalization_complete",
+						Value:              completeVal,
+						DerivationType:     audit.DerivationNormalized,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+
+					// canonical_distinct_normalized_count:
+					// Emit only when canonical_normalization_complete = true.
+					if completeVal == "true" {
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "canonical_distinct_normalized_count",
+							Value:              strconv.Itoa(len(distinctTargets)),
+							DerivationType:     audit.DerivationNormalized,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+
+						// Canonical target correlation:
+						// When canonical evidence resolves to exactly one distinct valid normalized target:
+						// try to map it to an existing URL subject.
+						if len(distinctTargets) == 1 {
+							targetNorm := distinctTargets[0]
+							matchingSubjects := normURLToSubjectRefs[targetNorm]
+							if len(matchingSubjects) == 1 {
+								normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+									ObservationID:      nextObsID(),
+									AuditRunID:         req.AuditRunID,
+									SnapshotID:         req.SnapshotID,
+									SubjectType:        audit.SubjectURL,
+									SubjectRef:         string(urlIDStr),
+									Field:              "canonical_target_subject_ref",
+									Value:              matchingSubjects[0],
+									DerivationType:     audit.DerivationNormalized,
+									SourceEvidenceRefs: []string{pageSrcRef},
+									ObservedAt:         obsTime,
+								})
+							}
+						}
 					}
 				}
 			}
@@ -1183,6 +1297,38 @@ func normalizeURL(rawURL string) (string, bool, error) {
 	}
 
 	return b.String(), fragRemoved, nil
+}
+
+// normalizeCanonicalTarget resolves raw canonical declaration against baseURL if relative,
+// and normalizes it to a valid absolute HTTP(S) URL according to Audit V1 specifications.
+func normalizeCanonicalTarget(rawCanon string, baseURL string) (string, error) {
+	c := strings.TrimSpace(rawCanon)
+	if c == "" {
+		return "", errors.New("audit adapter: empty canonical declaration")
+	}
+
+	parsed, err := url.Parse(c)
+	if err != nil {
+		return "", fmt.Errorf("audit adapter: parse canonical %q: %w", c, err)
+	}
+
+	target := c
+	if !parsed.IsAbs() {
+		if baseURL == "" {
+			return "", fmt.Errorf("audit adapter: cannot resolve relative canonical %q with empty base URL", c)
+		}
+		baseParsed, err := url.Parse(baseURL)
+		if err != nil || !baseParsed.IsAbs() {
+			return "", fmt.Errorf("audit adapter: invalid base URL %q for relative canonical %q", baseURL, c)
+		}
+		target = baseParsed.ResolveReference(parsed).String()
+	}
+
+	normURL, _, err := normalizeURL(target)
+	if err != nil {
+		return "", fmt.Errorf("audit adapter: normalize canonical URL %q: %w", target, err)
+	}
+	return normURL, nil
 }
 
 // normalizeFetchError maps persisted SiteCrawl error slugs into Audit evidence vocabulary.
