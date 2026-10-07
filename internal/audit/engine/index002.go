@@ -37,21 +37,16 @@ func (b *rawDirectiveBundle) allObservations() []audit.NormalizedObservation {
 	return all
 }
 
-// extractDirectiveRef extracts the stable directive reference identifier from
-// an observation's SourceEvidenceRefs slice.
+// extractDirectiveRef extracts the explicit stable directive reference identifier
+// ("directive:*") from an observation's SourceEvidenceRefs slice.
+// Only explicit directive references establish bundle identity; any observation
+// lacking a "directive:*" reference is treated as unreferenced / unreliable evidence
+// without guessing correlation from arbitrary non-directive or page references.
 func extractDirectiveRef(refs []string) string {
 	for _, r := range refs {
 		if strings.HasPrefix(r, "directive:") {
 			return r
 		}
-	}
-	for _, r := range refs {
-		if !strings.HasPrefix(r, "page:") && !strings.HasPrefix(r, "sitecrawl_pages:") {
-			return r
-		}
-	}
-	if len(refs) > 0 {
-		return refs[0]
 	}
 	return ""
 }

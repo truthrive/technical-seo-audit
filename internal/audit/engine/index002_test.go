@@ -13,6 +13,7 @@ import (
 
 type directiveFixture struct {
 	refID        string
+	customRefs   []string
 	source       string
 	target       string
 	raw          string
@@ -44,7 +45,14 @@ func newSnapshotWithDirectives(
 	}
 
 	for i, d := range directives {
-		refs := []string{d.refID, "page:test"}
+		refs := d.customRefs
+		if refs == nil {
+			if d.refID != "" {
+				refs = []string{d.refID, "page:test"}
+			} else {
+				refs = []string{"page:test"}
+			}
+		}
 
 		if d.source != "" {
 			obs = append(obs, audit.NormalizedObservation{
@@ -125,7 +133,7 @@ func newSnapshotWithDirectives(
 		SnapshotID:             "snap:run:index002",
 		AuditRunID:             "audit:run:index002",
 		SnapshotStatus:         audit.SnapshotFrozen,
-		NormalizationVersion:   "v1.2.0",
+		NormalizationVersion:   "v1.3.0",
 		CrawlComplete:          true,
 		CreatedAt:              now.Add(-1 * time.Minute),
 		FrozenAt:               &now,
@@ -669,4 +677,208 @@ func TestAR_INDEX_002_MetadataAndGuards(t *testing.T) {
 	if r.ExpectedSummary != "No contradictory index and noindex directives in the same applicable scope." {
 		t.Errorf("unexpected ExpectedSummary: %q", r.ExpectedSummary)
 	}
+}
+
+func TestAR_INDEX_002_EvidenceCorrelationHardening(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// 1. directive observations with valid directive:* refs still evaluate normally
+	t.Run("1. valid directive:* refs evaluate normally", func(t *testing.T) {
+		directives := []directiveFixture{
+			{
+				refID:  "directive:meta:0",
+				source: "META",
+				target: "*",
+				raw:    "index",
+				tokens: "index",
+			},
+		}
+		snap := newSnapshotWithDirectives("url:1", "https://example.com/test", directives)
+		results, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-002")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 || results[0].Status != audit.StatusPass {
+			t.Errorf("expected PASS, got %v", results)
+		}
+	})
+
+	// 2. directive evidence with only a page ref is UNKNOWN, not PASS/FAIL
+	t.Run("2. directive evidence with only page ref evaluates to UNKNOWN", func(t *testing.T) {
+		directives := []directiveFixture{
+			{
+				customRefs: []string{"page:test"},
+				source:     "META",
+				target:     "*",
+				raw:        "index",
+				tokens:     "index",
+			},
+		}
+		snap := newSnapshotWithDirectives("url:1", "https://example.com/test", directives)
+		results, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-002")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 || results[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for directive evidence with only page ref, got %v", results)
+		}
+	})
+
+	// 3. multiple malformed directives sharing the same page ref are not merged into a false conflict
+	t.Run("3. multiple malformed directives sharing same page ref are not merged into false conflict", func(t *testing.T) {
+		directives := []directiveFixture{
+			{
+				customRefs: []string{"page:test"},
+				source:     "META",
+				target:     "*",
+				raw:        "index",
+				tokens:     "index",
+			},
+			{
+				customRefs: []string{"page:test"},
+				source:     "META",
+				target:     "*",
+				raw:        "noindex",
+				tokens:     "noindex",
+			},
+		}
+		snap := newSnapshotWithDirectives("url:1", "https://example.com/test", directives)
+		results, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-002")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		// Must be UNKNOWN, NOT FAIL (no false conflict from guessing)
+		if results[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN (no false conflict merger), got %s", results[0].Status)
+		}
+	})
+
+	// 4. an arbitrary non-directive source ref is not accepted as a directive ID
+	t.Run("4. arbitrary non-directive source ref is not accepted as directive ID", func(t *testing.T) {
+		directives := []directiveFixture{
+			{
+				customRefs: []string{"arbitrary_source_ref", "page:test"},
+				source:     "META",
+				target:     "*",
+				raw:        "noindex",
+				tokens:     "noindex",
+			},
+		}
+		snap := newSnapshotWithDirectives("url:1", "https://example.com/test", directives)
+		results, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-002")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 || results[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for arbitrary non-directive ref, got %v", results)
+		}
+	})
+
+	// 5. confirmed valid conflict plus malformed unrelated evidence remains FAIL
+	t.Run("5. confirmed valid conflict plus malformed unrelated evidence remains FAIL", func(t *testing.T) {
+		directives := []directiveFixture{
+			{
+				refID:  "directive:meta:0",
+				source: "META",
+				target: "*",
+				raw:    "index",
+				tokens: "index",
+			},
+			{
+				refID:  "directive:meta:1",
+				source: "META",
+				target: "*",
+				raw:    "noindex",
+				tokens: "noindex",
+			},
+			{
+				customRefs: []string{"page:test"},
+				source:     "META",
+				target:     "*",
+				raw:        "malformed_extra",
+				tokens:     "malformed_extra",
+			},
+		}
+		snap := newSnapshotWithDirectives("url:1", "https://example.com/test", directives)
+		results, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-002")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 || results[0].Status != audit.StatusFail {
+			t.Errorf("expected FAIL for confirmed conflict with unrelated malformed evidence, got %v", results)
+		}
+		// Verify malformed evidence is NOT in FAIL primary evidence refs
+		for _, ref := range results[0].EvidenceRefs {
+			if ref.ObservedValue == "malformed_extra" {
+				t.Errorf("unrelated malformed evidence should not be in FAIL primary evidence refs")
+			}
+		}
+	})
+
+	// 6. reversed observation order remains deterministic
+	t.Run("6. reversed observation order remains deterministic with malformed evidence", func(t *testing.T) {
+		directives := []directiveFixture{
+			{
+				refID:  "directive:meta:0",
+				source: "META",
+				target: "*",
+				raw:    "index",
+				tokens: "index",
+			},
+			{
+				refID:  "directive:meta:1",
+				source: "META",
+				target: "*",
+				raw:    "noindex",
+				tokens: "noindex",
+			},
+			{
+				customRefs: []string{"page:test"},
+				source:     "META",
+				target:     "*",
+				raw:        "unreferenced",
+				tokens:     "unreferenced",
+			},
+		}
+		snapForward := newSnapshotWithDirectives("url:1", "https://example.com/test", directives)
+
+		snapReversed := newSnapshotWithDirectives("url:1", "https://example.com/test", directives)
+		revObs := make([]audit.NormalizedObservation, len(snapReversed.NormalizedObservations))
+		for i, o := range snapReversed.NormalizedObservations {
+			revObs[len(snapReversed.NormalizedObservations)-1-i] = o
+		}
+		snapReversed.NormalizedObservations = revObs
+
+		resF, err := eng.EvaluateRule(ctx, snapForward, "AR-INDEX-002")
+		if err != nil {
+			t.Fatalf("forward failed: %v", err)
+		}
+		resR, err := eng.EvaluateRule(ctx, snapReversed, "AR-INDEX-002")
+		if err != nil {
+			t.Fatalf("reversed failed: %v", err)
+		}
+
+		if resF[0].Status != resR[0].Status {
+			t.Errorf("status mismatch: %s vs %s", resF[0].Status, resR[0].Status)
+		}
+		if resF[0].ObservedSummary != resR[0].ObservedSummary {
+			t.Errorf("summary mismatch: %q vs %q", resF[0].ObservedSummary, resR[0].ObservedSummary)
+		}
+		if len(resF[0].EvidenceRefs) != len(resR[0].EvidenceRefs) {
+			t.Fatalf("evidence refs count mismatch: %d vs %d", len(resF[0].EvidenceRefs), len(resR[0].EvidenceRefs))
+		}
+		for i := range resF[0].EvidenceRefs {
+			if !reflect.DeepEqual(resF[0].EvidenceRefs[i], resR[0].EvidenceRefs[i]) {
+				t.Errorf("ref %d mismatch: %+v vs %+v", i, resF[0].EvidenceRefs[i], resR[0].EvidenceRefs[i])
+			}
+		}
+	})
 }
