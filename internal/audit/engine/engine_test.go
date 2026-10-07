@@ -209,6 +209,15 @@ func TestEngine_RuleSelection(t *testing.T) {
 	if len(results) != 1 {
 		t.Errorf("expected 1 result, got %d", len(results))
 	}
+
+	// 3e. Implemented rule AR-CANON-003
+	results, err = eng.EvaluateRule(ctx, snap, "AR-CANON-003")
+	if err != nil {
+		t.Fatalf("expected AR-CANON-003 to execute successfully, got: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
 }
 
 // 4. Implemented rule set API
@@ -219,8 +228,14 @@ func TestEngine_ImplementedRuleIDs(t *testing.T) {
 	}
 
 	ids := eng.ImplementedRuleIDs()
-	if len(ids) != 3 || ids[0] != "AR-ACC-004" || ids[1] != "AR-INDEX-001" || ids[2] != "AR-INDEX-002" {
-		t.Errorf("expected exactly [\"AR-ACC-004\", \"AR-INDEX-001\", \"AR-INDEX-002\"], got %v", ids)
+	expected := []string{"AR-ACC-004", "AR-CANON-003", "AR-INDEX-001", "AR-INDEX-002"}
+	if len(ids) != len(expected) {
+		t.Fatalf("expected exactly %v, got %v", expected, ids)
+	}
+	for i, exp := range expected {
+		if ids[i] != exp {
+			t.Errorf("at index %d: expected %q, got %q", i, exp, ids[i])
+		}
 	}
 }
 

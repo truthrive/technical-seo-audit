@@ -64,8 +64,9 @@ func NewWithRegistry(reg *audit.Registry) (*Engine, error) {
 		clock:      func() time.Time { return time.Now().UTC() },
 	}
 
-	// Register implemented V1.3 evaluators
+	// Register implemented V1 evaluators
 	e.register(ruleIDACC004, evaluateACC004)
+	e.register(ruleIDCANON003, evaluateCANON003)
 	e.register(ruleIDINDEX001, evaluateINDEX001)
 	e.register(ruleIDINDEX002, evaluateINDEX002)
 
@@ -85,7 +86,7 @@ func (e *Engine) register(ruleID string, fn Evaluator) {
 }
 
 // ImplementedRuleIDs returns the deterministically sorted list of rule IDs currently
-// supported with an executable evaluator. For Audit V1.3e, this is exactly ["AR-ACC-004", "AR-INDEX-001", "AR-INDEX-002"].
+// supported with an executable evaluator. For Audit V1.4a, this is exactly ["AR-ACC-004", "AR-CANON-003", "AR-INDEX-001", "AR-INDEX-002"].
 func (e *Engine) ImplementedRuleIDs() []string {
 	ids := make([]string, 0, len(e.evaluators))
 	for id := range e.evaluators {

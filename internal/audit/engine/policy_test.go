@@ -392,11 +392,17 @@ func TestEngine_PolicyIntegration(t *testing.T) {
 		}
 	})
 
-	// 4e. Implemented rule set remains strictly ["AR-ACC-004", "AR-INDEX-001", "AR-INDEX-002"]
-	t.Run("implemented rules remain strictly AR-ACC-004, AR-INDEX-001, and AR-INDEX-002", func(t *testing.T) {
+	// 4e. Implemented rule set remains strictly ["AR-ACC-004", "AR-CANON-003", "AR-INDEX-001", "AR-INDEX-002"]
+	t.Run("implemented rules remain strictly AR-ACC-004, AR-CANON-003, AR-INDEX-001, and AR-INDEX-002", func(t *testing.T) {
 		ids := eng.ImplementedRuleIDs()
-		if len(ids) != 3 || ids[0] != "AR-ACC-004" || ids[1] != "AR-INDEX-001" || ids[2] != "AR-INDEX-002" {
-			t.Fatalf("expected exactly [\"AR-ACC-004\", \"AR-INDEX-001\", \"AR-INDEX-002\"], got %v", ids)
+		expected := []string{"AR-ACC-004", "AR-CANON-003", "AR-INDEX-001", "AR-INDEX-002"}
+		if len(ids) != len(expected) {
+			t.Fatalf("expected exactly %v, got %v", expected, ids)
+		}
+		for i, exp := range expected {
+			if ids[i] != exp {
+				t.Fatalf("at index %d: expected %q, got %q", i, exp, ids[i])
+			}
 		}
 	})
 }
