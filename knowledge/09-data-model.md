@@ -465,7 +465,7 @@ Target values:
 - explicit agent: normalized user-agent token (e.g. `googlebot`)
 - unknown applicability: empty string with `scope_unknown = true`
 
-Preserve source-level evidence before deriving effective state. Do not infer scope. V1 `effective_noindex` represents Googlebot-effective page-level noindex state derived from:
+Preserve source-level evidence before deriving effective state. Do not infer scope. On `RobotsDirectiveObservation`, `effective_noindex` indicates whether that individual directive source contributes a Googlebot-effective noindex restriction (`target` is `*` or `googlebot`, scope is known, tokens contain `noindex` or `none`). URL-level `effective_noindex` represents the final accumulated Googlebot-effective page-level state derived from:
 - generic scope (`*`);
 - explicit googlebot scope (`googlebot`);
 - cumulative restrictive-rule accumulation (an applicable `noindex` or `none` cannot be cancelled by `index`).

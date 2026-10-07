@@ -1452,6 +1452,10 @@ func processPageDirectives(
 			for _, agent := range agentKeys {
 				val := agentMetaRaw[agent]
 				tokens := parseDirectiveTokens(val)
+				isNoindex := false
+				if agent == "googlebot" && (containsToken(tokens, "noindex") || containsToken(tokens, "none")) {
+					isNoindex = true
+				}
 				directives = append(directives, audit.RobotsDirectiveObservation{
 					RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
 					AuditRunID:                   req.AuditRunID,
@@ -1461,7 +1465,7 @@ func processPageDirectives(
 					ScopeUnknown:                 false,
 					RawValue:                     val,
 					ParsedTokens:                 tokens,
-					EffectiveNoindex:             false, // agent-scoped evidence does not produce unqualified noindex
+					EffectiveNoindex:             isNoindex,
 					ObservedAt:                   obsTime,
 				})
 				metaDirIdx++
@@ -1591,7 +1595,7 @@ func processPageDirectives(
 			}
 
 			isNoindex := false
-			if parsed.target == "*" && !parsed.scopeUnknown && (containsToken(parsed.tokens, "noindex") || containsToken(parsed.tokens, "none")) {
+			if (parsed.target == "*" || parsed.target == "googlebot") && !parsed.scopeUnknown && (containsToken(parsed.tokens, "noindex") || containsToken(parsed.tokens, "none")) {
 				isNoindex = true
 			}
 

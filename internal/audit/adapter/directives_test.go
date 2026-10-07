@@ -206,8 +206,8 @@ func TestAdapter_Directives_GenericAndGooglebotMetaSeparation(t *testing.T) {
 	if !reflect.DeepEqual(googlebotObs.ParsedTokens, []string{"noindex"}) {
 		t.Errorf("unexpected googlebot tokens: %v", googlebotObs.ParsedTokens)
 	}
-	if googlebotObs.EffectiveNoindex {
-		t.Errorf("googlebot observation EffectiveNoindex must remain false (unqualified noindex cannot come from agent-scoped evidence)")
+	if !googlebotObs.EffectiveNoindex {
+		t.Errorf("expected googlebot observation EffectiveNoindex true for 'noindex'")
 	}
 
 	// In V1.3d: Googlebot-applicable noindex is proven by googlebot: noindex (effective_noindex = true)
@@ -294,6 +294,9 @@ func TestAdapter_Directives_GooglebotOnlyMeta(t *testing.T) {
 	}
 	if obs.ScopeUnknown {
 		t.Errorf("expected ScopeUnknown false")
+	}
+	if !obs.EffectiveNoindex {
+		t.Errorf("expected googlebot observation EffectiveNoindex true")
 	}
 
 	// In V1.3d: googlebot: noindex produces effective_noindex = "true"
@@ -532,6 +535,9 @@ func TestAdapter_Directives_ExplicitGooglebotXRobots(t *testing.T) {
 	if !reflect.DeepEqual(obs.ParsedTokens, []string{"noindex"}) {
 		t.Errorf("unexpected ParsedTokens: %v", obs.ParsedTokens)
 	}
+	if !obs.EffectiveNoindex {
+		t.Errorf("expected googlebot observation EffectiveNoindex true")
+	}
 
 	// In V1.3d: googlebot: noindex header produces effective_noindex = "true"
 	var foundEff3 bool
@@ -585,11 +591,17 @@ func TestAdapter_Directives_AmbiguousJoinedXRobots(t *testing.T) {
 	if seg0.Target != "googlebot" || seg0.ScopeUnknown {
 		t.Errorf("seg0: expected Target 'googlebot', ScopeUnknown false, got target=%q, unknown=%v", seg0.Target, seg0.ScopeUnknown)
 	}
+	if !seg0.EffectiveNoindex {
+		t.Errorf("seg0: expected googlebot observation EffectiveNoindex true")
+	}
 
 	// Segment 1: cannot inherit googlebot across comma boundary, must remain unknown
 	seg1 := res.RobotsDirectiveObservations[1]
 	if seg1.Target != "" || !seg1.ScopeUnknown {
 		t.Errorf("seg1: expected Target '', ScopeUnknown true, got target=%q, unknown=%v", seg1.Target, seg1.ScopeUnknown)
+	}
+	if seg1.EffectiveNoindex {
+		t.Errorf("seg1: expected unknown scope EffectiveNoindex false")
 	}
 
 	// GapDirectiveScopeAmbiguous emitted for segment 1
@@ -1260,6 +1272,12 @@ func TestAdapter_Directives_UnknownXRobotsPrefixRemainsUnknownScope(t *testing.T
 	if obs2.Target != "googlebot" || obs2.ScopeUnknown {
 		t.Errorf("obs2: expected Target 'googlebot', ScopeUnknown false, got %q, %v", obs2.Target, obs2.ScopeUnknown)
 	}
+	if !obs2.EffectiveNoindex {
+		t.Errorf("obs2: expected EffectiveNoindex true for googlebot: noindex")
+	}
+	if obs1.EffectiveNoindex {
+		t.Errorf("obs1: expected EffectiveNoindex false for unknown prefix")
+	}
 
 	// GapDirectiveScopeAmbiguous must be emitted for foo: bar
 	foundGap := false
@@ -1901,5 +1919,180 @@ func TestAdapter_GooglebotEffectiveNoindex_Normalization(t *testing.T) {
 			t.Errorf("determinism mismatch at index %d: %+v vs %+v", i, o1, o2)
 			break
 		}
+	}
+}
+
+// 19. V1.3d: RobotsDirectiveObservation EffectiveNoindex Alignment
+// Proves typed directive observations align with Googlebot-effective semantics:
+// 1. generic noindex observation -> true;
+// 2. googlebot noindex observation -> true;
+// 3. googlebot none observation -> true;
+// 4. googlebot index observation -> false;
+// 5. GPTBot noindex observation -> false;
+// 6. unknown-scope noindex -> false;
+// 7. URL-level accumulated effective_noindex remains unchanged.
+func TestAdapter_RobotsDirectiveObservation_EffectiveNoindex_Alignment(t *testing.T) {
+	db := newTestDB(t)
+	runID := "run:align:eff:noindex"
+	seed := "https://example.com/1"
+	setupTestRun(t, db, runID, seed)
+
+	for i := 1; i <= 6; i++ {
+		insertURL(t, db, runID, i, fmt.Sprintf("https://example.com/%d", i))
+	}
+
+	auditRunID := audit.AuditRunID("audit:align:eff")
+	snapID := audit.SnapshotID("snap:align:eff")
+
+	// 1. generic noindex observation -> true
+	p1, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/1",
+		MetaRobots: "noindex, follow",
+		MetaTags:   map[string]string{"robots": "noindex, follow"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 1, 'https://example.com/1', ?, 'html', 'noindex, follow', '2026-10-01T00:00:10Z')`, runID, string(p1))
+
+	// 2. googlebot noindex observation -> true
+	p2, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/2",
+		MetaRobots: "noindex",
+		MetaTags:   map[string]string{"googlebot": "noindex"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 2, 'https://example.com/2', ?, 'html', 'noindex', '2026-10-01T00:00:10Z')`, runID, string(p2))
+
+	// 3. googlebot none observation -> true (header)
+	p3, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/3",
+		XRobotsTag: "googlebot: none",
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
+		VALUES(?, 3, 'https://example.com/3', ?, 'html', 'googlebot: none', '2026-10-01T00:00:10Z')`, runID, string(p3))
+
+	// 4. googlebot index observation -> false
+	p4, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/4",
+		MetaRobots: "index",
+		MetaTags:   map[string]string{"googlebot": "index"},
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, meta_robots, crawled_at)
+		VALUES(?, 4, 'https://example.com/4', ?, 'html', 'index', '2026-10-01T00:00:10Z')`, runID, string(p4))
+
+	// 5. GPTBot noindex observation -> false
+	p5, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/5",
+		MetaTags:   map[string]string{},
+		XRobotsTag: "gptbot: noindex",
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
+		VALUES(?, 5, 'https://example.com/5', ?, 'html', 'gptbot: noindex', '2026-10-01T00:00:10Z')`, runID, string(p5))
+
+	// 6. unknown-scope noindex -> false
+	p6, _ := json.Marshal(sitecrawl.Page{
+		URL:        "https://example.com/6",
+		XRobotsTag: "foo: bar, noindex",
+		CrawledAt:  "2026-10-01T00:00:10Z",
+	})
+	_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, x_robots, crawled_at)
+		VALUES(?, 6, 'https://example.com/6', ?, 'html', 'foo: bar, noindex', '2026-10-01T00:00:10Z')`, runID, string(p6))
+
+	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: auditRunID,
+		SnapshotID: snapID,
+	})
+	if err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+
+	dirsBySubj := make(map[string][]audit.RobotsDirectiveObservation)
+	for _, d := range res.RobotsDirectiveObservations {
+		dirsBySubj[string(d.URLID)] = append(dirsBySubj[string(d.URLID)], d)
+	}
+
+	effBySubj := make(map[string]string)
+	for _, no := range res.EvidenceSnapshot.NormalizedObservations {
+		if no.Field == "effective_noindex" {
+			effBySubj[no.SubjectRef] = no.Value
+		}
+	}
+
+	// 1. generic noindex observation -> true
+	u1Dirs := dirsBySubj["url:audit:align:eff:1"]
+	if len(u1Dirs) != 1 {
+		t.Fatalf("URL 1: expected 1 directive, got %d", len(u1Dirs))
+	}
+	if !u1Dirs[0].EffectiveNoindex {
+		t.Errorf("URL 1: expected generic noindex EffectiveNoindex true")
+	}
+	if effBySubj["url:audit:align:eff:1"] != "true" {
+		t.Errorf("URL 1: expected URL-level effective_noindex 'true', got %q", effBySubj["url:audit:align:eff:1"])
+	}
+
+	// 2. googlebot noindex observation -> true
+	u2Dirs := dirsBySubj["url:audit:align:eff:2"]
+	if len(u2Dirs) != 1 {
+		t.Fatalf("URL 2: expected 1 directive, got %d", len(u2Dirs))
+	}
+	if !u2Dirs[0].EffectiveNoindex {
+		t.Errorf("URL 2: expected googlebot noindex EffectiveNoindex true")
+	}
+	if effBySubj["url:audit:align:eff:2"] != "true" {
+		t.Errorf("URL 2: expected URL-level effective_noindex 'true', got %q", effBySubj["url:audit:align:eff:2"])
+	}
+
+	// 3. googlebot none observation -> true
+	u3Dirs := dirsBySubj["url:audit:align:eff:3"]
+	if len(u3Dirs) != 1 {
+		t.Fatalf("URL 3: expected 1 directive, got %d", len(u3Dirs))
+	}
+	if !u3Dirs[0].EffectiveNoindex {
+		t.Errorf("URL 3: expected googlebot none EffectiveNoindex true")
+	}
+	if effBySubj["url:audit:align:eff:3"] != "true" {
+		t.Errorf("URL 3: expected URL-level effective_noindex 'true', got %q", effBySubj["url:audit:align:eff:3"])
+	}
+
+	// 4. googlebot index observation -> false
+	u4Dirs := dirsBySubj["url:audit:align:eff:4"]
+	if len(u4Dirs) != 1 {
+		t.Fatalf("URL 4: expected 1 directive, got %d", len(u4Dirs))
+	}
+	if u4Dirs[0].EffectiveNoindex {
+		t.Errorf("URL 4: expected googlebot index EffectiveNoindex false")
+	}
+	if effBySubj["url:audit:align:eff:4"] != "false" {
+		t.Errorf("URL 4: expected URL-level effective_noindex 'false', got %q", effBySubj["url:audit:align:eff:4"])
+	}
+
+	// 5. GPTBot noindex observation -> false
+	u5Dirs := dirsBySubj["url:audit:align:eff:5"]
+	if len(u5Dirs) != 1 {
+		t.Fatalf("URL 5: expected 1 directive, got %d", len(u5Dirs))
+	}
+	if u5Dirs[0].EffectiveNoindex {
+		t.Errorf("URL 5: expected GPTBot noindex EffectiveNoindex false")
+	}
+	if effBySubj["url:audit:align:eff:5"] != "false" {
+		t.Errorf("URL 5: expected URL-level effective_noindex 'false', got %q", effBySubj["url:audit:align:eff:5"])
+	}
+
+	// 6. unknown-scope noindex -> false
+	u6Dirs := dirsBySubj["url:audit:align:eff:6"]
+	if len(u6Dirs) != 2 {
+		t.Fatalf("URL 6: expected 2 directives, got %d", len(u6Dirs))
+	}
+	if u6Dirs[0].EffectiveNoindex || u6Dirs[1].EffectiveNoindex {
+		t.Errorf("URL 6: expected all unknown-scope directives EffectiveNoindex false, got [%v, %v]",
+			u6Dirs[0].EffectiveNoindex, u6Dirs[1].EffectiveNoindex)
+	}
+	if _, exists := effBySubj["url:audit:align:eff:6"]; exists {
+		t.Errorf("URL 6: expected URL-level effective_noindex to be absent, got %q", effBySubj["url:audit:align:eff:6"])
 	}
 }
