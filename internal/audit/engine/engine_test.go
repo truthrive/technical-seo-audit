@@ -218,6 +218,33 @@ func TestEngine_RuleSelection(t *testing.T) {
 	if len(results) != 1 {
 		t.Errorf("expected 1 result, got %d", len(results))
 	}
+
+	// 3f. Implemented rule AR-CANON-004
+	results, err = eng.EvaluateRule(ctx, snap, "AR-CANON-004")
+	if err != nil {
+		t.Fatalf("expected AR-CANON-004 to execute successfully, got: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
+
+	// 3g. Implemented rule AR-CANON-006
+	results, err = eng.EvaluateRule(ctx, snap, "AR-CANON-006")
+	if err != nil {
+		t.Fatalf("expected AR-CANON-006 to execute successfully, got: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
+
+	// 3h. Implemented rule AR-CANON-007
+	results, err = eng.EvaluateRule(ctx, snap, "AR-CANON-007")
+	if err != nil {
+		t.Fatalf("expected AR-CANON-007 to execute successfully, got: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
 }
 
 // 4. Implemented rule set API
@@ -228,7 +255,7 @@ func TestEngine_ImplementedRuleIDs(t *testing.T) {
 	}
 
 	ids := eng.ImplementedRuleIDs()
-	expected := []string{"AR-ACC-004", "AR-CANON-003", "AR-INDEX-001", "AR-INDEX-002"}
+	expected := []string{"AR-ACC-004", "AR-CANON-003", "AR-CANON-004", "AR-CANON-006", "AR-CANON-007", "AR-INDEX-001", "AR-INDEX-002"}
 	if len(ids) != len(expected) {
 		t.Fatalf("expected exactly %v, got %v", expected, ids)
 	}

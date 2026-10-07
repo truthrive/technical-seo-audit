@@ -293,3 +293,146 @@ func TestEngine_AR_INDEX_002_EndToEndIntegration(t *testing.T) {
 		t.Errorf("expected /diff-scope PASS, got %s", r.Status)
 	}
 }
+
+// TestEngine_CanonicalBatch_EndToEndIntegration tests AR-CANON-004, AR-CANON-006, and AR-CANON-007
+// through the full hermetic pipeline: httptest.Server -> sitecrawl.Runner -> adapter.Build -> engine.EvaluateRule.
+func TestEngine_CanonicalBatch_EndToEndIntegration(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Home</title>
+<link rel="canonical" href="/target-ok">
+</head><body><a href="/target-ok">Target OK</a> <a href="/target-noindex">Target Noindex</a> <a href="/dup">Dup</a></body></html>`)
+	})
+	mux.HandleFunc("/target-ok", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("X-Robots-Tag", "index, follow")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Target OK</title>
+<link rel="canonical" href="/target-ok">
+<meta name="robots" content="index, follow">
+</head><body><h1>Target OK</h1></body></html>`)
+	})
+	mux.HandleFunc("/target-noindex", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("X-Robots-Tag", "noindex")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Target Noindex</title>
+<link rel="canonical" href="/target-noindex">
+<meta name="robots" content="noindex">
+</head><body><h1>Target Noindex</h1></body></html>`)
+	})
+	mux.HandleFunc("/dup", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		// Multiple declarations to same target
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Dup Canonical</title>
+<link rel="canonical" href="/target-ok">
+<link rel="canonical" href="/target-ok">
+</head><body><h1>Dup</h1></body></html>`)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	db, err := standalone.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	runner := sitecrawl.NewRunner(db)
+	if err := runner.EnsureSchema(); err != nil {
+		t.Fatalf("failed to ensure schema: %v", err)
+	}
+
+	opts := sitecrawl.Options{
+		Mode:        sitecrawl.ModeSpider,
+		MaxDepth:    2,
+		MaxURLs:     10,
+		Concurrency: 1,
+	}
+
+	started, err := runner.Crawl(context.Background(), []string{srv.URL}, opts)
+	if err != nil {
+		t.Fatalf("crawl execution failed: %v", err)
+	}
+
+	buildReq := adapter.BuildRequest{
+		CrawlRunID: started.ID,
+		AuditRunID: "audit:run:canon_integration",
+		SnapshotID: "snap:run:canon_integration",
+	}
+
+	buildRes, err := adapter.Build(context.Background(), db, buildReq)
+	if err != nil {
+		t.Fatalf("adapter.Build failed: %v", err)
+	}
+
+	snap := buildRes.EvidenceSnapshot
+	if snap == nil || snap.SnapshotStatus != audit.SnapshotFrozen {
+		t.Fatalf("expected non-nil FROZEN snapshot")
+	}
+
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	rootURL := srv.URL + "/"
+
+	// 1. Evaluate AR-CANON-004
+	res004, err := eng.EvaluateRule(context.Background(), snap, "AR-CANON-004")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-CANON-004 failed: %v", err)
+	}
+	map004 := make(map[string]audit.RuleResult)
+	for _, r := range res004 {
+		for _, ref := range r.EvidenceRefs {
+			if ref.Field == "url" {
+				map004[ref.ObservedValue] = r
+			}
+		}
+	}
+	// Home has 1 canonical -> PASS
+	if r, ok := map004[rootURL]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected home to PASS AR-CANON-004, got %v", r.Status)
+	}
+	// /dup has 2 canonicals pointing to same target -> WARNING
+	if r, ok := map004[srv.URL+"/dup"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("expected /dup to WARNING AR-CANON-004, got %v", r.Status)
+	}
+
+	// 2. Evaluate AR-CANON-006
+	res006, err := eng.EvaluateRule(context.Background(), snap, "AR-CANON-006")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-CANON-006 failed: %v", err)
+	}
+	map006 := make(map[string]audit.RuleResult)
+	for _, r := range res006 {
+		for _, ref := range r.EvidenceRefs {
+			if ref.Field == "url" {
+				map006[ref.ObservedValue] = r
+			}
+		}
+	}
+	// Home points to /target-ok which returned 200 -> PASS
+	if r, ok := map006[rootURL]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected home to PASS AR-CANON-006, got %v", r.Status)
+	}
+
+	// 3. Evaluate AR-CANON-007
+	res007, err := eng.EvaluateRule(context.Background(), snap, "AR-CANON-007")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-CANON-007 failed: %v", err)
+	}
+	map007 := make(map[string]audit.RuleResult)
+	for _, r := range res007 {
+		for _, ref := range r.EvidenceRefs {
+			if ref.Field == "url" {
+				map007[ref.ObservedValue] = r
+			}
+		}
+	}
+	// Home points to /target-ok which has effective_noindex=false -> PASS
+	if r, ok := map007[rootURL]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected home to PASS AR-CANON-007, got %v", r.Status)
+	}
+}
