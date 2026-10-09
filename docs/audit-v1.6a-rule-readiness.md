@@ -21,8 +21,8 @@
 | **EXECUTABLE** | 9 | Fully implemented, registered, verified by hermetic and unit tests. |
 | **READY_TO_IMPLEMENT** | 0 | All required evidence and correlation boundaries exist; frozen semantics evaluable without adapter/acquisition changes. |
 | **NEEDS_ADAPTER** | 4 | Crawler persists sufficient raw evidence, but Audit Evidence Adapter normalized observations or subject correlation boundaries are missing (`AR-LINK-002`, `AR-LINK-003`, `AR-LINK-004`, `AR-ENTITY-001`). |
-| **NEEDS_ACQUISITION** | 28 | Required technical evidence is not acquired or persisted by frozen SiteCrawl (diagnostic probes, TLS verification, raw DOM retention, sitemap documents, multi-bot comparisons). |
-| **NEEDS_POLICY** | 1 | (Primary hurdle is explicit project/user policy; several acquisition rules also have secondary policy dependencies). |
+| **NEEDS_ACQUISITION** | 29 | Required technical evidence is not acquired or persisted by frozen SiteCrawl (diagnostic probes, TLS verification, raw DOM retention, sitemap documents, multi-bot comparisons). |
+| **NEEDS_POLICY** | 0 | No rule has policy as its sole primary blocker; 6 acquisition/manual rules have secondary policy dependencies (`AR-ACC-002`, `AR-ACC-005`, `AR-CANON-001`, `AR-INDEX-005`, `AR-AI-001`, `AR-AI-003`). |
 | **MANUAL_OR_ASSISTED** | 1 | Requires guided human review and manual review task infrastructure by frozen contract (`AR-LINK-006`). |
 | **BLOCKED** | 4 | Missing authoritative evidence blocked by frozen architectural boundaries (`AR-ACC-003`, `AR-CANON-005`, `AR-CANON-010`, `AR-INDEX-003`). |
 | **Total** | **47** | Complete accounting of all registered atomic rules in `internal/audit/rules_v1.json`. |
@@ -70,7 +70,7 @@
 | `AR-DISC-004` | Sitemap-listed URL returns final 200 | deterministic | NEEDS_ACQUISITION | `sitemap_url`, `listed_url`, `listed_url_status` | Missing | Formal `SitemapEntry` correlation linking sitemap documents to listed URLs not persisted | `internal/audit/adapter/adapter.go:1338` (`GapSitemapDocumentUnavailable`) | Implement sitemap entry entity mapping |
 | `AR-DISC-005` | Sitemap-listed URL is not noindex | deterministic | NEEDS_ACQUISITION | `sitemap_url`, `listed_url`, `listed_url_status`, `listed_url_effective_noindex` | Missing | Formal `SitemapEntry` correlation linking sitemap documents to listed URLs not persisted | `internal/audit/adapter/adapter.go:1338` (`GapSitemapDocumentUnavailable`) | Implement sitemap entry entity mapping |
 | `AR-DISC-006` | Sitemap-listed URL canonicalizes to itself when canonical is declared | deterministic | NEEDS_ACQUISITION | `sitemap_url`, `listed_url`, `listed_url_canonical` | Missing | Formal `SitemapEntry` correlation linking sitemap documents to listed URLs not persisted | `internal/audit/adapter/adapter.go:1338` (`GapSitemapDocumentUnavailable`) | Implement sitemap entry entity mapping |
-| `AR-ENTITY-001` | Structured-data block parses successfully | deterministic | NEEDS_ADAPTER | `url`, `structured_block_id`, `structured_format`, `structured_raw`, `structured_parse_status`, `structured_parse_error` | Partial (SiteCrawl stores raw `JSONLD` script strings in `sitecrawl_pages.data`) | Microdata/RDFa not extracted; block indices and formal V1 parse validation contracts not normalized | `internal/sitecrawl/page.go:32`; `internal/audit/adapter/adapter.go:1344` (`GapStructuredDataStatusUnavailable`) | Define structured data parse contract in dedicated vertical slice |
+| `AR-ENTITY-001` | Structured-data block parses successfully | deterministic | NEEDS_ADAPTER | `url`, `structured_block_id`, `structured_format`, `structured_raw`, `structured_parse_status`, `structured_parse_error` | Partial (SiteCrawl stores raw `JSONLD` script strings in `Page.JSONLD` and Microdata-derived structs in `Page.SchemaOrg`) | Adapter does not normalize structured-data blocks or evaluate JSON-LD syntax (`GapStructuredDataStatusUnavailable`); original raw Microdata HTML markup is not preserved; RDFa is not extracted (secondary `NEEDS_ACQUISITION` for full frozen rule coverage) | `internal/sitecrawl/extract.go:295-332`; `internal/sitecrawl/types.go:367-371,445-446`; `internal/audit/adapter/adapter.go:1344` (`GapStructuredDataStatusUnavailable`) | Normalize and evaluate JSON-LD syntax in adapter vertical slice; plan secondary acquisition for RDFa and raw Microdata markup |
 | `AR-RENDER-001` | Title changes after render | deterministic | NEEDS_ACQUISITION | `url`, `title_raw`, `title_rendered` | Missing | SiteCrawl overwrites raw title when rendered; pre-render and post-render HTML not co-preserved | `internal/audit/adapter/adapter.go:1350` (`GapRenderComparisonUnavailable`) | Refactor renderer to preserve raw DOM before headless execution |
 | `AR-RENDER-002` | Canonical changes after render | deterministic | NEEDS_ACQUISITION | `url`, `canonical_raw`, `canonical_rendered` | Missing | Pre-render and post-render canonical declarations not co-preserved | `internal/audit/adapter/adapter.go:1350` (`GapRenderComparisonUnavailable`) | Refactor renderer to preserve raw DOM before headless execution |
 | `AR-RENDER-003` | Robots directives change after render | deterministic | NEEDS_ACQUISITION | `url`, `meta_robots_raw`, `meta_robots_rendered` | Missing | Pre-render and post-render robots directives not co-preserved | `internal/audit/adapter/adapter.go:1350` (`GapRenderComparisonUnavailable`) | Refactor renderer to preserve raw DOM before headless execution |
@@ -160,14 +160,36 @@
 - **Frozen Contract**: P1 deterministic checks evaluating whether internal hyperlinks target 3xx (redirects), 4xx (client errors), or 5xx (server errors).
 - **Preconditions**: "resolved target is internal and fetchable. Preconditions fail/NOT_APPLICABLE for external/non-HTTP links."
 - **Current Evidence Inspection**:
-  - **SiteCrawl SQLite Persistence**: Complete! SiteCrawl stores every discovered hyperlink in `sitecrawl_links` with columns `(run_id, src_id, dst_id, seq, placement, flags, anchor)`, where `flags & FlagInternal` distinguishes internal links, and `dst_id` references the target URL in `sitecrawl_urls`. For all crawled targets, `sitecrawl_pages.status` stores the exact HTTP status.
+  - **SiteCrawl SQLite Persistence & Extraction Scope**:
+    - **Persisted Link Edges**: SiteCrawl persists discovered links in `sitecrawl_links` with columns `(run_id, src_id, dst_id, seq, placement, flags, anchor)`.
+    - **Non-Resource Anchor Filtering**: In addition to `<a href>` hyperlinks, `sitecrawl_links` also records resource link edges including images (`FlagImageLink` with `PlacementImage`), stylesheets (`FlagStylesheet`), and scripts (`FlagScript`). The audit evidence adapter must filter out resource-reference edges so that only true navigable hyperlinks are exposed to link rules.
+    - **Crawl & Extraction Limits**: Extraction per page is bounded by `maxLinks = 5000` (`extract.go:17`), and anchor text is truncated to `maxAnchorLen = 100` runes (`extract.go:19, 346`). Overall crawl limits (`MaxURLs`, `MaxDepth`, timeouts, user cancellation) halt the frontier crawl independently.
+    - **Missing / Dangling Destination IDs**: Target dictionary insertion is bounded by `MaxURLs` (`frontier.go:132-134`). Targets sighted after reaching the dictionary cap receive `dst_id = 0`. Edges with `dst_id = 0` represent dangling or unallocated destination references that cannot resolve to a dictionary target.
+    - **Unfetched Target URL Resources**: Discovered internal URLs are registered in `sitecrawl_urls` dictionary (and exposed as `UrlResource` in the snapshot) upon link discovery. However, **an existing URL resource is NOT proof the target was fetched**. Targets may remain unfetched due to crawler limits (`StopMaxURLs`, `StopMaxDepth`), external URL boundaries (external links are never fetched in spider mode), robots exclusion, or crawl cancellation.
   - **Current Snapshot Evidence**: **INCOMPLETE**. The Evidence Adapter currently builds typed `LinkObservation` objects, but in `adapter.go:1187-1231`, it translates them to `NormalizedObservation`s on `SubjectLink` with ONLY three fields: `link_target` (string), `link_anchor` (string), and `link_location` (string).
   - **Missing Adapter Boundaries**:
     1. **Source URL identity**: No `source_url` (or `link_source_url`) observation or reference to the source URL exists on `SubjectLink`.
     2. **Internal link flag**: `flags & FlagInternal` is not emitted as a normalized observation (`link_is_internal`).
     3. **Target subject correlation**: No `link_target_subject_ref` is emitted connecting `SubjectLink` to `url:<audit_run_id>:<dst_id>`.
-    4. **Target fetch status boundary**: The Rule Engine cannot correlate the link edge to the target URL's `http_status` or distinguish an un-crawled link target (e.g. stopped at `max-urls`) from an unavailable response.
+    4. **Target fetch status boundary**: The Rule Engine cannot correlate the link edge to the target URL's `http_status` or distinguish an un-crawled link target (e.g. stopped at `max-urls`) from an unavailable response. **Target status must come strictly from the target's own valid HTTP observation (`http_status`).**
 - **Readiness Verdict**: **`NEEDS_ADAPTER`**.
+
+---
+
+### 4.5 Structured Data Candidate
+
+#### `AR-ENTITY-001 — Structured-data block parses successfully`
+- **Frozen Contract**: P1 deterministic check verifying whether detected structured-data blocks parse without syntax or format errors.
+- **Detailed Evidence Inspection**:
+  - **JSON-LD Evidence Currently Available**: SiteCrawl extracts `<script type="application/ld+json">` text contents during HTML streaming tokenization (`extract.go:326-332`), collecting up to `maxJSONLD = 20` script contents per page into `Page.JSONLD ([]string)`. The original raw JSON-LD script strings are preserved in the JSON payload stored in `sitecrawl_pages.data`.
+  - **Microdata-Derived SchemaOrg Data Available**: SiteCrawl parses HTML elements with `itemscope`, `itemtype`, and `itemprop` (`extract.go:295-315, 353-375`), accumulating up to `maxSchemas = 40` structured items into `Page.SchemaOrg ([]Schema)` with `Type string` and `Properties map[string]string`.
+  - **Original Raw Markup Not Preserved**: The original raw HTML markup, source element tags, and raw attribute strings containing Microdata are not preserved; only the post-extraction `SchemaOrg` Go structures are retained. Syntax-level markup defects in Microdata HTML tags cannot be evaluated retrospectively from structured properties alone.
+  - **RDFa Evidence Availability**: RDFa attributes (`typeof`, `property`, `vocab`, `resource`) are **NOT extracted at all** by SiteCrawl. Any page utilizing RDFa exclusively or alongside other formats has no RDFa evidence recorded.
+  - **Missing Normalized Parse-Status Contract**: The Audit Evidence Adapter currently does not normalize structured-data blocks onto `SubjectURL` or dedicated structured-data subjects (`adapter.go:1344` explicitly emits `GapStructuredDataStatusUnavailable`). No normalized `structured_block_id`, `structured_format`, `structured_raw`, `structured_parse_status`, or `structured_parse_error` observations exist in the snapshot.
+  - **Which Source Formats Can Actually Be Evaluated Without Additional Acquisition**:
+    - **JSON-LD**: Because raw script strings are preserved in `Page.JSONLD`, JSON-LD blocks can be evaluated for syntax validity and parse errors on demand via adapter normalization and JSON parsing without additional crawler acquisition.
+    - **Microdata / RDFa**: Full frozen rule coverage of `AR-ENTITY-001` across all candidate formats requires additional crawler acquisition to retain raw Microdata markup snippets and to add an RDFa parser.
+- **Readiness Verdict**: **`NEEDS_ADAPTER`** (retained as primary classification based on evaluable JSON-LD evidence; secondary dependency **`NEEDS_ACQUISITION`** for full format coverage across Microdata markup and RDFa).
 
 ---
 
@@ -193,7 +215,7 @@ the project must first establish truthful normalized link evidence and subject c
   - `AR-LINK-003` (Internal link targets 4xx)
   - `AR-LINK-004` (Internal link targets 5xx)
 - **Why This Slice is Selected**:
-  1. **Zero Crawler Changes**: SiteCrawl already persists all link edges in `sitecrawl_links` with source ID, target ID, placement, internal flags, and anchor text.
+  1. **Zero Crawler Changes**: SiteCrawl already persists link edges in `sitecrawl_links` with source ID, target ID, placement, internal flags, and anchor text (subject to extraction caps and non-hyperlink resource filtering).
   2. **High SEO Value**: Broken links (4xx/5xx) and internal redirect links (3xx) are universally prioritized SEO audit checks.
   3. **Architectural Consistency**: Reuses the exact subject correlation pattern (`canonical_target_subject_ref`) developed in V1.4b.
   4. **Low False-Positive Risk**: Distinguishes un-crawled internal targets (stopped by limits) from confirmed 4xx/5xx targets without guessing.
@@ -204,11 +226,11 @@ the project must first establish truthful normalized link evidence and subject c
   - `link_target`: resolved target URL string
   - `link_anchor`: anchor text
   - `link_location`: `NAV`, `HEADER`, `FOOTER`, `UNKNOWN`
-  - `link_target_subject_ref`: `url:<audit_run_id>:<dst_id>` emitted when `dst_id > 0` maps to an existing `UrlResource` in the snapshot
+  - `link_target_subject_ref`: `url:<audit_run_id>:<dst_id>` emitted when `dst_id > 0` maps to an existing `UrlResource` in the snapshot (Note: an existing `UrlResource` is NOT proof the target was fetched; target status must come strictly from the target's own valid HTTP observation)
 - **Required Subject Correlation**:
   - Subject Type: `SubjectLink` (`audit.SubjectLink`), with `SubjectRef` formatted as `link:<audit_run_id>:<src_id>:<seq>`.
   - Target Correlation: `link_target_subject_ref` points directly to the target's `SubjectURL` (`url:<audit_run_id>:<dst_id>`).
-  - Target Status Boundary: Evaluators in V1.6c will traverse `link_target_subject_ref` to inspect the target's own `http_status` observation. If the target was not crawled or cannot be resolved, the status is safely treated as unavailable (`UNKNOWN`). Target status is NOT duplicated onto `SubjectLink`.
+  - Target Status Boundary: Evaluators in V1.6c will traverse `link_target_subject_ref` to inspect the target's own `http_status` observation. An existing target `UrlResource` does NOT imply a successful fetch; target status must come strictly from the target's own valid HTTP observation (`http_status`). If the target was not crawled or cannot be resolved, the status is safely treated as unavailable (`UNKNOWN`). Target status is NOT duplicated onto `SubjectLink`.
 - **Expected PASS/FAIL/UNKNOWN Boundaries in V1.6c**:
   - `PASS`: Target URL response is verified non-3xx (for LINK-002), non-4xx (for LINK-003), non-5xx (for LINK-004).
   - `FAIL`: Target URL response is verified 3xx (for LINK-002), 4xx (for LINK-003), 5xx (for LINK-004).
