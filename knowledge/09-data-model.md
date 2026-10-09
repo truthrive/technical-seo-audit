@@ -1,7 +1,7 @@
 # V1 Logical Data Model
 
 **Status:** Frozen for V1 design
-**Revision:** v1.4.3
+**Revision:** v1.4.4
 **Depends on:** `07-v1-atomic-rule-manifest.md`, `08-system-architecture.md`
 **Scope:** Logical data model only
 **Database / ORM / storage engine:** Not selected
@@ -348,7 +348,41 @@ resolved_target_url
 observed_at
 ```
 
-Derived evidence can include hop count, loop state, final URL and final status.
+### Redirect acquisition and normalization semantics
+
+1. **Redirect hop normalized evidence**:
+   - `redirect_initial_observed`: Boolean evidence emitted when the initial HTTP status is known (`status > 0`). Evaluates to `true` for 3xx responses (`300 <= status < 400`), and `false` for known non-3xx responses. Withheld if HTTP status is unavailable.
+   - `redirect_hop_count`: Count of persisted redirect hops. Preserves `0` when the initial response is known and no hop was persisted. Always derived from the preserved chain (`Page.Redirects`), never blindly from promoted summary columns.
+   - `redirect_hop`: One normalized observation per persisted hop in exact chronological order without reordering. Contains a deterministic machine-readable JSON payload containing exactly: `hop_index`, `source_url`, `status`, and `resolved_target_url`. Raw Location header is not reconstructed if unavailable.
+2. **Traversal completeness semantics**:
+   - `redirect_traversal_complete`: For an observed redirect (initial 3xx or preserved hops), evaluates to `true` only when all of the following hold:
+     - `FollowRedirects = true`
+     - At least one hop is preserved
+     - Crawler reached a terminal response
+     - `Page.Error` is empty
+   - Evaluates to `false` when incompleteness is positively known, including:
+     - Redirect following disabled (`FollowRedirects = false`)
+     - Redirect loop (`Page.Error == "redirect loop"`)
+     - Redirect-chain limit exceeded (`Page.Error == "redirect chain too long"`)
+     - Invalid or missing Location header
+     - Transport failure after a redirect (e.g. timeout or connection drop)
+   - Unknown states are never encoded as complete. Not emitted for non-redirect responses.
+3. **Loop-state truthfulness**:
+   - `redirect_loop_detected`: Emitted as `true` only when persisted crawler evidence explicitly records `Page.Error == "redirect loop"`.
+   - Emitted as `false` only when redirect traversal is proven complete without a loop (`redirect_traversal_complete = true`).
+   - For other incomplete traversals (e.g. chain limit, timeout, redirect following disabled), this field is withheld. A false loop state is never inferred from the mere absence of a loop error.
+4. **Final URL semantics**:
+   - `redirect_final_url`: Emitted only when `redirect_traversal_complete = true`. Uses the resolved target URL of the final persisted hop, normalized with Audit URL normalization rules. Never emitted for incomplete traversals.
+5. **Persisted final-status limitation**:
+   - Runtime `fetched.FinalStatus` observed during redirect traversal is held in in-flight memory during crawl but is not persisted in the frozen `Page` model or SQLite schema.
+   - Neither `final_status` nor `redirect_final_status` is emitted as a normalized observation, nor fabricated from a later independent fetch of the target URL (which constitutes a separate request and observation).
+   - Consequently, `AR-CANON-010` and `AR-ACC-003` remain BLOCKED until authoritative source-chain final status is persisted.
+6. **First-hop vs final-target distinction & `FetchObservation.FinalURLID` correction**:
+   - `Page.RedirectTo` represents the first redirect target, not the final destination. The adapter must never map `RedirectTo` to `FetchObservation.FinalURLID`.
+   - `FetchObservation.FinalURLID` is populated strictly when:
+     (1) redirect traversal is complete (`redirect_traversal_complete = true`), and
+     (2) the final normalized target URL maps uniquely to exactly one existing `UrlResource` in the snapshot.
+   - If traversal is incomplete, the final target is not in the snapshot, or the normalized URL identity is ambiguous, `FinalURLID` remains absent (`nil`).
 
 ## 11. RawArtifact
 

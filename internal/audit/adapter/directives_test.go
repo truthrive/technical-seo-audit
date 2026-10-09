@@ -1811,9 +1811,9 @@ func TestAdapter_GooglebotEffectiveNoindex_Normalization(t *testing.T) {
 		t.Fatalf("build failed: %v", err)
 	}
 
-	// Verify snapshot NormalizationVersion is bumped to v1.5.0
-	if res.EvidenceSnapshot.NormalizationVersion != "v1.5.0" {
-		t.Errorf("expected NormalizationVersion 'v1.5.0', got %q", res.EvidenceSnapshot.NormalizationVersion)
+	// Verify snapshot NormalizationVersion is bumped to v1.6.0
+	if res.EvidenceSnapshot.NormalizationVersion != "v1.6.0" {
+		t.Errorf("expected NormalizationVersion 'v1.6.0', got %q", res.EvidenceSnapshot.NormalizationVersion)
 	}
 
 	effBySubj := make(map[string]string)

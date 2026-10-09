@@ -316,7 +316,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		AuditRunID:               req.AuditRunID,
 		CreatedAt:                time.Now().UTC(),
 		SnapshotStatus:           audit.SnapshotBuilding,
-		NormalizationVersion:     "v1.5.0",
+		NormalizationVersion:     "v1.6.0",
 		CrawlComplete:            crawlComplete,
 		SitemapDiscoveryComplete: false,
 		RenderSelectionComplete:  false,
@@ -539,17 +539,29 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			})
 		}
 
+		// Redirect traversal completeness and final target evaluation
+		isInitialRedirect := pr.status >= 300 && pr.status < 400
+		isObservedRedirect := isInitialRedirect || len(pr.page.Redirects) > 0
+		hasHops := len(pr.page.Redirects) > 0
+		noError := strings.TrimSpace(pr.page.Error) == ""
+		traversalComplete := isObservedRedirect && opts.FollowRedirects && hasHops && noError
+
 		var finalURLID *audit.URLID
-		if pr.redirectTo != "" {
-			if fid, ok := idsByURL[pr.redirectTo]; ok {
-				fidStr := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, fid))
-				finalURLID = &fidStr
-			}
-		} else if len(pr.page.Redirects) > 0 {
+		var normFinalURL string
+		if traversalComplete {
 			lastHop := pr.page.Redirects[len(pr.page.Redirects)-1]
-			if fid, ok := idsByURL[lastHop.Location]; ok {
-				fidStr := audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, fid))
-				finalURLID = &fidStr
+			resolvedTarget := lastHop.Location
+			if baseParsed, err := url.Parse(lastHop.URL); err == nil {
+				if refParsed, err := url.Parse(lastHop.Location); err == nil {
+					resolvedTarget = baseParsed.ResolveReference(refParsed).String()
+				}
+			}
+			if nURL, _, err := normalizeURL(resolvedTarget); err == nil {
+				normFinalURL = nURL
+				if matchingSubjects := normURLToSubjectRefs[normFinalURL]; len(matchingSubjects) == 1 {
+					uid := audit.URLID(matchingSubjects[0])
+					finalURLID = &uid
+				}
 			}
 		}
 
@@ -689,7 +701,37 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			})
 		}
 
-		// 9b. Redirect Hops
+		// 9b. Redirect Hops and Normalized Redirect Evidence
+		if pr.status > 0 {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "redirect_initial_observed",
+				Value:              strconv.FormatBool(isInitialRedirect),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+
+		if pr.status > 0 || len(pr.page.Redirects) > 0 {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "redirect_hop_count",
+				Value:              strconv.Itoa(len(pr.page.Redirects)),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+
 		if len(pr.page.Redirects) > 0 {
 			for hopIdx, hop := range pr.page.Redirects {
 				resolvedTarget := hop.Location
@@ -709,7 +751,94 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					ResolvedTargetURL: resolvedTarget,
 					ObservedAt:        obsTime,
 				})
+
+				hopVal := redirectHopObservation{
+					HopIndex:          hopIdx,
+					SourceURL:         hop.URL,
+					Status:            hop.Status,
+					ResolvedTargetURL: resolvedTarget,
+				}
+				hopValBytes, _ := json.Marshal(hopVal)
+
+				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "redirect_hop",
+					Value:              string(hopValBytes),
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{pageSrcRef},
+					ObservedAt:         obsTime,
+				})
 			}
+		}
+
+		if isObservedRedirect {
+			var traversalVal string
+			if traversalComplete {
+				traversalVal = "true"
+			} else if !opts.FollowRedirects || strings.TrimSpace(pr.page.Error) != "" || len(pr.page.Redirects) == 0 {
+				traversalVal = "false"
+			}
+			if traversalVal != "" {
+				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "redirect_traversal_complete",
+					Value:              traversalVal,
+					DerivationType:     audit.DerivationNormalized,
+					SourceEvidenceRefs: []string{pageSrcRef},
+					ObservedAt:         obsTime,
+				})
+			}
+		}
+
+		if strings.TrimSpace(pr.page.Error) == "redirect loop" {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "redirect_loop_detected",
+				Value:              "true",
+				DerivationType:     audit.DerivationNormalized,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		} else if traversalComplete {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "redirect_loop_detected",
+				Value:              "false",
+				DerivationType:     audit.DerivationNormalized,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+
+		if traversalComplete && normFinalURL != "" {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "redirect_final_url",
+				Value:              normFinalURL,
+				DerivationType:     audit.DerivationNormalized,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
 		}
 
 		// 9c. HTML Observations
@@ -1247,6 +1376,15 @@ func finalizeSnapshot(s *audit.EvidenceSnapshot, normalizedObs []audit.Normalize
 	s.FrozenAt = &now
 	s.SnapshotStatus = audit.SnapshotFrozen
 	s.NormalizedObservations = normalizedObs
+}
+
+// redirectHopObservation represents the deterministic machine-readable payload
+// for a normalized "redirect_hop" observation.
+type redirectHopObservation struct {
+	HopIndex          int    `json:"hop_index"`
+	SourceURL         string `json:"source_url"`
+	Status            int    `json:"status"`
+	ResolvedTargetURL string `json:"resolved_target_url"`
 }
 
 // normalizeURL performs truthful deterministic URL normalization according to Audit V1 specifications.
