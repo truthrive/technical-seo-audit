@@ -541,10 +541,22 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 
 		// Redirect traversal completeness and final target evaluation
 		isInitialRedirect := pr.status >= 300 && pr.status < 400
-		isObservedRedirect := isInitialRedirect || len(pr.page.Redirects) > 0
+		redirectEvidenceRelevant := isInitialRedirect || len(pr.page.Redirects) > 0 || pr.redirectHops > 0
+		redirectCountConflict := redirectEvidenceRelevant && (pr.redirectHops != len(pr.page.Redirects))
+		if redirectCountConflict {
+			evidenceGaps = append(evidenceGaps, EvidenceGap{
+				GapCode:         GapRedirectChainInconsistent,
+				SubjectRef:      string(urlIDStr),
+				Field:           "redirect_hops",
+				Reason:          fmt.Sprintf("Promoted redirect_hops count (%d) conflicts with preserved Page.Redirects chain length (%d); traversal completeness cannot be proven.", pr.redirectHops, len(pr.page.Redirects)),
+				SourceComponent: "sitecrawl_pages",
+			})
+		}
+
+		isObservedRedirect := redirectEvidenceRelevant
 		hasHops := len(pr.page.Redirects) > 0
 		noError := strings.TrimSpace(pr.page.Error) == ""
-		traversalComplete := isObservedRedirect && opts.FollowRedirects && hasHops && noError
+		traversalComplete := isObservedRedirect && opts.FollowRedirects && hasHops && noError && !redirectCountConflict
 
 		var finalURLID *audit.URLID
 		var normFinalURL string
@@ -717,7 +729,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			})
 		}
 
-		if pr.status > 0 || len(pr.page.Redirects) > 0 {
+		if (pr.status > 0 || len(pr.page.Redirects) > 0) && !redirectCountConflict {
 			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
 				ObservationID:      nextObsID(),
 				AuditRunID:         req.AuditRunID,
@@ -747,7 +759,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					HopIndex:          hopIdx,
 					SourceURL:         hop.URL,
 					Status:            hop.Status,
-					LocationRaw:       hop.Location,
+					LocationRaw:       "",
 					ResolvedTargetURL: resolvedTarget,
 					ObservedAt:        obsTime,
 				})
@@ -775,7 +787,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			}
 		}
 
-		if isObservedRedirect {
+		if isObservedRedirect && !redirectCountConflict {
 			var traversalVal string
 			if traversalComplete {
 				traversalVal = "true"

@@ -622,14 +622,15 @@ func TestAdapter_RedirectEvidence(t *testing.T) {
 		}
 	})
 
-	// 10. hop count matches preserved chain (even if promoted count differs)
-	t.Run("10. hop count matches preserved chain", func(t *testing.T) {
+	// 10. promoted count mismatch detects inconsistency and withholds authoritative completeness
+	t.Run("10. promoted count mismatch detects inconsistency", func(t *testing.T) {
 		db := newTestDB(t)
 		runID := "run:redirect:hopcount"
 		seed := "https://example.com/start"
 		target := "https://example.com/final"
 		setupTestRunWithOpts(t, db, runID, seed, sitecrawl.Options{FollowRedirects: true})
 		insertURL(t, db, runID, 1, seed)
+		insertURL(t, db, runID, 2, target)
 
 		page1, _ := json.Marshal(sitecrawl.Page{
 			URL:        seed,
@@ -640,7 +641,7 @@ func TestAdapter_RedirectEvidence(t *testing.T) {
 			},
 			CrawledAt: "2026-10-01T00:00:10Z",
 		})
-		// Promoted redirect_hops column in SQL set to 99 intentionally
+		// Promoted redirect_hops column in SQL set to 99 intentionally (conflicts with len(Page.Redirects)==1)
 		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, redirect_to, redirect_hops, kind, crawled_at)
 			VALUES(?, 1, ?, ?, 301, ?, 99, 'other', '2026-10-01T00:00:10Z')`, runID, seed, string(page1), target)
 
@@ -660,8 +661,60 @@ func TestAdapter_RedirectEvidence(t *testing.T) {
 			}
 		}
 
-		if vals := fields["redirect_hop_count"]; len(vals) != 1 || vals[0] != "1" {
-			t.Errorf("expected redirect_hop_count '1' from preserved chain, got %v (did it use promoted count 99?)", vals)
+		// Conflict withholds redirect_hop_count
+		if vals := fields["redirect_hop_count"]; len(vals) != 0 {
+			t.Errorf("expected redirect_hop_count to be withheld on conflict, got %v", vals)
+		}
+		// Conflict does not emit traversal_complete=true
+		for _, v := range fields["redirect_traversal_complete"] {
+			if v == "true" {
+				t.Errorf("conflict must not emit redirect_traversal_complete=true, got %v", fields["redirect_traversal_complete"])
+			}
+		}
+		// Conflict does not emit loop=false
+		for _, v := range fields["redirect_loop_detected"] {
+			if v == "false" {
+				t.Errorf("conflict must not emit redirect_loop_detected=false, got %v", fields["redirect_loop_detected"])
+			}
+		}
+		// Conflict withholds redirect_final_url
+		if vals := fields["redirect_final_url"]; len(vals) != 0 {
+			t.Errorf("expected redirect_final_url to be withheld on conflict, got %v", vals)
+		}
+		// Conflict leaves FinalURLID nil
+		if len(res.FetchObservations) != 1 || res.FetchObservations[0].FinalURLID != nil {
+			t.Errorf("expected FinalURLID to be nil on conflict, got %v", res.FetchObservations[0].FinalURLID)
+		}
+		// Conflict records EvidenceGap
+		var foundGap bool
+		for _, gap := range res.EvidenceGaps {
+			if gap.GapCode == adapter.GapRedirectChainInconsistent && gap.SubjectRef == "url:audit:run:redirect:hopcount:1" {
+				foundGap = true
+				if gap.Field != "redirect_hops" {
+					t.Errorf("expected gap field 'redirect_hops', got %q", gap.Field)
+				}
+				if gap.SourceComponent != "sitecrawl_pages" {
+					t.Errorf("expected gap sourceComponent 'sitecrawl_pages', got %q", gap.SourceComponent)
+				}
+				break
+			}
+		}
+		if !foundGap {
+			t.Errorf("expected EvidenceGap %s to be recorded for conflict", adapter.GapRedirectChainInconsistent)
+		}
+		// Preserved redirect_hop observation still emitted
+		if vals := fields["redirect_hop"]; len(vals) != 1 {
+			t.Errorf("expected 1 preserved redirect_hop observation, got %v", vals)
+		}
+		// Typed RedirectHop: LocationRaw is empty, ResolvedTargetURL is target
+		if len(res.RedirectHops) != 1 {
+			t.Fatalf("expected 1 typed RedirectHop, got %d", len(res.RedirectHops))
+		}
+		if res.RedirectHops[0].LocationRaw != "" {
+			t.Errorf("expected LocationRaw to be empty, got %q", res.RedirectHops[0].LocationRaw)
+		}
+		if res.RedirectHops[0].ResolvedTargetURL != target {
+			t.Errorf("expected ResolvedTargetURL %q, got %q", target, res.RedirectHops[0].ResolvedTargetURL)
 		}
 	})
 
@@ -1044,6 +1097,290 @@ func TestAdapter_HermeticRedirectChainIntegration(t *testing.T) {
 	if entryFetch.FinalURLID == nil || string(*entryFetch.FinalURLID) != finalURLID {
 		t.Errorf("entry fetch FinalURLID %v != finalURLID %s", entryFetch.FinalURLID, finalURLID)
 	}
+
+	// Verify typed RedirectHops have LocationRaw == "" and ResolvedTargetURL populated
+	if len(res.RedirectHops) == 0 {
+		t.Fatalf("expected typed RedirectHops, got 0")
+	}
+	for i, hop := range res.RedirectHops {
+		if hop.LocationRaw != "" {
+			t.Errorf("hop %d expected empty LocationRaw, got %q", i, hop.LocationRaw)
+		}
+		if hop.ResolvedTargetURL == "" {
+			t.Errorf("hop %d expected non-empty ResolvedTargetURL", i)
+		}
+	}
+}
+
+// TestAdapter_RedirectIntegrityCases provides focused test coverage for the 12 requirements:
+// 1. promoted redirect_hops equals chain length -> normal behavior unchanged
+// 2. promoted redirect_hops differs from len(Page.Redirects) -> inconsistency detected
+// 3. conflict does not emit traversal_complete=true
+// 4. conflict does not emit loop=false
+// 5. conflict withholds redirect_final_url
+// 6. conflict leaves FinalURLID nil
+// 7. conflict records EvidenceGap
+// 8. typed RedirectHop.LocationRaw is empty
+// 9. typed RedirectHop.ResolvedTargetURL is correct
+// 10. hermetic normal redirect remains green
+// 11. no final_status is introduced
+// 12. existing 7 evaluators remain green
+func TestAdapter_RedirectIntegrityCases(t *testing.T) {
+	buildCase := func(t *testing.T, runID string, promotedHops int, hops []sitecrawl.Hop, status int, pageErr string) *adapter.BuildResult {
+		t.Helper()
+		db := newTestDB(t)
+		seed := "https://example.com/start"
+		target := "https://example.com/target"
+		setupTestRunWithOpts(t, db, runID, seed, sitecrawl.Options{FollowRedirects: true})
+		insertURL(t, db, runID, 1, seed)
+		insertURL(t, db, runID, 2, target)
+
+		page1, _ := json.Marshal(sitecrawl.Page{
+			URL:        seed,
+			Status:     status,
+			RedirectTo: target,
+			Redirects:  hops,
+			Error:      pageErr,
+			CrawledAt:  "2026-10-01T00:00:10Z",
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, redirect_to, redirect_hops, kind, crawled_at)
+			VALUES(?, 1, ?, ?, ?, ?, ?, 'other', '2026-10-01T00:00:10Z')`, runID, seed, string(page1), status, target, promotedHops)
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: audit.AuditRunID("audit:" + runID),
+			SnapshotID: audit.SnapshotID("snap:" + runID),
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+		return res
+	}
+
+	oneHop := []sitecrawl.Hop{
+		{URL: "https://example.com/start", Status: 301, Location: "https://example.com/target"},
+	}
+
+	t.Run("1. promoted redirect_hops equals chain length -> normal behavior unchanged", func(t *testing.T) {
+		res := buildCase(t, "run:case1", 1, oneHop, 301, "")
+		fields := getFieldsBySubj(res, "url:audit:run:case1:1")
+
+		if vals := fields["redirect_initial_observed"]; len(vals) != 1 || vals[0] != "true" {
+			t.Errorf("expected redirect_initial_observed 'true', got %v", vals)
+		}
+		if vals := fields["redirect_hop_count"]; len(vals) != 1 || vals[0] != "1" {
+			t.Errorf("expected redirect_hop_count '1', got %v", vals)
+		}
+		if vals := fields["redirect_traversal_complete"]; len(vals) != 1 || vals[0] != "true" {
+			t.Errorf("expected redirect_traversal_complete 'true', got %v", vals)
+		}
+		if vals := fields["redirect_loop_detected"]; len(vals) != 1 || vals[0] != "false" {
+			t.Errorf("expected redirect_loop_detected 'false', got %v", vals)
+		}
+		if vals := fields["redirect_final_url"]; len(vals) != 1 || vals[0] != "https://example.com/target" {
+			t.Errorf("expected redirect_final_url 'https://example.com/target', got %v", vals)
+		}
+		if len(res.FetchObservations) != 1 || res.FetchObservations[0].FinalURLID == nil || string(*res.FetchObservations[0].FinalURLID) != "url:audit:run:case1:2" {
+			t.Errorf("expected FinalURLID to point to target, got %v", res.FetchObservations[0].FinalURLID)
+		}
+		for _, gap := range res.EvidenceGaps {
+			if gap.GapCode == adapter.GapRedirectChainInconsistent {
+				t.Errorf("unexpected GapRedirectChainInconsistent recorded on matching counts")
+			}
+		}
+	})
+
+	t.Run("2. promoted redirect_hops differs from len(Page.Redirects) -> inconsistency detected", func(t *testing.T) {
+		res := buildCase(t, "run:case2", 5, oneHop, 301, "")
+		var foundGap bool
+		for _, gap := range res.EvidenceGaps {
+			if gap.GapCode == adapter.GapRedirectChainInconsistent {
+				foundGap = true
+				if gap.SubjectRef != "url:audit:run:case2:1" {
+					t.Errorf("expected SubjectRef 'url:audit:run:case2:1', got %q", gap.SubjectRef)
+				}
+				break
+			}
+		}
+		if !foundGap {
+			t.Errorf("expected inconsistency to be detected and recorded as EvidenceGap")
+		}
+	})
+
+	t.Run("3. conflict does not emit traversal_complete=true", func(t *testing.T) {
+		res := buildCase(t, "run:case3", 3, oneHop, 301, "")
+		fields := getFieldsBySubj(res, "url:audit:run:case3:1")
+		for _, v := range fields["redirect_traversal_complete"] {
+			if v == "true" {
+				t.Errorf("expected traversal_complete=true to NOT be emitted on conflict, got %v", fields["redirect_traversal_complete"])
+			}
+		}
+		if len(fields["redirect_traversal_complete"]) != 0 {
+			t.Errorf("expected redirect_traversal_complete to be withheld on conflict, got %v", fields["redirect_traversal_complete"])
+		}
+	})
+
+	t.Run("4. conflict does not emit loop=false", func(t *testing.T) {
+		res := buildCase(t, "run:case4", 3, oneHop, 301, "")
+		fields := getFieldsBySubj(res, "url:audit:run:case4:1")
+		for _, v := range fields["redirect_loop_detected"] {
+			if v == "false" {
+				t.Errorf("expected loop=false to NOT be emitted on conflict, got %v", fields["redirect_loop_detected"])
+			}
+		}
+		if len(fields["redirect_loop_detected"]) != 0 {
+			t.Errorf("expected redirect_loop_detected to be withheld on conflict, got %v", fields["redirect_loop_detected"])
+		}
+	})
+
+	t.Run("5. conflict withholds redirect_final_url", func(t *testing.T) {
+		res := buildCase(t, "run:case5", 3, oneHop, 301, "")
+		fields := getFieldsBySubj(res, "url:audit:run:case5:1")
+		if vals := fields["redirect_final_url"]; len(vals) != 0 {
+			t.Errorf("expected redirect_final_url to be withheld on conflict, got %v", vals)
+		}
+	})
+
+	t.Run("6. conflict leaves FinalURLID nil", func(t *testing.T) {
+		res := buildCase(t, "run:case6", 3, oneHop, 301, "")
+		if len(res.FetchObservations) != 1 {
+			t.Fatalf("expected 1 fetch observation, got %d", len(res.FetchObservations))
+		}
+		if res.FetchObservations[0].FinalURLID != nil {
+			t.Errorf("expected FinalURLID to remain nil on conflict, got %v", res.FetchObservations[0].FinalURLID)
+		}
+	})
+
+	t.Run("7. conflict records EvidenceGap", func(t *testing.T) {
+		res := buildCase(t, "run:case7", 0, oneHop, 301, "")
+		var foundGap bool
+		for _, gap := range res.EvidenceGaps {
+			if gap.GapCode == adapter.GapRedirectChainInconsistent {
+				foundGap = true
+				if gap.Field != "redirect_hops" {
+					t.Errorf("expected gap field 'redirect_hops', got %q", gap.Field)
+				}
+				if gap.SourceComponent != "sitecrawl_pages" {
+					t.Errorf("expected sourceComponent 'sitecrawl_pages', got %q", gap.SourceComponent)
+				}
+				if gap.Reason == "" {
+					t.Errorf("expected non-empty reason in EvidenceGap")
+				}
+				break
+			}
+		}
+		if !foundGap {
+			t.Errorf("expected GapRedirectChainInconsistent gap to be recorded")
+		}
+	})
+
+	t.Run("8. typed RedirectHop.LocationRaw is empty", func(t *testing.T) {
+		res := buildCase(t, "run:case8", 1, oneHop, 301, "")
+		if len(res.RedirectHops) != 1 {
+			t.Fatalf("expected 1 typed RedirectHop, got %d", len(res.RedirectHops))
+		}
+		if res.RedirectHops[0].LocationRaw != "" {
+			t.Errorf("expected LocationRaw to be empty string, got %q", res.RedirectHops[0].LocationRaw)
+		}
+	})
+
+	t.Run("9. typed RedirectHop.ResolvedTargetURL is correct", func(t *testing.T) {
+		res := buildCase(t, "run:case9", 1, oneHop, 301, "")
+		if len(res.RedirectHops) != 1 {
+			t.Fatalf("expected 1 typed RedirectHop, got %d", len(res.RedirectHops))
+		}
+		expectedTarget := "https://example.com/target"
+		if res.RedirectHops[0].ResolvedTargetURL != expectedTarget {
+			t.Errorf("expected ResolvedTargetURL %q, got %q", expectedTarget, res.RedirectHops[0].ResolvedTargetURL)
+		}
+	})
+
+	t.Run("10. hermetic normal redirect remains green", func(t *testing.T) {
+		hops2 := []sitecrawl.Hop{
+			{URL: "https://example.com/h0", Status: 301, Location: "https://example.com/h1"},
+			{URL: "https://example.com/h1", Status: 302, Location: "https://example.com/target"},
+		}
+		res := buildCase(t, "run:case10", 2, hops2, 301, "")
+		fields := getFieldsBySubj(res, "url:audit:run:case10:1")
+		if vals := fields["redirect_traversal_complete"]; len(vals) != 1 || vals[0] != "true" {
+			t.Errorf("expected traversal_complete 'true', got %v", vals)
+		}
+		if vals := fields["redirect_hop_count"]; len(vals) != 1 || vals[0] != "2" {
+			t.Errorf("expected hop count '2', got %v", vals)
+		}
+		for i, hop := range res.RedirectHops {
+			if hop.LocationRaw != "" {
+				t.Errorf("hop %d expected empty LocationRaw, got %q", i, hop.LocationRaw)
+			}
+			if hop.ResolvedTargetURL == "" {
+				t.Errorf("hop %d expected non-empty ResolvedTargetURL", i)
+			}
+		}
+	})
+
+	t.Run("11. no final_status is introduced", func(t *testing.T) {
+		res := buildCase(t, "run:case11", 1, oneHop, 301, "")
+		for _, obs := range res.EvidenceSnapshot.NormalizedObservations {
+			if obs.Field == "final_status" || obs.Field == "redirect_final_status" {
+				t.Errorf("forbidden final_status observation detected: field=%s, value=%s", obs.Field, obs.Value)
+			}
+		}
+	})
+
+	t.Run("12. existing 7 evaluators remain green", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:case12:eval7"
+		seed := "https://example.com/"
+		setupTestRunWithOpts(t, db, runID, seed, sitecrawl.Options{FollowRedirects: true})
+		insertURL(t, db, runID, 1, seed)
+
+		page1, _ := json.Marshal(sitecrawl.Page{
+			URL:         seed,
+			Status:      200,
+			ContentType: "text/html",
+			Canonical:   seed,
+			Canonicals:  []string{seed},
+			CrawledAt:   "2026-10-01T00:00:10Z",
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, content_type, canonical, kind, crawled_at)
+			VALUES(?, 1, ?, ?, 200, 'text/html', ?, 'html', '2026-10-01T00:00:10Z')`, runID, seed, string(page1), seed)
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: audit.AuditRunID("audit:" + runID),
+			SnapshotID: audit.SnapshotID("snap:" + runID),
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+
+		eng, err := engine.New()
+		if err != nil {
+			t.Fatalf("engine.New failed: %v", err)
+		}
+
+		activeRules := []string{
+			"AR-ACC-004",
+			"AR-CANON-003",
+			"AR-CANON-004",
+			"AR-CANON-006",
+			"AR-CANON-007",
+			"AR-INDEX-001",
+			"AR-INDEX-002",
+		}
+
+		for _, ruleID := range activeRules {
+			results, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, ruleID)
+			if err != nil {
+				t.Errorf("rule %s failed to evaluate: %v", ruleID, err)
+			}
+			for _, evalRes := range results {
+				if evalRes.Status == audit.StatusFail {
+					t.Errorf("rule %s failed unexpectedly: status=%s, summary=%s", ruleID, evalRes.Status, evalRes.ObservedSummary)
+				}
+			}
+		}
+	})
 }
 
 func getFieldsBySubj(res *adapter.BuildResult, subj string) map[string][]string {

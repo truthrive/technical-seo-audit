@@ -350,39 +350,56 @@ observed_at
 
 ### Redirect acquisition and normalization semantics
 
-1. **Redirect hop normalized evidence**:
+1. **Redirect hop provenance and typed entity**:
+   - Frozen SiteCrawl stores `Hop.Location` after `resolveLocation(...)`, which is already a resolved target URL and NOT the original raw Location header.
+   - Frozen SiteCrawl does not preserve the original raw Location header.
+   - In adapter-created `audit.RedirectHop`, `LocationRaw` remains empty (`""`) to prevent false provenance.
+   - `ResolvedTargetURL` contains the persisted resolved hop target.
+   - Raw Location is never reconstructed, and frozen domain field names are unchanged.
+2. **Redirect hop normalized evidence**:
    - `redirect_initial_observed`: Boolean evidence emitted when the initial HTTP status is known (`status > 0`). Evaluates to `true` for 3xx responses (`300 <= status < 400`), and `false` for known non-3xx responses. Withheld if HTTP status is unavailable.
-   - `redirect_hop_count`: Count of persisted redirect hops. Preserves `0` when the initial response is known and no hop was persisted. Always derived from the preserved chain (`Page.Redirects`), never blindly from promoted summary columns.
-   - `redirect_hop`: One normalized observation per persisted hop in exact chronological order without reordering. Contains a deterministic machine-readable JSON payload containing exactly: `hop_index`, `source_url`, `status`, and `resolved_target_url`. Raw Location header is not reconstructed if unavailable.
-2. **Traversal completeness semantics**:
-   - `redirect_traversal_complete`: For an observed redirect (initial 3xx or preserved hops), evaluates to `true` only when all of the following hold:
+   - `redirect_hop_count`: Count of persisted redirect hops. Preserves `0` when the initial response is known and no hop was persisted. Withheld when promoted count conflicts with preserved chain length (`len(Page.Redirects) != pr.redirectHops`) to avoid falsely presenting conflicting persisted evidence as authoritative.
+   - `redirect_hop`: One normalized observation per persisted hop in exact chronological order without reordering. Contains a deterministic machine-readable JSON payload containing exactly: `hop_index`, `source_url`, `status`, and `resolved_target_url`.
+3. **Persisted redirect count consistency & traversal completeness**:
+   - When persisted redirect evidence is relevant, the adapter validates that promoted SQLite `redirect_hops` agrees with preserved `len(Page.Redirects)`.
+   - If they conflict:
+     - The adapter records an `EvidenceGap` (`GAP_REDIRECT_CHAIN_INCONSISTENT`);
+     - Completeness remains unproven: authoritative `redirect_traversal_complete=true` is NOT emitted;
+     - `redirect_loop_detected=false` is NOT emitted;
+     - `redirect_final_url` is withheld;
+     - `FetchObservation.FinalURLID` remains absent (`nil`);
+     - `redirect_hop_count` is withheld;
+     - Preserved `redirect_hop` observations continue to represent the actually preserved `Page.Redirects` chain.
+   - `redirect_traversal_complete`: For an observed redirect without count conflict, evaluates to `true` only when all of the following hold:
      - `FollowRedirects = true`
+     - Promoted `redirect_hops` equals `len(Page.Redirects)`
      - At least one hop is preserved
      - Crawler reached a terminal response
      - `Page.Error` is empty
-   - Evaluates to `false` when incompleteness is positively known, including:
+   - Evaluates to `false` when incompleteness is positively known (and no conflicting counts exist), including:
      - Redirect following disabled (`FollowRedirects = false`)
      - Redirect loop (`Page.Error == "redirect loop"`)
      - Redirect-chain limit exceeded (`Page.Error == "redirect chain too long"`)
      - Invalid or missing Location header
      - Transport failure after a redirect (e.g. timeout or connection drop)
-   - Unknown states are never encoded as complete. Not emitted for non-redirect responses.
-3. **Loop-state truthfulness**:
+   - Unknown or conflicting states are never encoded as complete. Not emitted for non-redirect responses.
+4. **Loop-state truthfulness**:
    - `redirect_loop_detected`: Emitted as `true` only when persisted crawler evidence explicitly records `Page.Error == "redirect loop"`.
    - Emitted as `false` only when redirect traversal is proven complete without a loop (`redirect_traversal_complete = true`).
-   - For other incomplete traversals (e.g. chain limit, timeout, redirect following disabled), this field is withheld. A false loop state is never inferred from the mere absence of a loop error.
-4. **Final URL semantics**:
-   - `redirect_final_url`: Emitted only when `redirect_traversal_complete = true`. Uses the resolved target URL of the final persisted hop, normalized with Audit URL normalization rules. Never emitted for incomplete traversals.
-5. **Persisted final-status limitation**:
+   - For other incomplete traversals or conflicting persisted states, this field is withheld. A false loop state is never inferred from the mere absence of a loop error.
+5. **Final URL semantics**:
+   - `redirect_final_url`: Emitted only when `redirect_traversal_complete = true`. Uses the resolved target URL of the final persisted hop, normalized with Audit URL normalization rules. Conflicting promoted count vs preserved chain prevents final-target conclusions; `redirect_final_url` is withheld on conflict.
+6. **Persisted final-status limitation**:
    - Runtime `fetched.FinalStatus` observed during redirect traversal is held in in-flight memory during crawl but is not persisted in the frozen `Page` model or SQLite schema.
    - Neither `final_status` nor `redirect_final_status` is emitted as a normalized observation, nor fabricated from a later independent fetch of the target URL (which constitutes a separate request and observation).
    - Consequently, `AR-CANON-010` and `AR-ACC-003` remain BLOCKED until authoritative source-chain final status is persisted.
-6. **First-hop vs final-target distinction & `FetchObservation.FinalURLID` correction**:
+7. **First-hop vs final-target distinction & `FetchObservation.FinalURLID` correction**:
    - `Page.RedirectTo` represents the first redirect target, not the final destination. The adapter must never map `RedirectTo` to `FetchObservation.FinalURLID`.
    - `FetchObservation.FinalURLID` is populated strictly when:
      (1) redirect traversal is complete (`redirect_traversal_complete = true`), and
-     (2) the final normalized target URL maps uniquely to exactly one existing `UrlResource` in the snapshot.
-   - If traversal is incomplete, the final target is not in the snapshot, or the normalized URL identity is ambiguous, `FinalURLID` remains absent (`nil`).
+     (2) no promoted count vs preserved chain conflict exists, and
+     (3) the final normalized target URL maps uniquely to exactly one existing `UrlResource` in the snapshot.
+   - If traversal is incomplete or conflicting, the final target is not in the snapshot, or the normalized URL identity is ambiguous, `FinalURLID` remains absent (`nil`).
 
 ## 11. RawArtifact
 
