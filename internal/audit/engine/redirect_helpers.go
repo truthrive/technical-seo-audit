@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +36,7 @@ type redirectEvidenceBundle struct {
 	InitialObs        []audit.NormalizedObservation
 	InitialUsable     bool
 	InitialConflict   bool
+	InitialMalformed  bool
 	IsInitialRedirect bool
 
 	// redirect_hop_count
@@ -43,12 +47,13 @@ type redirectEvidenceBundle struct {
 	HopCount          int
 
 	// redirect_hop
-	HopObs       []audit.NormalizedObservation
-	HopMalformed bool
-	HopConflict  bool
-	HopIndexDup  bool
-	HopNonContig bool
-	UniqueHops   []redirectHopPayload
+	HopObs                []audit.NormalizedObservation
+	HopMalformed          bool
+	HopConflict           bool
+	HopIndexDup           bool
+	HopNonContig          bool
+	HopChainInconsistent  bool
+	UniqueHops            []redirectHopPayload
 
 	// redirect_traversal_complete
 	CompleteObs       []audit.NormalizedObservation
@@ -67,6 +72,117 @@ type redirectEvidenceBundle struct {
 	// redirect_final_url
 	FinalURLObs []audit.NormalizedObservation
 	FinalURL    string
+}
+
+// isValidHTTPURL validates that a raw URL string is a valid, absolute HTTP or HTTPS URL.
+func isValidHTTPURL(raw string) bool {
+	if raw == "" || strings.ContainsAny(raw, " \t\r\n") {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	if parsed.Host == "" {
+		return false
+	}
+	return true
+}
+
+// parseAndValidateHopJSON parses a single "redirect_hop" observation JSON string.
+// Enforces required keys, exact expected types, 3xx status, and valid HTTP(S) URLs.
+func parseAndValidateHopJSON(val string) (redirectHopPayload, bool) {
+	valBytes := []byte(strings.TrimSpace(val))
+	if len(valBytes) == 0 {
+		return redirectHopPayload{}, false
+	}
+
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(valBytes, &rawMap); err != nil || rawMap == nil {
+		return redirectHopPayload{}, false
+	}
+
+	// 1. Validate required JSON keys explicitly
+	rawIndex, hasIndex := rawMap["hop_index"]
+	rawSource, hasSource := rawMap["source_url"]
+	rawStatus, hasStatus := rawMap["status"]
+	rawTarget, hasTarget := rawMap["resolved_target_url"]
+	if !hasIndex || !hasSource || !hasStatus || !hasTarget {
+		return redirectHopPayload{}, false
+	}
+
+	// 2. Validate hop_index: must be an exact integer >= 0
+	var rawIndexVal any
+	decIndex := json.NewDecoder(bytes.NewReader(rawIndex))
+	decIndex.UseNumber()
+	if err := decIndex.Decode(&rawIndexVal); err != nil {
+		return redirectHopPayload{}, false
+	}
+	indexNum, ok := rawIndexVal.(json.Number)
+	if !ok {
+		return redirectHopPayload{}, false
+	}
+	indexInt64, err := indexNum.Int64()
+	if err != nil || indexInt64 < 0 || indexInt64 > math.MaxInt {
+		return redirectHopPayload{}, false
+	}
+	hopIndex := int(indexInt64)
+
+	// 3. Validate status: must be an exact integer and 3xx (300 <= status <= 399)
+	var rawStatusVal any
+	decStatus := json.NewDecoder(bytes.NewReader(rawStatus))
+	decStatus.UseNumber()
+	if err := decStatus.Decode(&rawStatusVal); err != nil {
+		return redirectHopPayload{}, false
+	}
+	statusNum, ok := rawStatusVal.(json.Number)
+	if !ok {
+		return redirectHopPayload{}, false
+	}
+	statusInt64, err := statusNum.Int64()
+	if err != nil || statusInt64 < 300 || statusInt64 > 399 {
+		return redirectHopPayload{}, false
+	}
+	status := int(statusInt64)
+
+	// 4. Validate source_url: must be string and valid HTTP(S) URL
+	var rawSourceVal any
+	if err := json.Unmarshal(rawSource, &rawSourceVal); err != nil {
+		return redirectHopPayload{}, false
+	}
+	sourceStr, ok := rawSourceVal.(string)
+	if !ok {
+		return redirectHopPayload{}, false
+	}
+	sourceStr = strings.TrimSpace(sourceStr)
+	if !isValidHTTPURL(sourceStr) {
+		return redirectHopPayload{}, false
+	}
+
+	// 5. Validate resolved_target_url: must be string and valid HTTP(S) URL
+	var rawTargetVal any
+	if err := json.Unmarshal(rawTarget, &rawTargetVal); err != nil {
+		return redirectHopPayload{}, false
+	}
+	targetStr, ok := rawTargetVal.(string)
+	if !ok {
+		return redirectHopPayload{}, false
+	}
+	targetStr = strings.TrimSpace(targetStr)
+	if !isValidHTTPURL(targetStr) {
+		return redirectHopPayload{}, false
+	}
+
+	return redirectHopPayload{
+		HopIndex:          hopIndex,
+		SourceURL:         sourceStr,
+		Status:            status,
+		ResolvedTargetURL: targetStr,
+	}, true
 }
 
 // extractRedirectEvidence extracts and validates all redirect-related observations for a subject.
@@ -107,7 +223,7 @@ func extractRedirectEvidence(idx *EvidenceIndex, subjectRef string) redirectEvid
 				}
 			}
 		} else {
-			b.InitialConflict = true
+			b.InitialMalformed = true
 			b.InitialUsable = false
 		}
 	}
@@ -142,12 +258,8 @@ func extractRedirectEvidence(idx *EvidenceIndex, subjectRef string) redirectEvid
 		seenIndices := make(map[int]redirectHopPayload)
 
 		for _, o := range b.HopObs {
-			var p redirectHopPayload
-			if err := json.Unmarshal([]byte(o.Value), &p); err != nil {
-				b.HopMalformed = true
-				break
-			}
-			if p.HopIndex < 0 || strings.TrimSpace(p.SourceURL) == "" || p.Status < 100 || p.Status >= 600 || strings.TrimSpace(p.ResolvedTargetURL) == "" {
+			p, valid := parseAndValidateHopJSON(o.Value)
+			if !valid {
 				b.HopMalformed = true
 				break
 			}
@@ -234,16 +346,54 @@ func extractRedirectEvidence(idx *EvidenceIndex, subjectRef string) redirectEvid
 		}
 	}
 
+	// 8. Verify full URL-to-URL continuity of redirect chain
+	if !b.HopMalformed && !b.HopConflict && !b.HopIndexDup && !b.HopNonContig && len(b.UniqueHops) > 0 {
+		// hop[0].source_url must match URL identity exactly (no fuzzy matching, no variant collapsing)
+		if b.URLUsable && b.UniqueHops[0].SourceURL != b.URL {
+			b.HopChainInconsistent = true
+		}
+
+		// hop[i].resolved_target_url must match hop[i+1].source_url exactly
+		for i := 0; i < len(b.UniqueHops)-1; i++ {
+			if b.UniqueHops[i].ResolvedTargetURL != b.UniqueHops[i+1].SourceURL {
+				b.HopChainInconsistent = true
+				break
+			}
+		}
+
+		// If traversal complete and redirect_final_url is present, final hop target must match it
+		if b.CompleteUsable && b.TraversalComplete && len(b.FinalURLObs) > 0 && b.FinalURL != "" {
+			if b.UniqueHops[len(b.UniqueHops)-1].ResolvedTargetURL != b.FinalURL {
+				b.HopChainInconsistent = true
+			}
+		}
+	}
+
 	return b
+}
+
+// isHopEvidenceValidAndConsistent checks if all required redirect hop and count observations
+// are present, unconflicted, fully parsed, contiguous, and continuous.
+func (b *redirectEvidenceBundle) isHopEvidenceValidAndConsistent() bool {
+	if len(b.HopCountObs) == 0 || !b.HopCountUsable || b.HopCountConflict || b.HopCountMalformed || b.HopCount < 1 {
+		return false
+	}
+	if len(b.HopObs) == 0 || b.HopMalformed || b.HopConflict || b.HopIndexDup || b.HopNonContig || b.HopChainInconsistent {
+		return false
+	}
+	if len(b.UniqueHops) != b.HopCount {
+		return false
+	}
+	return true
 }
 
 // hasConflictingRedirectEvidence returns true if redirect observations exist that contradict
 // an initial non-redirect verdict (e.g. hops recorded, traversal completed, or loop detected).
 func (b *redirectEvidenceBundle) hasConflictingRedirectEvidence() bool {
 	return len(b.HopObs) > 0 ||
-		(b.HopCountUsable && b.HopCount > 0) ||
-		(b.CompleteUsable && b.TraversalComplete) ||
-		(b.LoopUsable && b.LoopDetected) ||
+		(len(b.HopCountObs) > 0 && (!b.HopCountUsable || b.HopCount > 0)) ||
+		(len(b.CompleteObs) > 0 && (!b.CompleteUsable || b.TraversalComplete)) ||
+		(len(b.LoopObs) > 0 && (!b.LoopUsable || b.LoopDetected)) ||
 		len(b.FinalURLObs) > 0
 }
 
