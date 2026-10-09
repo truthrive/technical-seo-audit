@@ -255,7 +255,7 @@ func TestEngine_ImplementedRuleIDs(t *testing.T) {
 	}
 
 	ids := eng.ImplementedRuleIDs()
-	expected := []string{"AR-ACC-004", "AR-CANON-003", "AR-CANON-004", "AR-CANON-006", "AR-CANON-007", "AR-INDEX-001", "AR-INDEX-002"}
+	expected := []string{"AR-ACC-004", "AR-CANON-003", "AR-CANON-004", "AR-CANON-006", "AR-CANON-007", "AR-CANON-008", "AR-CANON-009", "AR-INDEX-001", "AR-INDEX-002"}
 	if len(ids) != len(expected) {
 		t.Fatalf("expected exactly %v, got %v", expected, ids)
 	}
