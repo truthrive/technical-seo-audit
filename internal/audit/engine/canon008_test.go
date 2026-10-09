@@ -25,6 +25,7 @@ type redirectTestFixture struct {
 	loopValues     []string
 	hopValues      []string
 	finalURL       string
+	finalURLs      []string
 }
 
 func hopJSON(index int, src string, status int, target string) string {
@@ -220,7 +221,22 @@ func newRedirectSnapshot(fixtures []redirectTestFixture, auditRunID audit.AuditR
 		}
 
 		// redirect_final_url
-		if f.finalURL != "" {
+		if len(f.finalURLs) > 0 {
+			for _, u := range f.finalURLs {
+				obs = append(obs, audit.NormalizedObservation{
+					ObservationID:      nextID(),
+					AuditRunID:         auditRunID,
+					SnapshotID:         snapID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         f.subjectRef,
+					Field:              "redirect_final_url",
+					Value:              u,
+					DerivationType:     audit.DerivationNormalized,
+					SourceEvidenceRefs: []string{"sitecrawl_pages:test"},
+					ObservedAt:         now,
+				})
+			}
+		} else if f.finalURL != "" {
 			obs = append(obs, audit.NormalizedObservation{
 				ObservationID:      nextID(),
 				AuditRunID:         auditRunID,

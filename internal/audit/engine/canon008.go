@@ -20,6 +20,8 @@ const ruleIDCANON008 = "AR-CANON-008"
 // - Initial redirect=true, complete=true, verified hop count=1 -> PASS
 // - Initial redirect=true, complete=true, verified hop count>=2 -> FAIL
 // - Complete=true + loop=true -> UNKNOWN (contradictory evidence)
+// - Loop evidence conflicting/malformed -> UNKNOWN
+// - Complete traversal with conflicting/malformed final URL evidence -> UNKNOWN
 // - Redirect traversal incomplete=false -> UNKNOWN
 // - Completeness missing -> UNKNOWN
 // - Hop count missing/malformed/conflicting -> UNKNOWN
@@ -76,6 +78,9 @@ func evaluateCANON008(
 				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.HopObs, "redirect_hop", audit.EvidenceRolePrimary)...)
 				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.CompleteObs, "redirect_traversal_complete", audit.EvidenceRolePrimary)...)
 				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.LoopObs, "redirect_loop_detected", audit.EvidenceRolePrimary)...)
+				if len(b.FinalURLObs) > 0 {
+					evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.FinalURLObs, "redirect_final_url", audit.EvidenceRolePrimary)...)
+				}
 			} else {
 				evalStatus = audit.StatusNotApplicable
 				observedSummary = "URL does not redirect; initial response is not a redirect."
@@ -100,6 +105,20 @@ func evaluateCANON008(
 				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.InitialObs, "redirect_initial_observed", audit.EvidenceRoleContext)...)
 				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.HopCountObs, "redirect_hop_count", audit.EvidenceRoleSupporting)...)
 				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.HopObs, "redirect_hop", audit.EvidenceRoleSupporting)...)
+			} else if b.LoopConflict || b.LoopMalformed {
+				// Conflicting/malformed loop evidence must not produce PASS or FAIL
+				evalStatus = audit.StatusUnknown
+				observedSummary = "Contradictory or malformed redirect loop detection evidence."
+				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.URLIdentityObs, "url", audit.EvidenceRoleContext)...)
+				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.InitialObs, "redirect_initial_observed", audit.EvidenceRoleContext)...)
+				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.CompleteObs, "redirect_traversal_complete", audit.EvidenceRoleContext)...)
+				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.LoopObs, "redirect_loop_detected", audit.EvidenceRolePrimary)...)
+				if len(b.HopCountObs) > 0 {
+					evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.HopCountObs, "redirect_hop_count", audit.EvidenceRoleSupporting)...)
+				}
+				if len(b.HopObs) > 0 {
+					evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.HopObs, "redirect_hop", audit.EvidenceRoleSupporting)...)
+				}
 			} else if b.CompleteUsable && b.TraversalComplete && b.LoopUsable && b.LoopDetected {
 				// Contradictory: complete=true + loop=true -> UNKNOWN
 				evalStatus = audit.StatusUnknown
@@ -123,7 +142,7 @@ func evaluateCANON008(
 				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.HopCountObs, "redirect_hop_count", audit.EvidenceRoleSupporting)...)
 				evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.HopObs, "redirect_hop", audit.EvidenceRoleSupporting)...)
 			} else {
-				// Traversal is complete: validate hop count and individual hop observations
+				// Traversal is complete: validate hop count, individual hop observations, and final URL
 				if len(b.HopCountObs) == 0 {
 					evalStatus = audit.StatusUnknown
 					observedSummary = "Redirect hop count evidence is missing."
@@ -186,6 +205,16 @@ func evaluateCANON008(
 					if len(b.FinalURLObs) > 0 {
 						evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.FinalURLObs, "redirect_final_url", audit.EvidenceRoleContext)...)
 					}
+				} else if b.FinalURLConflict || b.FinalURLMalformed {
+					// Complete traversal: conflicting or malformed final URL evidence -> UNKNOWN
+					evalStatus = audit.StatusUnknown
+					observedSummary = "Redirect traversal completed, but final URL evidence is conflicting or malformed."
+					evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.URLIdentityObs, "url", audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.InitialObs, "redirect_initial_observed", audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.CompleteObs, "redirect_traversal_complete", audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.HopCountObs, "redirect_hop_count", audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.HopObs, "redirect_hop", audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildEvidenceRefs(ruleResultID, b.FinalURLObs, "redirect_final_url", audit.EvidenceRolePrimary)...)
 				} else if len(b.UniqueHops) != b.HopCount {
 					evalStatus = audit.StatusUnknown
 					observedSummary = fmt.Sprintf("Redirect hop count (%d) does not match usable redirect hop observations (%d).", b.HopCount, len(b.UniqueHops))

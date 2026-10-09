@@ -70,8 +70,11 @@ type redirectEvidenceBundle struct {
 	LoopDetected  bool
 
 	// redirect_final_url
-	FinalURLObs []audit.NormalizedObservation
-	FinalURL    string
+	FinalURLObs       []audit.NormalizedObservation
+	FinalURL          string
+	FinalURLUsable    bool
+	FinalURLConflict  bool
+	FinalURLMalformed bool
 }
 
 // isValidHTTPURL validates that a raw URL string is a valid, absolute HTTP or HTTPS URL.
@@ -341,8 +344,24 @@ func extractRedirectEvidence(idx *EvidenceIndex, subjectRef string) redirectEvid
 	b.FinalURLObs = idx.GetObservations(audit.SubjectURL, subjectRef, "redirect_final_url")
 	if len(b.FinalURLObs) > 0 {
 		first := strings.TrimSpace(b.FinalURLObs[0].Value)
-		if first != "" {
+		if !isValidHTTPURL(first) {
+			b.FinalURLMalformed = true
+		} else {
 			b.FinalURL = first
+			b.FinalURLUsable = true
+			for _, o := range b.FinalURLObs[1:] {
+				val := strings.TrimSpace(o.Value)
+				if !isValidHTTPURL(val) {
+					b.FinalURLMalformed = true
+					b.FinalURLUsable = false
+					break
+				}
+				if val != first {
+					b.FinalURLConflict = true
+					b.FinalURLUsable = false
+					break
+				}
+			}
 		}
 	}
 
@@ -361,8 +380,8 @@ func extractRedirectEvidence(idx *EvidenceIndex, subjectRef string) redirectEvid
 			}
 		}
 
-		// If traversal complete and redirect_final_url is present, final hop target must match it
-		if b.CompleteUsable && b.TraversalComplete && len(b.FinalURLObs) > 0 && b.FinalURL != "" {
+		// If traversal complete, final URL observation exists, and is usable, final hop target must match it
+		if b.CompleteUsable && b.TraversalComplete && b.FinalURLUsable && b.FinalURL != "" {
 			if b.UniqueHops[len(b.UniqueHops)-1].ResolvedTargetURL != b.FinalURL {
 				b.HopChainInconsistent = true
 			}
@@ -382,6 +401,9 @@ func (b *redirectEvidenceBundle) isHopEvidenceValidAndConsistent() bool {
 		return false
 	}
 	if len(b.UniqueHops) != b.HopCount {
+		return false
+	}
+	if b.FinalURLConflict || b.FinalURLMalformed {
 		return false
 	}
 	return true
