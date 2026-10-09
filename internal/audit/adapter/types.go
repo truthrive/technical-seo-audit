@@ -49,6 +49,7 @@ const (
 	GapUnresolvedLinkTargetUnavailable    = "GAP_UNRESOLVED_LINK_TARGET_UNAVAILABLE"
 	GapDirectiveScopeAmbiguous            = "GAP_DIRECTIVE_SCOPE_AMBIGUOUS"
 	GapRedirectChainInconsistent          = "GAP_REDIRECT_CHAIN_INCONSISTENT"
+	GapUnresolvedLinkSourceUnavailable    = "GAP_UNRESOLVED_LINK_SOURCE_UNAVAILABLE"
 )
 
 // EvidenceGap records an implementation-level diagnostic stating that the

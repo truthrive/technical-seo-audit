@@ -213,9 +213,19 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 	}
 	defer linkRows.Close()
 
+	type adaptedLink struct {
+		obs        audit.LinkObservation
+		srcID      int
+		dstID      int
+		seq        int
+		flags      uint32
+		isInternal bool
+	}
+
 	var (
 		evidenceGaps     []EvidenceGap
 		linkObservations []audit.LinkObservation
+		adaptedLinks     []adaptedLink
 	)
 	incomingAnchorEdges := make(map[int][]linkRow)
 
@@ -239,6 +249,17 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				targetURLID       *audit.URLID
 				targetURLResolved string
 			)
+
+			// Dangling or invalid link source guard: src_id <= 0 or unallocated dictionary source
+			if lr.srcID <= 0 || urlsByID[lr.srcID] == "" {
+				evidenceGaps = append(evidenceGaps, EvidenceGap{
+					GapCode:         GapUnresolvedLinkSourceUnavailable,
+					SubjectRef:      fmt.Sprintf("link:%s:%d:%d", req.AuditRunID, lr.srcID, lr.seq),
+					Field:           "source_url_id",
+					Reason:          fmt.Sprintf("Link edge has source id %d which is not present in URL dictionary; source URL identity is unavailable.", lr.srcID),
+					SourceComponent: "sitecrawl_links",
+				})
+			}
 
 			if lr.dstID > 0 {
 				if resolved, ok := urlsByID[lr.dstID]; ok && resolved != "" {
@@ -299,6 +320,14 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				ObservedAt:          obsTime,
 			}
 			linkObservations = append(linkObservations, linkObs)
+			adaptedLinks = append(adaptedLinks, adaptedLink{
+				obs:        linkObs,
+				srcID:      lr.srcID,
+				dstID:      lr.dstID,
+				seq:        lr.seq,
+				flags:      lr.flags,
+				isInternal: lr.flags&sitecrawl.FlagInternal != 0,
+			})
 		}
 	}
 	if err := linkRows.Err(); err != nil {
@@ -316,7 +345,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		AuditRunID:               req.AuditRunID,
 		CreatedAt:                time.Now().UTC(),
 		SnapshotStatus:           audit.SnapshotBuilding,
-		NormalizationVersion:     "v1.6.0",
+		NormalizationVersion:     "v1.7.0",
 		CrawlComplete:            crawlComplete,
 		SitemapDiscoveryComplete: false,
 		RenderSelectionComplete:  false,
@@ -364,6 +393,13 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			CreatedAt:       nil, // Not persisted in SQLite
 		}
 		urlResources = append(urlResources, ur)
+	}
+
+	validURLResourceIDs := make(map[int]bool, len(urlsByID))
+	for id, raw := range urlsByID {
+		if id > 0 && raw != "" {
+			validURLResourceIDs[id] = true
+		}
 	}
 
 	// Build normalized URL to URLID mapping for exact target correlation
@@ -1184,48 +1220,120 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 	}
 
 	// 10. Add normalized observations for links
-	for _, lo := range linkObservations {
-		linkSrcRef := fmt.Sprintf("sitecrawl_links:%s", strings.TrimPrefix(string(lo.LinkID), "link:"+string(req.AuditRunID)+":"))
-		if lo.TargetURLResolved != "" {
+	for _, al := range adaptedLinks {
+		linkSrcRef := fmt.Sprintf("sitecrawl_links:%d:%d", al.srcID, al.seq)
+
+		// 10a. Source identity and correlation
+		sourceURL, srcOK := urlsByID[al.srcID]
+		srcValid := srcOK && sourceURL != "" && al.srcID > 0 && validURLResourceIDs[al.srcID]
+
+		if srcValid {
 			normalizedObservations = append(normalizedObservations,
 				audit.NormalizedObservation{
 					ObservationID:      nextObsID(),
 					AuditRunID:         req.AuditRunID,
 					SnapshotID:         req.SnapshotID,
 					SubjectType:        audit.SubjectLink,
-					SubjectRef:         string(lo.LinkID),
-					Field:              "link_target",
-					Value:              lo.TargetURLResolved,
+					SubjectRef:         string(al.obs.LinkID),
+					Field:              "link_source_url",
+					Value:              sourceURL,
 					DerivationType:     audit.DerivationDirect,
 					SourceEvidenceRefs: []string{linkSrcRef},
-					ObservedAt:         lo.ObservedAt,
+					ObservedAt:         al.obs.ObservedAt,
+				},
+				audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectLink,
+					SubjectRef:         string(al.obs.LinkID),
+					Field:              "link_source_subject_ref",
+					Value:              fmt.Sprintf("url:%s:%d", req.AuditRunID, al.srcID),
+					DerivationType:     audit.DerivationNormalized,
+					SourceEvidenceRefs: []string{linkSrcRef},
+					ObservedAt:         al.obs.ObservedAt,
+				},
+				audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectLink,
+					SubjectRef:         string(al.obs.LinkID),
+					Field:              "link_is_internal",
+					Value:              strconv.FormatBool(al.isInternal),
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{linkSrcRef},
+					ObservedAt:         al.obs.ObservedAt,
 				},
 			)
 		}
+
+		// 10b. Resolved target URL
+		if al.obs.TargetURLResolved != "" {
+			normalizedObservations = append(normalizedObservations,
+				audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectLink,
+					SubjectRef:         string(al.obs.LinkID),
+					Field:              "link_target",
+					Value:              al.obs.TargetURLResolved,
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{linkSrcRef},
+					ObservedAt:         al.obs.ObservedAt,
+				},
+			)
+		}
+
+		// 10c. Target subject correlation (link_target_subject_ref)
+		if al.dstID > 0 {
+			dstURL, dstOK := urlsByID[al.dstID]
+			if dstOK && dstURL != "" && validURLResourceIDs[al.dstID] {
+				if al.obs.TargetURLResolved == "" || al.obs.TargetURLResolved == dstURL {
+					normalizedObservations = append(normalizedObservations,
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectLink,
+							SubjectRef:         string(al.obs.LinkID),
+							Field:              "link_target_subject_ref",
+							Value:              fmt.Sprintf("url:%s:%d", req.AuditRunID, al.dstID),
+							DerivationType:     audit.DerivationNormalized,
+							SourceEvidenceRefs: []string{linkSrcRef},
+							ObservedAt:         al.obs.ObservedAt,
+						},
+					)
+				}
+			}
+		}
+
+		// 10d. Anchor text and location
 		normalizedObservations = append(normalizedObservations,
 			audit.NormalizedObservation{
 				ObservationID:      nextObsID(),
 				AuditRunID:         req.AuditRunID,
 				SnapshotID:         req.SnapshotID,
 				SubjectType:        audit.SubjectLink,
-				SubjectRef:         string(lo.LinkID),
+				SubjectRef:         string(al.obs.LinkID),
 				Field:              "link_anchor",
-				Value:              lo.AnchorText,
+				Value:              al.obs.AnchorText,
 				DerivationType:     audit.DerivationDirect,
 				SourceEvidenceRefs: []string{linkSrcRef},
-				ObservedAt:         lo.ObservedAt,
+				ObservedAt:         al.obs.ObservedAt,
 			},
 			audit.NormalizedObservation{
 				ObservationID:      nextObsID(),
 				AuditRunID:         req.AuditRunID,
 				SnapshotID:         req.SnapshotID,
 				SubjectType:        audit.SubjectLink,
-				SubjectRef:         string(lo.LinkID),
+				SubjectRef:         string(al.obs.LinkID),
 				Field:              "link_location",
-				Value:              lo.LinkLocation,
+				Value:              al.obs.LinkLocation,
 				DerivationType:     audit.DerivationDirect,
 				SourceEvidenceRefs: []string{linkSrcRef},
-				ObservedAt:         lo.ObservedAt,
+				ObservedAt:         al.obs.ObservedAt,
 			},
 		)
 	}
