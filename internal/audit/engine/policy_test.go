@@ -392,10 +392,23 @@ func TestEngine_PolicyIntegration(t *testing.T) {
 		}
 	})
 
-	// 4e. Implemented rule set remains strictly ["AR-ACC-004", "AR-CANON-003", "AR-CANON-004", "AR-CANON-006", "AR-CANON-007", "AR-CANON-008", "AR-CANON-009", "AR-INDEX-001", "AR-INDEX-002"]
-	t.Run("implemented rules remain strictly 9 executable rules", func(t *testing.T) {
+	// 4e. Implemented rule set remains strictly 12 executable rules for V1.6c
+	t.Run("implemented rules remain strictly 12 executable rules", func(t *testing.T) {
 		ids := eng.ImplementedRuleIDs()
-		expected := []string{"AR-ACC-004", "AR-CANON-003", "AR-CANON-004", "AR-CANON-006", "AR-CANON-007", "AR-CANON-008", "AR-CANON-009", "AR-INDEX-001", "AR-INDEX-002"}
+		expected := []string{
+			"AR-ACC-004",
+			"AR-CANON-003",
+			"AR-CANON-004",
+			"AR-CANON-006",
+			"AR-CANON-007",
+			"AR-CANON-008",
+			"AR-CANON-009",
+			"AR-INDEX-001",
+			"AR-INDEX-002",
+			"AR-LINK-002",
+			"AR-LINK-003",
+			"AR-LINK-004",
+		}
 		if len(ids) != len(expected) {
 			t.Fatalf("expected exactly %v, got %v", expected, ids)
 		}

@@ -1021,22 +1021,16 @@ func TestAdapter_Link_Regression_ExecutableRules(t *testing.T) {
 		"AR-CANON-009",
 		"AR-INDEX-001",
 		"AR-INDEX-002",
+		"AR-LINK-002",
+		"AR-LINK-003",
+		"AR-LINK-004",
 	}
 
-	if len(implementedIDs) != 9 {
-		t.Fatalf("expected exactly 9 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
+	if len(implementedIDs) != 12 {
+		t.Fatalf("expected exactly 12 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
 	}
 	if !reflect.DeepEqual(implementedIDs, expectedIDs) {
 		t.Fatalf("expected implemented IDs %v, got %v", expectedIDs, implementedIDs)
-	}
-
-	// Verify that future link rules are NOT yet implemented
-	for _, futureRule := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
-		for _, id := range implementedIDs {
-			if id == futureRule {
-				t.Errorf("rule %s must NOT be implemented in V1.6b", futureRule)
-			}
-		}
 	}
 }
 
