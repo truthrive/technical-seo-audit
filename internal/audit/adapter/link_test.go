@@ -83,8 +83,8 @@ func TestAdapter_Link_HappyPaths_Internal200(t *testing.T) {
 	}
 
 	snap := res.EvidenceSnapshot
-	if snap.NormalizationVersion != "v1.8.0" {
-		t.Fatalf("expected NormalizationVersion v1.8.0, got %s", snap.NormalizationVersion)
+	if snap.NormalizationVersion != "v1.9.0" {
+		t.Fatalf("expected NormalizationVersion v1.9.0, got %s", snap.NormalizationVersion)
 	}
 
 	linkSubjectRef := fmt.Sprintf("link:%s:1:0", auditRunID)
@@ -968,8 +968,8 @@ func TestAdapter_Link_Regression_CanonicalAndRedirect(t *testing.T) {
 	}
 
 	snap := res.EvidenceSnapshot
-	if snap.NormalizationVersion != "v1.8.0" {
-		t.Errorf("expected NormalizationVersion v1.8.0, got %s", snap.NormalizationVersion)
+	if snap.NormalizationVersion != "v1.9.0" {
+		t.Errorf("expected NormalizationVersion v1.9.0, got %s", snap.NormalizationVersion)
 	}
 
 	// Verify Canonical evidence

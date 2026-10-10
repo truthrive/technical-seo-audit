@@ -55,6 +55,14 @@ const (
 	GapDirectiveScopeAmbiguous            = "GAP_DIRECTIVE_SCOPE_AMBIGUOUS"
 	GapRedirectChainInconsistent          = "GAP_REDIRECT_CHAIN_INCONSISTENT"
 	GapUnresolvedLinkSourceUnavailable    = "GAP_UNRESOLVED_LINK_SOURCE_UNAVAILABLE"
+	GapSitemapDiscoveryDisabled           = "GAP_SITEMAP_DISCOVERY_DISABLED"
+	GapSitemapDiscoveryIncomplete         = "GAP_SITEMAP_DISCOVERY_INCOMPLETE"
+	GapSitemapTruncated                   = "GAP_SITEMAP_TRUNCATED"
+	GapSitemapFetchFailed                 = "GAP_SITEMAP_FETCH_FAILED"
+	GapSitemapParseFailed                 = "GAP_SITEMAP_PARSE_FAILED"
+	GapOrphanSitemapEntry                 = "GAP_ORPHAN_SITEMAP_ENTRY"
+	GapInvalidSitemapURLCorrelation       = "GAP_INVALID_SITEMAP_URL_CORRELATION"
+	GapSitemapMetadataInconsistent        = "GAP_SITEMAP_METADATA_INCONSISTENT"
 )
 
 // Standard structured data block parse statuses.
@@ -96,6 +104,8 @@ type BuildResult struct {
 	CanonicalObservations       []audit.CanonicalObservation
 	LinkObservations            []audit.LinkObservation
 	StructuredDataBlocks        []audit.StructuredDataBlock
+	SitemapObservations        []audit.SitemapObservation
+	SitemapEntries             []audit.SitemapEntry
 	EvidenceSnapshot            *audit.EvidenceSnapshot
 	EvidenceGaps                []EvidenceGap
 }

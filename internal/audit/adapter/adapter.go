@@ -16,6 +16,35 @@ import (
 	"github.com/truthrive/technical-seo-audit/internal/sitecrawl"
 )
 
+// rawPageRecord represents a page row loaded from sitecrawl_pages.
+type rawPageRecord struct {
+	urlID        int
+	url          string
+	dataJSON     string
+	kind         string
+	isInternal   int
+	depth        int
+	discoveredBy string
+	status       int
+	contentType  string
+	sizeBytes    int64
+	responseMs   int
+	redirectTo   string
+	redirectHops int
+	errorType    string
+	title        string
+	metaDesc     string
+	h1           string
+	lang         string
+	canonical    string
+	metaRobots   string
+	xRobots      string
+	rendered     int
+	crawledAt    string
+	robotsState  string
+	page         sitecrawl.Page
+}
+
 // Build processes a completed SiteCrawl run from SQLite and constructs the
 // normalized audit evidence and a frozen EvidenceSnapshot.
 func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, error) {
@@ -126,33 +155,6 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 	sort.Ints(urlIDs)
 
 	// 4. Load page rows
-	type rawPageRecord struct {
-		urlID        int
-		url          string
-		dataJSON     string
-		kind         string
-		isInternal   int
-		depth        int
-		discoveredBy string
-		status       int
-		contentType  string
-		sizeBytes    int64
-		responseMs   int
-		redirectTo   string
-		redirectHops int
-		errorType    string
-		title        string
-		metaDesc     string
-		h1           string
-		lang         string
-		canonical    string
-		metaRobots   string
-		xRobots      string
-		rendered     int
-		crawledAt    string
-		robotsState  string
-		page         sitecrawl.Page
-	}
 
 	pageRows, err := tx.QueryContext(ctx,
 		`SELECT url_id, url, data, kind, is_internal, depth, discovered_by,
@@ -334,6 +336,12 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		return nil, fmt.Errorf("audit adapter: read links: %w", err)
 	}
 
+	// 5b. Load sitemap raw evidence within read transaction
+	sitemapRaw, err := loadSitemapRawEvidence(ctx, tx, req.CrawlRunID)
+	if err != nil {
+		return nil, fmt.Errorf("audit adapter: load sitemap evidence: %w", err)
+	}
+
 	// Commit read transaction after all source records are safely read
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("audit adapter: commit read tx: %w", err)
@@ -345,7 +353,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		AuditRunID:               req.AuditRunID,
 		CreatedAt:                time.Now().UTC(),
 		SnapshotStatus:           audit.SnapshotBuilding,
-		NormalizationVersion:     "v1.8.0",
+		NormalizationVersion:     "v1.9.0",
 		CrawlComplete:            crawlComplete,
 		SitemapDiscoveryComplete: false,
 		RenderSelectionComplete:  false,
@@ -1377,6 +1385,14 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		})
 	}
 
+	// 10c. Normalize sitemap evidence
+	smObs, smEntries, smNormObs, smGaps, sitemapDiscoveryComplete := buildSitemapEvidence(
+		req, sitemapRaw, urlsByID, urlIDs, pagesByURLID, runStartedAt, nextObsID,
+	)
+	snapshot.SitemapDiscoveryComplete = sitemapDiscoveryComplete
+	normalizedObservations = append(normalizedObservations, smNormObs...)
+	evidenceGaps = append(evidenceGaps, smGaps...)
+
 	// 11. Append conditional and global capability-level evidence gaps
 	if len(canonicalObservations) > 0 {
 		evidenceGaps = append(evidenceGaps, EvidenceGap{
@@ -1451,12 +1467,6 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			SourceComponent: "sitecrawl_pages",
 		},
 		EvidenceGap{
-			GapCode:         GapSitemapDocumentUnavailable,
-			Field:           "sitemap_observation",
-			Reason:          "SiteCrawl consumes sitemaps during frontier scheduling but does not persist formal SitemapObservation or SitemapEntry entities.",
-			SourceComponent: "sitecrawl",
-		},
-		EvidenceGap{
 			GapCode:         GapRDFaAcquisitionUnavailable,
 			Field:           "rdfa_observation",
 			Reason:          "SiteCrawl does not acquire RDFa structured data attributes (typeof, property, vocab, resource).",
@@ -1507,6 +1517,8 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		CanonicalObservations:       canonicalObservations,
 		LinkObservations:            linkObservations,
 		StructuredDataBlocks:        structuredDataBlocks,
+		SitemapObservations:        smObs,
+		SitemapEntries:             smEntries,
 		EvidenceSnapshot:            snapshot,
 		EvidenceGaps:                evidenceGaps,
 	}, nil

@@ -1233,8 +1233,8 @@ func TestAdapter_StructuredData_EvidenceIntegrity(t *testing.T) {
 		if res1.EvidenceSnapshot.FrozenAt == nil {
 			t.Errorf("expected non-nil FrozenAt")
 		}
-		if res1.EvidenceSnapshot.NormalizationVersion != "v1.8.0" {
-			t.Errorf("expected NormalizationVersion v1.8.0, got %s", res1.EvidenceSnapshot.NormalizationVersion)
+		if res1.EvidenceSnapshot.NormalizationVersion != "v1.9.0" {
+			t.Errorf("expected NormalizationVersion v1.9.0, got %s", res1.EvidenceSnapshot.NormalizationVersion)
 		}
 
 		// Verify index construction succeeds without any error
