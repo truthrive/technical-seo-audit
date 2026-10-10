@@ -38,6 +38,11 @@ const (
 	GapRobotsDecisionUnavailable          = "GAP_ROBOTS_DECISION_UNAVAILABLE"
 	GapSitemapDocumentUnavailable         = "GAP_SITEMAP_DOCUMENT_UNAVAILABLE"
 	GapStructuredDataStatusUnavailable    = "GAP_STRUCTURED_DATA_STATUS_UNAVAILABLE"
+	GapMicrodataRawMarkupUnavailable      = "GAP_MICRODATA_RAW_MARKUP_UNAVAILABLE"
+	GapRDFaAcquisitionUnavailable         = "GAP_RDFA_ACQUISITION_UNAVAILABLE"
+	GapStructuredDataAbsenceUnprovable    = "GAP_STRUCTURED_DATA_ABSENCE_UNPROVABLE"
+	GapJSONLDExtractionCapped             = "GAP_JSONLD_EXTRACTION_CAPPED"
+	GapMicrodataExtractionCapped          = "GAP_MICRODATA_EXTRACTION_CAPPED"
 	GapRenderComparisonUnavailable        = "GAP_RENDER_COMPARISON_UNAVAILABLE"
 	GapProbeObservationUnavailable        = "GAP_PROBE_OBSERVATION_UNAVAILABLE"
 	GapProfileComparisonUnavailable       = "GAP_PROFILE_COMPARISON_UNAVAILABLE"
@@ -50,6 +55,15 @@ const (
 	GapDirectiveScopeAmbiguous            = "GAP_DIRECTIVE_SCOPE_AMBIGUOUS"
 	GapRedirectChainInconsistent          = "GAP_REDIRECT_CHAIN_INCONSISTENT"
 	GapUnresolvedLinkSourceUnavailable    = "GAP_UNRESOLVED_LINK_SOURCE_UNAVAILABLE"
+)
+
+// Standard structured data block parse statuses.
+const (
+	ParseStatusSuccess            = "PARSE_SUCCESS"
+	ParseStatusError              = "PARSE_ERROR"
+	ParseStatusEmptyInput         = "EMPTY_INPUT"
+	ParseStatusPartialAcquisition = "PARTIAL_ACQUISITION"
+	ParseStatusParserUnavailable  = "PARSER_UNAVAILABLE"
 )
 
 // EvidenceGap records an implementation-level diagnostic stating that the
@@ -81,6 +95,7 @@ type BuildResult struct {
 	RobotsDirectiveObservations []audit.RobotsDirectiveObservation
 	CanonicalObservations       []audit.CanonicalObservation
 	LinkObservations            []audit.LinkObservation
+	StructuredDataBlocks        []audit.StructuredDataBlock
 	EvidenceSnapshot            *audit.EvidenceSnapshot
 	EvidenceGaps                []EvidenceGap
 }

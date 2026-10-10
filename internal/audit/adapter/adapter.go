@@ -345,7 +345,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		AuditRunID:               req.AuditRunID,
 		CreatedAt:                time.Now().UTC(),
 		SnapshotStatus:           audit.SnapshotBuilding,
-		NormalizationVersion:     "v1.7.0",
+		NormalizationVersion:     "v1.8.0",
 		CrawlComplete:            crawlComplete,
 		SitemapDiscoveryComplete: false,
 		RenderSelectionComplete:  false,
@@ -506,6 +506,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		htmlObservations            []audit.HtmlObservation
 		robotsDirectiveObservations []audit.RobotsDirectiveObservation
 		canonicalObservations       []audit.CanonicalObservation
+		structuredDataBlocks        []audit.StructuredDataBlock
 		normalizedObservations      []audit.NormalizedObservation
 		obsSeq                      int
 	)
@@ -1217,6 +1218,14 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				}
 			}
 		}
+
+		// 9g. Structured data blocks and normalized observations
+		sdBlocks, sdObs, sdGaps := buildStructuredDataEvidence(
+			req, pr.page, urlID, urlIDStr, pr.url, obsTime, pageSrcRef, nextObsID,
+		)
+		structuredDataBlocks = append(structuredDataBlocks, sdBlocks...)
+		normalizedObservations = append(normalizedObservations, sdObs...)
+		evidenceGaps = append(evidenceGaps, sdGaps...)
 	}
 
 	// 10. Add normalized observations for links
@@ -1448,10 +1457,22 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			SourceComponent: "sitecrawl",
 		},
 		EvidenceGap{
-			GapCode:         GapStructuredDataStatusUnavailable,
-			Field:           "structured_data_block",
-			Reason:          "SiteCrawl stores JSONLD and SchemaOrg JSON blobs without formal V1 parse-status evaluation contracts.",
+			GapCode:         GapRDFaAcquisitionUnavailable,
+			Field:           "rdfa_observation",
+			Reason:          "SiteCrawl does not acquire RDFa structured data attributes (typeof, property, vocab, resource).",
+			SourceComponent: "sitecrawl",
+		},
+		EvidenceGap{
+			GapCode:         GapMicrodataRawMarkupUnavailable,
+			Field:           "microdata_raw_markup",
+			Reason:          "SiteCrawl stores simplified SchemaOrg structures but does not preserve original raw Microdata HTML markup or attribute tokens.",
 			SourceComponent: "sitecrawl_pages",
+		},
+		EvidenceGap{
+			GapCode:         GapStructuredDataAbsenceUnprovable,
+			Field:           "structured_data_absence",
+			Reason:          "Absence of observed JSON-LD and Microdata does not prove complete structured-data absence due to unsupported RDFa and format coverage limitations.",
+			SourceComponent: "sitecrawl",
 		},
 		EvidenceGap{
 			GapCode:         GapRenderComparisonUnavailable,
@@ -1485,6 +1506,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		RobotsDirectiveObservations: robotsDirectiveObservations,
 		CanonicalObservations:       canonicalObservations,
 		LinkObservations:            linkObservations,
+		StructuredDataBlocks:        structuredDataBlocks,
 		EvidenceSnapshot:            snapshot,
 		EvidenceGaps:                evidenceGaps,
 	}, nil
