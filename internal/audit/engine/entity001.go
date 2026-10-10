@@ -117,19 +117,10 @@ func evaluateENTITY001(
 			continue
 		}
 
-		// Ensure url_subject_ref resolves to a real SubjectURL in the frozen snapshot
-		parentURLRefs := idx.SubjectRefs(audit.SubjectURL)
-		foundParent := false
-		for _, ref := range parentURLRefs {
-			if ref == urlSubjRefVal {
-				foundParent = true
-				break
-			}
-		}
-		if !foundParent {
-			summary := fmt.Sprintf("Referenced containing url_subject_ref %q is not found in the frozen snapshot.", urlSubjRefVal)
+		// Validate url_subject_ref structure and verify it resolves to a real SubjectURL in the frozen snapshot
+		if validRef, refSummary := validateBlockURLSubjectRef(idx, snapshot, urlSubjRefVal); !validRef {
 			refs := buildBlockContextRefs()
-			results = append(results, makeBlockResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
+			results = append(results, makeBlockResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, refSummary, expectedSummary, evalTime, refs))
 			continue
 		}
 
@@ -253,7 +244,72 @@ func evaluateENTITY001(
 				continue
 			}
 
+			rawEmpty := isRawJSONLDEmpty(rawVal)
+
+			if rawEmpty {
+				switch statusVal {
+				case parseStatusSuccess:
+					summary := "JSON-LD block has PARSE_SUCCESS status but contains empty or whitespace-only raw content."
+					refs := buildBlockContextRefs()
+					refs = append(refs, buildEvidenceRefs(ruleResultID, parentURLIdentObs, "url", audit.EvidenceRoleContext)...)
+					refs = append(refs, buildEvidenceRefs(ruleResultID, matchingBlockRefObs, "structured_block_ref", audit.EvidenceRoleContext)...)
+					results = append(results, makeBlockResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
+					continue
+
+				case parseStatusError:
+					summary := "JSON-LD block has PARSE_ERROR status but contains empty or whitespace-only raw content."
+					refs := buildBlockContextRefs()
+					refs = append(refs, buildEvidenceRefs(ruleResultID, parentURLIdentObs, "url", audit.EvidenceRoleContext)...)
+					refs = append(refs, buildEvidenceRefs(ruleResultID, matchingBlockRefObs, "structured_block_ref", audit.EvidenceRoleContext)...)
+					results = append(results, makeBlockResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
+					continue
+
+				case parseStatusEmptyInput:
+					var refs []audit.RuleEvidenceRef
+					refs = append(refs, buildEvidenceRefs(ruleResultID, parseStatusObs, "structured_parse_status", audit.EvidenceRolePrimary)...)
+					refs = append(refs, buildEvidenceRefs(ruleResultID, formatObs, "structured_format", audit.EvidenceRolePrimary)...)
+					if len(parseErrorObs) > 0 {
+						refs = append(refs, buildEvidenceRefs(ruleResultID, parseErrorObs, "structured_parse_error", audit.EvidenceRolePrimary)...)
+					}
+					refs = append(refs, buildEvidenceRefs(ruleResultID, blockIDObs, "structured_block_id", audit.EvidenceRoleContext)...)
+					refs = append(refs, buildEvidenceRefs(ruleResultID, urlObs, "url", audit.EvidenceRoleContext)...)
+					refs = append(refs, buildEvidenceRefs(ruleResultID, urlSubjRefObs, "url_subject_ref", audit.EvidenceRoleContext)...)
+					refs = append(refs, buildEvidenceRefs(ruleResultID, rawObs, "structured_raw", audit.EvidenceRoleContext)...)
+					refs = append(refs, buildEvidenceRefs(ruleResultID, parentURLIdentObs, "url", audit.EvidenceRoleContext)...)
+					refs = append(refs, buildEvidenceRefs(ruleResultID, matchingBlockRefObs, "structured_block_ref", audit.EvidenceRoleContext)...)
+
+					summary := "Observed JSON-LD block is empty or contains only whitespace."
+					results = append(results, makeBlockResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusFail, summary, expectedSummary, evalTime, refs))
+					continue
+
+				case parseStatusParserUnavailable:
+					summary := "JSON-LD parser execution was unavailable or indeterminate."
+					refs := buildBlockContextRefs()
+					refs = append(refs, buildEvidenceRefs(ruleResultID, parentURLIdentObs, "url", audit.EvidenceRoleContext)...)
+					refs = append(refs, buildEvidenceRefs(ruleResultID, matchingBlockRefObs, "structured_block_ref", audit.EvidenceRoleContext)...)
+					results = append(results, makeBlockResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
+					continue
+
+				default:
+					summary := fmt.Sprintf("Unsupported structured data parse status vocabulary: %q.", statusVal)
+					refs := buildBlockContextRefs()
+					refs = append(refs, buildEvidenceRefs(ruleResultID, parentURLIdentObs, "url", audit.EvidenceRoleContext)...)
+					refs = append(refs, buildEvidenceRefs(ruleResultID, matchingBlockRefObs, "structured_block_ref", audit.EvidenceRoleContext)...)
+					results = append(results, makeBlockResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
+					continue
+				}
+			}
+
+			// Non-empty raw content
 			switch statusVal {
+			case parseStatusEmptyInput:
+				summary := "JSON-LD block has EMPTY_INPUT status but contains non-empty raw content."
+				refs := buildBlockContextRefs()
+				refs = append(refs, buildEvidenceRefs(ruleResultID, parentURLIdentObs, "url", audit.EvidenceRoleContext)...)
+				refs = append(refs, buildEvidenceRefs(ruleResultID, matchingBlockRefObs, "structured_block_ref", audit.EvidenceRoleContext)...)
+				results = append(results, makeBlockResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
+				continue
+
 			case parseStatusSuccess:
 				if len(parseErrorObs) > 0 {
 					summary := "JSON-LD block has PARSE_SUCCESS status but contains contradictory structured_parse_error evidence."
@@ -307,32 +363,6 @@ func evaluateENTITY001(
 				refs = append(refs, buildEvidenceRefs(ruleResultID, matchingBlockRefObs, "structured_block_ref", audit.EvidenceRoleContext)...)
 
 				summary := fmt.Sprintf("Observed JSON-LD block failed deterministic JSON syntax parsing: %s", errVal)
-				results = append(results, makeBlockResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusFail, summary, expectedSummary, evalTime, refs))
-
-			case parseStatusEmptyInput:
-				if strings.TrimSpace(rawVal) != "" {
-					summary := "JSON-LD block marked EMPTY_INPUT contains non-empty raw content."
-					refs := buildBlockContextRefs()
-					refs = append(refs, buildEvidenceRefs(ruleResultID, parentURLIdentObs, "url", audit.EvidenceRoleContext)...)
-					refs = append(refs, buildEvidenceRefs(ruleResultID, matchingBlockRefObs, "structured_block_ref", audit.EvidenceRoleContext)...)
-					results = append(results, makeBlockResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
-					continue
-				}
-
-				var refs []audit.RuleEvidenceRef
-				refs = append(refs, buildEvidenceRefs(ruleResultID, parseStatusObs, "structured_parse_status", audit.EvidenceRolePrimary)...)
-				refs = append(refs, buildEvidenceRefs(ruleResultID, formatObs, "structured_format", audit.EvidenceRolePrimary)...)
-				if len(parseErrorObs) > 0 {
-					refs = append(refs, buildEvidenceRefs(ruleResultID, parseErrorObs, "structured_parse_error", audit.EvidenceRolePrimary)...)
-				}
-				refs = append(refs, buildEvidenceRefs(ruleResultID, blockIDObs, "structured_block_id", audit.EvidenceRoleContext)...)
-				refs = append(refs, buildEvidenceRefs(ruleResultID, urlObs, "url", audit.EvidenceRoleContext)...)
-				refs = append(refs, buildEvidenceRefs(ruleResultID, urlSubjRefObs, "url_subject_ref", audit.EvidenceRoleContext)...)
-				refs = append(refs, buildEvidenceRefs(ruleResultID, rawObs, "structured_raw", audit.EvidenceRoleContext)...)
-				refs = append(refs, buildEvidenceRefs(ruleResultID, parentURLIdentObs, "url", audit.EvidenceRoleContext)...)
-				refs = append(refs, buildEvidenceRefs(ruleResultID, matchingBlockRefObs, "structured_block_ref", audit.EvidenceRoleContext)...)
-
-				summary := "Observed JSON-LD block is empty or contains only whitespace."
 				results = append(results, makeBlockResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusFail, summary, expectedSummary, evalTime, refs))
 
 			case parseStatusParserUnavailable:
@@ -437,4 +467,55 @@ func makeBlockResult(
 		EvaluatedAt:     evalTime,
 		EvidenceRefs:    dedupeAndSortEvidenceRefs(evidenceRefs),
 	}
+}
+
+// isRawJSONLDEmpty determines if raw JSON-LD text is empty or whitespace-only,
+// matching the V1.7a parser normalization:
+// 1. Trim surrounding whitespace.
+// 2. Remove optional leading Unicode BOM (\ufeff).
+// 3. Trim whitespace again.
+// 4. Check if empty.
+func isRawJSONLDEmpty(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	trimmed = strings.TrimPrefix(trimmed, "\ufeff")
+	trimmed = strings.TrimSpace(trimmed)
+	return trimmed == ""
+}
+
+// validateBlockURLSubjectRef verifies that a url_subject_ref:
+// 1. Follows the url:<audit_run_id>:<url_id> format.
+// 2. Has a non-empty, non-whitespace url_id component.
+// 3. Belongs strictly to the current snapshot.AuditRunID.
+// 4. Resolves to a real SubjectURL existing in the frozen snapshot.
+func validateBlockURLSubjectRef(
+	idx *EvidenceIndex,
+	snapshot *audit.EvidenceSnapshot,
+	refVal string,
+) (valid bool, summary string) {
+	if !strings.HasPrefix(refVal, "url:") {
+		return false, fmt.Sprintf("url_subject_ref %q has malformed URL subject prefix; expected 'url:<audit_run_id>:<url_id>'.", refVal)
+	}
+
+	expectedPrefix := fmt.Sprintf("url:%s:", snapshot.AuditRunID)
+	if refVal == fmt.Sprintf("url:%s", snapshot.AuditRunID) || refVal == expectedPrefix || (strings.HasPrefix(refVal, expectedPrefix) && strings.TrimSpace(strings.TrimPrefix(refVal, expectedPrefix)) == "") {
+		return false, fmt.Sprintf("url_subject_ref %q has empty or missing URL ID component; expected 'url:<audit_run_id>:<url_id>'.", refVal)
+	}
+
+	if !strings.HasPrefix(refVal, expectedPrefix) {
+		return false, fmt.Sprintf("url_subject_ref %q does not match current audit run %q.", refVal, snapshot.AuditRunID)
+	}
+
+	parentURLRefs := idx.SubjectRefs(audit.SubjectURL)
+	foundParent := false
+	for _, ref := range parentURLRefs {
+		if ref == refVal {
+			foundParent = true
+			break
+		}
+	}
+	if !foundParent {
+		return false, fmt.Sprintf("url_subject_ref %q has valid audit-run prefix but references nonexistent SubjectURL in frozen snapshot.", refVal)
+	}
+
+	return true, ""
 }

@@ -1289,3 +1289,298 @@ func TestEngine_Entity001_Regression(t *testing.T) {
 		t.Errorf("AR-ENTITY-001 not implemented in engine")
 	}
 }
+
+// ============================================================================
+// V1.7b Correction Tests (Section 7.A & 7.B)
+// ============================================================================
+
+func TestEngine_Entity001_Correction_RawStatusConsistency(t *testing.T) {
+	eng := newTestEngine(t)
+	auditRunID := audit.AuditRunID("audit:ent:rawstatus")
+	snapID := audit.SnapshotID("snap:ent:rawstatus")
+
+	tests := []struct {
+		name           string
+		raw            *string
+		raws           []string
+		parseStatus    string
+		parseError     string
+		expectedStatus audit.RuleResultStatus
+	}{
+		{
+			name:           "Valid JSON + PARSE_SUCCESS -> PASS",
+			raw:            strPtr(`{"@type": "Organization", "name": "Acme"}`),
+			parseStatus:    "PARSE_SUCCESS",
+			expectedStatus: audit.StatusPass,
+		},
+		{
+			name:           "Malformed JSON + PARSE_ERROR + error -> FAIL",
+			raw:            strPtr(`{"unquoted": value}`),
+			parseStatus:    "PARSE_ERROR",
+			parseError:     "invalid character 'v' looking for beginning of value",
+			expectedStatus: audit.StatusFail,
+		},
+		{
+			name:           "Empty string + EMPTY_INPUT -> FAIL",
+			raw:            strPtr(""),
+			parseStatus:    "EMPTY_INPUT",
+			parseError:     "empty or whitespace-only structured data block",
+			expectedStatus: audit.StatusFail,
+		},
+		{
+			name:           "Whitespace-only + EMPTY_INPUT -> FAIL",
+			raw:            strPtr("   \n\t  "),
+			parseStatus:    "EMPTY_INPUT",
+			parseError:     "empty or whitespace-only structured data block",
+			expectedStatus: audit.StatusFail,
+		},
+		{
+			name:           "BOM-only + EMPTY_INPUT -> FAIL",
+			raw:            strPtr("\ufeff"),
+			parseStatus:    "EMPTY_INPUT",
+			parseError:     "empty or whitespace-only structured data block",
+			expectedStatus: audit.StatusFail,
+		},
+		{
+			name:           "BOM + whitespace + EMPTY_INPUT -> FAIL",
+			raw:            strPtr("\ufeff   \n\t  "),
+			parseStatus:    "EMPTY_INPUT",
+			parseError:     "empty or whitespace-only structured data block",
+			expectedStatus: audit.StatusFail,
+		},
+		{
+			name:           "Empty string + PARSE_SUCCESS -> UNKNOWN",
+			raw:            strPtr(""),
+			parseStatus:    "PARSE_SUCCESS",
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name:           "Whitespace-only + PARSE_SUCCESS -> UNKNOWN",
+			raw:            strPtr("   \t\n  "),
+			parseStatus:    "PARSE_SUCCESS",
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name:           "BOM + whitespace + PARSE_SUCCESS -> UNKNOWN",
+			raw:            strPtr("\ufeff  \n  "),
+			parseStatus:    "PARSE_SUCCESS",
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name:           "Empty string + PARSE_ERROR + error -> UNKNOWN",
+			raw:            strPtr(""),
+			parseStatus:    "PARSE_ERROR",
+			parseError:     "unexpected EOF",
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name:           "Whitespace-only + PARSE_ERROR + error -> UNKNOWN",
+			raw:            strPtr("    "),
+			parseStatus:    "PARSE_ERROR",
+			parseError:     "unexpected EOF",
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name:           "BOM + whitespace + PARSE_ERROR + error -> UNKNOWN",
+			raw:            strPtr("\ufeff  "),
+			parseStatus:    "PARSE_ERROR",
+			parseError:     "unexpected EOF",
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name:           "Non-empty raw + EMPTY_INPUT -> UNKNOWN",
+			raw:            strPtr(`{"@type": "Thing"}`),
+			parseStatus:    "EMPTY_INPUT",
+			parseError:     "empty or whitespace-only structured data block",
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name:           "Missing raw observation -> UNKNOWN",
+			raw:            nil,
+			parseStatus:    "PARSE_SUCCESS",
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name:           "Conflicting raw observations -> UNKNOWN",
+			raws:           []string{`{"a": 1}`, `{"b": 2}`},
+			parseStatus:    "PARSE_SUCCESS",
+			expectedStatus: audit.StatusUnknown,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fix := blockFixture{
+				subjectRef:  "sdb:1:jsonld:0",
+				raw:         tc.raw,
+				raws:        tc.raws,
+				parseStatus: tc.parseStatus,
+				parseError:  tc.parseError,
+			}
+			snap := newStructuredBlockSnapshot([]blockFixture{fix}, auditRunID, snapID)
+			results, err := eng.EvaluateRule(context.Background(), snap, "AR-ENTITY-001")
+			if err != nil {
+				t.Fatalf("EvaluateRule failed: %v", err)
+			}
+			if len(results) != 1 {
+				t.Fatalf("expected 1 result, got %d", len(results))
+			}
+			r := results[0]
+			if r.Status != tc.expectedStatus {
+				t.Errorf("expected status %s, got %s (observed: %s)", tc.expectedStatus, r.Status, r.ObservedSummary)
+			}
+			if tc.expectedStatus == audit.StatusUnknown {
+				if r.Status == audit.StatusPass || r.Status == audit.StatusFail {
+					t.Errorf("contradictory raw/status must not produce PASS or FAIL; got %s", r.Status)
+				}
+			}
+		})
+	}
+}
+
+func TestEngine_Entity001_Correction_URLReferenceIntegrity(t *testing.T) {
+	eng := newTestEngine(t)
+	auditRunID := audit.AuditRunID("audit:ent:urlref")
+	snapID := audit.SnapshotID("snap:ent:urlref")
+
+	validParentSubj := fmt.Sprintf("url:%s:1", auditRunID)
+
+	tests := []struct {
+		name           string
+		fixture        blockFixture
+		expectedStatus audit.RuleResultStatus
+	}{
+		{
+			name: "Valid URL reference matching current audit run -> PASS",
+			fixture: blockFixture{
+				subjectRef:       "sdb:1:jsonld:0",
+				urlSubjRef:       validParentSubj,
+				parentURLSubjRef: validParentSubj,
+				raw:              strPtr(`{"@type": "Thing"}`),
+				parseStatus:      "PARSE_SUCCESS",
+			},
+			expectedStatus: audit.StatusPass,
+		},
+		{
+			name: "Reference from a different audit run -> UNKNOWN",
+			fixture: blockFixture{
+				subjectRef:       "sdb:1:jsonld:0",
+				urlSubjRef:       "url:foreign_run_123:1",
+				parentURLSubjRef: validParentSubj,
+				raw:              strPtr(`{"@type": "Thing"}`),
+				parseStatus:      "PARSE_SUCCESS",
+			},
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name: "Malformed reference prefix -> UNKNOWN",
+			fixture: blockFixture{
+				subjectRef:       "sdb:1:jsonld:0",
+				urlSubjRef:       "noturl:prefix:1",
+				parentURLSubjRef: validParentSubj,
+				raw:              strPtr(`{"@type": "Thing"}`),
+				parseStatus:      "PARSE_SUCCESS",
+			},
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name: "Missing URL ID component (empty trailing) -> UNKNOWN",
+			fixture: blockFixture{
+				subjectRef:       "sdb:1:jsonld:0",
+				urlSubjRef:       fmt.Sprintf("url:%s:", auditRunID),
+				parentURLSubjRef: validParentSubj,
+				raw:              strPtr(`{"@type": "Thing"}`),
+				parseStatus:      "PARSE_SUCCESS",
+			},
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name: "Missing URL ID component (no trailing colon) -> UNKNOWN",
+			fixture: blockFixture{
+				subjectRef:       "sdb:1:jsonld:0",
+				urlSubjRef:       fmt.Sprintf("url:%s", auditRunID),
+				parentURLSubjRef: validParentSubj,
+				raw:              strPtr(`{"@type": "Thing"}`),
+				parseStatus:      "PARSE_SUCCESS",
+			},
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name: "Missing URL ID component (whitespace only) -> UNKNOWN",
+			fixture: blockFixture{
+				subjectRef:       "sdb:1:jsonld:0",
+				urlSubjRef:       fmt.Sprintf("url:%s:   ", auditRunID),
+				parentURLSubjRef: validParentSubj,
+				raw:              strPtr(`{"@type": "Thing"}`),
+				parseStatus:      "PARSE_SUCCESS",
+			},
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name: "Correct prefix but dangling URL subject -> UNKNOWN",
+			fixture: blockFixture{
+				subjectRef:        "sdb:1:jsonld:0",
+				urlSubjRef:        fmt.Sprintf("url:%s:999", auditRunID),
+				parentURLSubjRef:  validParentSubj,
+				raw:               strPtr(`{"@type": "Thing"}`),
+				parseStatus:       "PARSE_SUCCESS",
+				omitParentSubject: true,
+			},
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name: "Referenced URL subject missing url_identity -> UNKNOWN",
+			fixture: blockFixture{
+				subjectRef:         "sdb:1:jsonld:0",
+				urlSubjRef:         validParentSubj,
+				parentURLSubjRef:   validParentSubj,
+				raw:                strPtr(`{"@type": "Thing"}`),
+				parseStatus:        "PARSE_SUCCESS",
+				omitParentURLIdent: true,
+			},
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name: "URL identity mismatch -> UNKNOWN",
+			fixture: blockFixture{
+				subjectRef:       "sdb:1:jsonld:0",
+				url:              "https://example.com/one",
+				urlSubjRef:       validParentSubj,
+				parentURLSubjRef: validParentSubj,
+				parentURLIdent:   "https://example.com/different",
+				raw:              strPtr(`{"@type": "Thing"}`),
+				parseStatus:      "PARSE_SUCCESS",
+			},
+			expectedStatus: audit.StatusUnknown,
+		},
+		{
+			name: "Missing reverse structured_block_ref on containing URL -> UNKNOWN",
+			fixture: blockFixture{
+				subjectRef:         "sdb:1:jsonld:0",
+				urlSubjRef:         validParentSubj,
+				parentURLSubjRef:   validParentSubj,
+				raw:                strPtr(`{"@type": "Thing"}`),
+				parseStatus:        "PARSE_SUCCESS",
+				omitParentBlockRef: true,
+			},
+			expectedStatus: audit.StatusUnknown,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := newStructuredBlockSnapshot([]blockFixture{tc.fixture}, auditRunID, snapID)
+			results, err := eng.EvaluateRule(context.Background(), snap, "AR-ENTITY-001")
+			if err != nil {
+				t.Fatalf("EvaluateRule failed: %v", err)
+			}
+			if len(results) != 1 {
+				t.Fatalf("expected 1 result, got %d", len(results))
+			}
+			r := results[0]
+			if r.Status != tc.expectedStatus {
+				t.Errorf("expected status %s, got %s (observed: %s)", tc.expectedStatus, r.Status, r.ObservedSummary)
+			}
+		})
+	}
+}
