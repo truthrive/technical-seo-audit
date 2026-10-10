@@ -239,6 +239,15 @@ func (c *coordinator) prepare(ctx context.Context, seeds []string) error {
 	}
 
 	if c.opts.listMode() {
+		disc := sitemapDiscoveryRecord{
+			RunID:      c.runID,
+			Status:     "NOT_ATTEMPTED",
+			StartedAt:  nowStamp(),
+			FinishedAt: nowStamp(),
+		}
+		if err := writeSitemapDiscovery(c.db, c.runID, disc); err != nil {
+			c.writeErr = err
+		}
 		for _, s := range seeds {
 			c.frontier.admit(s, 0, SourceManual, 0)
 		}
@@ -249,19 +258,36 @@ func (c *coordinator) prepare(ctx context.Context, seeds []string) error {
 		c.frontier.admit(s, 0, SourceSeed, 0)
 	}
 
-	if c.opts.DiscoverSitemaps && origin != "" {
+	if !c.opts.DiscoverSitemaps {
+		disc := sitemapDiscoveryRecord{
+			RunID:      c.runID,
+			Status:     "NOT_ATTEMPTED",
+			StartedAt:  nowStamp(),
+			FinishedAt: nowStamp(),
+		}
+		if err := writeSitemapDiscovery(c.db, c.runID, disc); err != nil {
+			c.writeErr = err
+		}
+	} else if origin != "" {
 		declared := c.robots.Sitemaps(ctx, origin)
-		entries, _ := discoverSitemaps(ctx, c.fetch.robotsClient(), c.opts.preset(), origin,
+		evidence, _, _ := discoverSitemapsDetailed(ctx, c.fetch.robotsClient(), c.opts.preset(), origin,
 			declared, c.opts.Concurrency)
-		for _, e := range entries {
+
+		for i, e := range evidence.Entries {
 			if ctx.Err() != nil {
 				break
 			}
-			if u, err := url.Parse(e.Loc); err != nil ||
-				!sameSite(c.seedHost, u.Hostname(), c.opts.crawlSubdomains()) {
+			u, err := url.Parse(e.Loc)
+			if err != nil || !sameSite(c.seedHost, u.Hostname(), c.opts.crawlSubdomains()) {
 				continue
 			}
-			c.frontier.admit(e.Loc, 0, SourceSitemap, 0)
+			id, _ := c.frontier.admit(e.Loc, 0, SourceSitemap, 0)
+			evidence.Entries[i].URLID = id
+		}
+
+		evidence.Discovery.RunID = c.runID
+		if err := writeSitemapEvidence(c.db, c.runID, evidence); err != nil {
+			c.writeErr = err
 		}
 	}
 	return nil

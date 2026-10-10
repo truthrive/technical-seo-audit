@@ -192,6 +192,66 @@ var schemaStmts = []string{
 
 	`ALTER TABLE sitecrawl_runs ADD COLUMN total INTEGER NOT NULL DEFAULT 0`,
 	`UPDATE sitecrawl_runs SET total = found`,
+
+	`CREATE TABLE IF NOT EXISTS sitecrawl_sitemaps (
+		run_id           TEXT    NOT NULL,
+		id               INTEGER NOT NULL,
+		url              TEXT    NOT NULL,
+		discovery_source TEXT    NOT NULL DEFAULT 'common_path',
+		parent_id        INTEGER NOT NULL DEFAULT 0,
+		initial_status   INTEGER NOT NULL DEFAULT 0,
+		final_status     INTEGER NOT NULL DEFAULT 0,
+		status           INTEGER NOT NULL DEFAULT 0,
+		fetch_error      TEXT    NOT NULL DEFAULT '',
+		redirect_to      TEXT    NOT NULL DEFAULT '',
+		redirect_hops    INTEGER NOT NULL DEFAULT 0,
+		fetch_complete   INTEGER NOT NULL DEFAULT 0,
+		doc_type         TEXT    NOT NULL DEFAULT 'unknown',
+		parse_status     TEXT    NOT NULL DEFAULT 'not_attempted',
+		parse_error      TEXT    NOT NULL DEFAULT '',
+		entry_count      INTEGER NOT NULL DEFAULT 0,
+		fetched_at       TEXT    NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS sitecrawl_sitemaps_url ON sitecrawl_sitemaps(run_id, url)`,
+
+	`CREATE TABLE IF NOT EXISTS sitecrawl_sitemap_entries (
+		run_id     TEXT    NOT NULL,
+		sitemap_id INTEGER NOT NULL,
+		seq        INTEGER NOT NULL,
+		url_id     INTEGER NOT NULL DEFAULT 0,
+		loc        TEXT    NOT NULL,
+		lastmod    TEXT    NOT NULL DEFAULT '',
+		changefreq TEXT    NOT NULL DEFAULT '',
+		priority   TEXT    NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, sitemap_id, seq)
+	)`,
+	`CREATE INDEX IF NOT EXISTS sitecrawl_sitemap_entries_url_id ON sitecrawl_sitemap_entries(run_id, url_id)`,
+	`CREATE INDEX IF NOT EXISTS sitecrawl_sitemap_entries_loc    ON sitecrawl_sitemap_entries(run_id, loc)`,
+
+	`CREATE TABLE IF NOT EXISTS sitecrawl_sitemap_sources (
+		run_id     TEXT    NOT NULL,
+		sitemap_id INTEGER NOT NULL,
+		source     TEXT    NOT NULL,
+		parent_id  INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (run_id, sitemap_id, source, parent_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS sitecrawl_sitemap_sources_sm ON sitecrawl_sitemap_sources(run_id, sitemap_id)`,
+
+	`CREATE TABLE IF NOT EXISTS sitecrawl_sitemap_discovery (
+		run_id         TEXT PRIMARY KEY,
+		status         TEXT NOT NULL DEFAULT 'NOT_ATTEMPTED',
+		sitemaps_found INTEGER NOT NULL DEFAULT 0,
+		entries_found  INTEGER NOT NULL DEFAULT 0,
+		depth_reached  INTEGER NOT NULL DEFAULT 0,
+		depth_capped   INTEGER NOT NULL DEFAULT 0,
+		urls_capped    INTEGER NOT NULL DEFAULT 0,
+		byte_capped    INTEGER NOT NULL DEFAULT 0,
+		stop_reason    TEXT NOT NULL DEFAULT '',
+		diagnostics    TEXT NOT NULL DEFAULT '',
+		started_at     TEXT NOT NULL DEFAULT '',
+		finished_at    TEXT NOT NULL DEFAULT ''
+	)`,
 }
 
 var ftsStmts = []string{
@@ -450,7 +510,8 @@ func runSizes(db *sql.DB) map[string]int64 {
 
 func deleteRunChunk(db *sql.DB, runID string, limit int) (bool, error) {
 	for _, table := range []string{"sitecrawl_links", "sitecrawl_issues", "sitecrawl_dupes",
-		"sitecrawl_frontier", "sitecrawl_psi_opps", "sitecrawl_psi", "sitecrawl_pages", "sitecrawl_urls"} {
+		"sitecrawl_frontier", "sitecrawl_psi_opps", "sitecrawl_psi", "sitecrawl_pages", "sitecrawl_urls",
+		"sitecrawl_sitemap_entries", "sitecrawl_sitemap_sources", "sitecrawl_sitemaps", "sitecrawl_sitemap_discovery"} {
 		res, err := db.Exec(fmt.Sprintf(
 			`DELETE FROM %s WHERE rowid IN (SELECT rowid FROM %s WHERE run_id = ? LIMIT ?)`,
 			table, table), runID, limit)

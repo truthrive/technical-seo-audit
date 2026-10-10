@@ -2,6 +2,7 @@ package sitecrawl
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 )
 
@@ -120,4 +121,208 @@ func chunked(n, size int, fn func(lo, hi int) error) error {
 		}
 	}
 	return nil
+}
+
+// sitemapRecord holds raw sitemap document evidence to persist.
+type sitemapRecord struct {
+	ID              int
+	URL             string
+	DiscoverySource string
+	ParentID        int
+	InitialStatus   int
+	FinalStatus     int
+	Status          int
+	FetchError      string
+	RedirectTo      string
+	RedirectHops    int
+	FetchComplete   bool
+	DocType         string
+	ParseStatus     string
+	ParseError      string
+	EntryCount      int
+	FetchedAt       string
+}
+
+// sitemapSourceRecord preserves multi-source and parent discovery provenance.
+type sitemapSourceRecord struct {
+	SitemapID int
+	Source    string
+	ParentID  int
+}
+
+// sitemapEntryRecord holds raw sitemap URL entry evidence.
+type sitemapEntryRecord struct {
+	SitemapID  int
+	Seq        int
+	URLID      int64
+	Loc        string
+	LastMod    string
+	ChangeFreq string
+	Priority   string
+}
+
+// sitemapDiscoveryRecord tracks run-level acquisition telemetry and limits.
+type sitemapDiscoveryRecord struct {
+	RunID         string
+	Status        string // NOT_ATTEMPTED, ATTEMPTED_INCOMPLETE, COMPLETED, FAILED, UNKNOWN
+	SitemapsFound int
+	EntriesFound  int
+	DepthReached  int
+	DepthCapped   bool
+	URLsCapped    bool
+	ByteCapped    bool
+	StopReason    string
+	Diagnostics   string
+	StartedAt     string
+	FinishedAt    string
+}
+
+// sitemapEvidence bundles complete sitemap acquisition evidence for transactional persistence.
+type sitemapEvidence struct {
+	Discovery sitemapDiscoveryRecord
+	Sitemaps  []sitemapRecord
+	Sources   []sitemapSourceRecord
+	Entries   []sitemapEntryRecord
+}
+
+// writeSitemapDiscovery stores run-level sitemap acquisition telemetry.
+func writeSitemapDiscovery(db *sql.DB, runID string, disc sitemapDiscoveryRecord) error {
+	if db == nil {
+		return nil
+	}
+	var depthCapped, urlsCapped, byteCapped int
+	if disc.DepthCapped {
+		depthCapped = 1
+	}
+	if disc.URLsCapped {
+		urlsCapped = 1
+	}
+	if disc.ByteCapped {
+		byteCapped = 1
+	}
+	_, err := db.Exec(`INSERT OR REPLACE INTO sitecrawl_sitemap_discovery(
+		run_id, status, sitemaps_found, entries_found, depth_reached,
+		depth_capped, urls_capped, byte_capped, stop_reason, diagnostics,
+		started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		runID, disc.Status, disc.SitemapsFound, disc.EntriesFound,
+		disc.DepthReached, depthCapped, urlsCapped, byteCapped,
+		disc.StopReason, disc.Diagnostics, disc.StartedAt, disc.FinishedAt)
+	return err
+}
+
+// writeSitemapEvidence writes sitemap discovery, documents, sources, and entries in an atomic transaction.
+func writeSitemapEvidence(db *sql.DB, runID string, ev sitemapEvidence) error {
+	if db == nil {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// 1. Insert sitemap discovery record
+	var depthCapped, urlsCapped, byteCapped int
+	if ev.Discovery.DepthCapped {
+		depthCapped = 1
+	}
+	if ev.Discovery.URLsCapped {
+		urlsCapped = 1
+	}
+	if ev.Discovery.ByteCapped {
+		byteCapped = 1
+	}
+	_, err = tx.Exec(`INSERT OR REPLACE INTO sitecrawl_sitemap_discovery(
+		run_id, status, sitemaps_found, entries_found, depth_reached,
+		depth_capped, urls_capped, byte_capped, stop_reason, diagnostics,
+		started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		runID, ev.Discovery.Status, ev.Discovery.SitemapsFound, ev.Discovery.EntriesFound,
+		ev.Discovery.DepthReached, depthCapped, urlsCapped, byteCapped,
+		ev.Discovery.StopReason, ev.Discovery.Diagnostics,
+		ev.Discovery.StartedAt, ev.Discovery.FinishedAt)
+	if err != nil {
+		return fmt.Errorf("sitecrawl: insert sitemap discovery: %w", err)
+	}
+
+	// 2. Insert sitemap documents in batches of 50
+	const smBatch = 50
+	for lo := 0; lo < len(ev.Sitemaps); lo += smBatch {
+		hi := lo + smBatch
+		if hi > len(ev.Sitemaps) {
+			hi = len(ev.Sitemaps)
+		}
+		var sb strings.Builder
+		args := make([]any, 0, (hi-lo)*17)
+		sb.WriteString(`INSERT OR REPLACE INTO sitecrawl_sitemaps(
+			run_id, id, url, discovery_source, parent_id, initial_status,
+			final_status, status, fetch_error, redirect_to, redirect_hops,
+			fetch_complete, doc_type, parse_status, parse_error, entry_count, fetched_at) VALUES `)
+		for i := lo; i < hi; i++ {
+			if i > lo {
+				sb.WriteByte(',')
+			}
+			sb.WriteString("(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+			sm := ev.Sitemaps[i]
+			fc := 0
+			if sm.FetchComplete {
+				fc = 1
+			}
+			args = append(args, runID, sm.ID, sm.URL, sm.DiscoverySource, sm.ParentID,
+				sm.InitialStatus, sm.FinalStatus, sm.Status, sm.FetchError, sm.RedirectTo,
+				sm.RedirectHops, fc, sm.DocType, sm.ParseStatus, sm.ParseError,
+				sm.EntryCount, sm.FetchedAt)
+		}
+		if _, err := tx.Exec(sb.String(), args...); err != nil {
+			return fmt.Errorf("sitecrawl: insert sitemaps batch: %w", err)
+		}
+	}
+
+	// 3. Insert sitemap sources in batches of 100
+	const srcBatch = 100
+	for lo := 0; lo < len(ev.Sources); lo += srcBatch {
+		hi := lo + srcBatch
+		if hi > len(ev.Sources) {
+			hi = len(ev.Sources)
+		}
+		var sb strings.Builder
+		args := make([]any, 0, (hi-lo)*4)
+		sb.WriteString(`INSERT OR IGNORE INTO sitecrawl_sitemap_sources(run_id, sitemap_id, source, parent_id) VALUES `)
+		for i := lo; i < hi; i++ {
+			if i > lo {
+				sb.WriteByte(',')
+			}
+			sb.WriteString("(?,?,?,?)")
+			s := ev.Sources[i]
+			args = append(args, runID, s.SitemapID, s.Source, s.ParentID)
+		}
+		if _, err := tx.Exec(sb.String(), args...); err != nil {
+			return fmt.Errorf("sitecrawl: insert sitemap sources batch: %w", err)
+		}
+	}
+
+	// 4. Insert sitemap entries in batches of 100
+	const entBatch = 100
+	for lo := 0; lo < len(ev.Entries); lo += entBatch {
+		hi := lo + entBatch
+		if hi > len(ev.Entries) {
+			hi = len(ev.Entries)
+		}
+		var sb strings.Builder
+		args := make([]any, 0, (hi-lo)*8)
+		sb.WriteString(`INSERT OR REPLACE INTO sitecrawl_sitemap_entries(
+			run_id, sitemap_id, seq, url_id, loc, lastmod, changefreq, priority) VALUES `)
+		for i := lo; i < hi; i++ {
+			if i > lo {
+				sb.WriteByte(',')
+			}
+			sb.WriteString("(?,?,?,?,?,?,?,?)")
+			e := ev.Entries[i]
+			args = append(args, runID, e.SitemapID, e.Seq, e.URLID, e.Loc, e.LastMod, e.ChangeFreq, e.Priority)
+		}
+		if _, err := tx.Exec(sb.String(), args...); err != nil {
+			return fmt.Errorf("sitecrawl: insert sitemap entries batch: %w", err)
+		}
+	}
+
+	return tx.Commit()
 }

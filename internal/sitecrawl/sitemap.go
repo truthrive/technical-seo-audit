@@ -1,9 +1,11 @@
 package sitecrawl
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -62,22 +64,29 @@ type sitemapDoc struct {
 	} `xml:"sitemap"`
 }
 
+// queuedSitemap tracks a sitemap URL and its discovery provenance for traversal.
+type queuedSitemap struct {
+	url      string
+	source   string
+	parentID int
+}
+
 // discoverSitemaps finds and reads every sitemap for an origin.
 //
 // Returns the entries plus the sitemap URLs that were actually read, so the UI
 // can report which files a crawl drew from.
-//
-// One level of the index tree is fetched at a time, but everything within a
-// level goes out together. Sitemaps are generated on demand by most CMSes and
-// answer slowly whatever their size — a WordPress site measured 2.5s per file,
-// so walking its 8 children one by one held the crawl in "Preparing" for 21
-// seconds before a single page was fetched. Fetched together the same 8 took
-// 6.4s, with no rate-limit response from a site that does rate-limit.
-//
-// parallel is the crawl's own thread count, capped: this runs before the crawl
-// proper, so it must not be the moment a site first sees a burst.
 func discoverSitemaps(ctx context.Context, client *http.Client, ua uaPreset, origin string,
 	declared []string, parallel int) ([]sitemapEntry, []string) {
+	_, entries, read := discoverSitemapsDetailed(ctx, client, ua, origin, declared, parallel)
+	return entries, read
+}
+
+// discoverSitemapsDetailed performs sitemap discovery while capturing complete
+// document, source provenance, entry, and limit telemetry.
+func discoverSitemapsDetailed(ctx context.Context, client *http.Client, ua uaPreset, origin string,
+	declared []string, parallel int) (sitemapEvidence, []sitemapEntry, []string) {
+
+	startedAt := nowStamp()
 
 	if parallel < 1 {
 		parallel = 1
@@ -86,27 +95,83 @@ func discoverSitemaps(ctx context.Context, client *http.Client, ua uaPreset, ori
 		parallel = sitemapMaxParallel
 	}
 
-	queue := append([]string{}, declared...)
-	for _, p := range commonSitemapPaths {
-		queue = append(queue, origin+p)
-	}
-
 	var (
+		ev      sitemapEvidence
 		entries []sitemapEntry
 		read    []string
 		seen    = map[string]bool{}
+
+		nextDocID = 1
+		docIDs    = map[string]int{}
+		getDocID  = func(u string) int {
+			if id, ok := docIDs[u]; ok {
+				return id
+			}
+			id := nextDocID
+			nextDocID++
+			docIDs[u] = id
+			return id
+		}
+
+		sources   []sitemapSourceRecord
+		seenSrc   = map[string]bool{}
+		addSource = func(sitemapID int, src string, parentID int) {
+			k := fmt.Sprintf("%d:%s:%d", sitemapID, src, parentID)
+			if !seenSrc[k] {
+				seenSrc[k] = true
+				sources = append(sources, sitemapSourceRecord{
+					SitemapID: sitemapID,
+					Source:    src,
+					ParentID:  parentID,
+				})
+			}
+		}
 	)
 
+	var queue []queuedSitemap
+
+	for _, d := range declared {
+		trimmed := strings.TrimSpace(d)
+		if trimmed != "" {
+			docID := getDocID(trimmed)
+			addSource(docID, "robots_txt", 0)
+			queue = append(queue, queuedSitemap{url: trimmed, source: "robots_txt", parentID: 0})
+		}
+	}
+	for _, p := range commonSitemapPaths {
+		u := origin + p
+		docID := getDocID(u)
+		addSource(docID, "common_path", 0)
+		queue = append(queue, queuedSitemap{url: u, source: "common_path", parentID: 0})
+	}
+
+	ev.Discovery.Status = "COMPLETED"
+	ev.Discovery.StartedAt = startedAt
+
+	var depthReached int
+
 	for depth := 0; depth <= sitemapMaxDepth; depth++ {
-		if len(queue) == 0 || len(entries) >= sitemapMaxURLs || ctx.Err() != nil {
+		depthReached = depth
+		if len(queue) == 0 {
 			break
 		}
-		// Dedupe within and across levels before spending a request on anything.
-		level := make([]string, 0, len(queue))
-		for _, u := range queue {
-			if !seen[u] {
-				seen[u] = true
-				level = append(level, u)
+		if ctx.Err() != nil {
+			ev.Discovery.Status = "ATTEMPTED_INCOMPLETE"
+			ev.Discovery.StopReason = "context_canceled"
+			break
+		}
+		if len(entries) >= sitemapMaxURLs {
+			ev.Discovery.URLsCapped = true
+			ev.Discovery.StopReason = "urls_capped"
+			break
+		}
+
+		// Dedupe within and across levels before spending a request.
+		level := make([]queuedSitemap, 0, len(queue))
+		for _, q := range queue {
+			if !seen[q.url] {
+				seen[q.url] = true
+				level = append(level, q)
 			}
 		}
 		queue = nil
@@ -114,14 +179,14 @@ func discoverSitemaps(ctx context.Context, client *http.Client, ua uaPreset, ori
 			break
 		}
 
-		// Results are collected by index, so the order of entries does not depend
-		// on which response happened to land first.
 		docs := make([]*sitemapDoc, len(level))
+		telemetries := make([]sitemapFetchTelemetry, len(level))
+
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, parallel)
-		for i, rawURL := range level {
+		for i, q := range level {
 			wg.Add(1)
-			go func(i int, rawURL string) {
+			go func(i int, q queuedSitemap) {
 				defer wg.Done()
 				select {
 				case sem <- struct{}{}:
@@ -129,84 +194,253 @@ func discoverSitemaps(ctx context.Context, client *http.Client, ua uaPreset, ori
 				case <-ctx.Done():
 					return
 				}
-				// Parses third-party XML; one malformed sitemap must cost that
-				// sitemap, not the crawl and not the app.
 				safe.Do("sitecrawl/fetchSitemap", func() {
-					if doc, ok := fetchSitemap(ctx, client, ua, rawURL); ok {
-						docs[i] = doc
-					}
+					doc, tel := fetchSitemapWithTelemetry(ctx, client, ua, q.url)
+					docs[i] = doc
+					telemetries[i] = tel
 				})
-			}(i, rawURL)
+			}(i, q)
 		}
 		wg.Wait()
 
-		for i, doc := range docs {
+		for i, q := range level {
+			doc := docs[i]
+			tel := telemetries[i]
+			docID := getDocID(q.url)
+
+			if tel.ByteCapped {
+				ev.Discovery.ByteCapped = true
+			}
+
+			smRec := sitemapRecord{
+				ID:              docID,
+				URL:             q.url,
+				DiscoverySource: q.source,
+				ParentID:        q.parentID,
+				InitialStatus:   tel.InitialStatus,
+				FinalStatus:     tel.FinalStatus,
+				Status:          tel.FinalStatus,
+				FetchError:      tel.FetchError,
+				RedirectTo:      tel.RedirectTo,
+				RedirectHops:    tel.RedirectHops,
+				FetchComplete:   tel.FetchComplete,
+				DocType:         tel.DocType,
+				ParseStatus:     tel.ParseStatus,
+				ParseError:      tel.ParseError,
+				EntryCount:      tel.EntryCount,
+				FetchedAt:       nowStamp(),
+			}
+
 			if doc == nil {
+				ev.Sitemaps = append(ev.Sitemaps, smRec)
 				continue
 			}
-			read = append(read, level[i])
-			for _, u := range doc.URLs {
+
+			read = append(read, q.url)
+
+			for seq, u := range doc.URLs {
 				loc := strings.TrimSpace(u.Loc)
-				if loc == "" || len(entries) >= sitemapMaxURLs {
+				if loc == "" {
 					continue
 				}
-				entries = append(entries, sitemapEntry{
-					Loc: loc, LastMod: strings.TrimSpace(u.LastMod),
-					ChangeFreq: strings.TrimSpace(u.ChangeFreq), Priority: strings.TrimSpace(u.Priority),
-				})
-			}
-			for _, s := range doc.Sitemaps {
-				if loc := strings.TrimSpace(s.Loc); loc != "" {
-					queue = append(queue, loc)
+				eRec := sitemapEntryRecord{
+					SitemapID:  docID,
+					Seq:        seq,
+					URLID:      0,
+					Loc:        loc,
+					LastMod:    strings.TrimSpace(u.LastMod),
+					ChangeFreq: strings.TrimSpace(u.ChangeFreq),
+					Priority:   strings.TrimSpace(u.Priority),
+				}
+				ev.Entries = append(ev.Entries, eRec)
+
+				if len(entries) < sitemapMaxURLs {
+					entries = append(entries, sitemapEntry{
+						Loc:        loc,
+						LastMod:    eRec.LastMod,
+						ChangeFreq: eRec.ChangeFreq,
+						Priority:   eRec.Priority,
+					})
+				} else {
+					ev.Discovery.URLsCapped = true
+					ev.Discovery.StopReason = "urls_capped"
 				}
 			}
+
+			for _, s := range doc.Sitemaps {
+				loc := strings.TrimSpace(s.Loc)
+				if loc != "" {
+					childID := getDocID(loc)
+					addSource(childID, "sitemap_index", docID)
+					if depth < sitemapMaxDepth {
+						queue = append(queue, queuedSitemap{
+							url:      loc,
+							source:   "sitemap_index",
+							parentID: docID,
+						})
+					} else {
+						ev.Discovery.DepthCapped = true
+						ev.Discovery.StopReason = "depth_capped"
+					}
+				}
+			}
+
+			ev.Sitemaps = append(ev.Sitemaps, smRec)
 		}
 	}
-	return entries, read
+
+	ev.Discovery.DepthReached = depthReached
+	ev.Discovery.SitemapsFound = len(ev.Sitemaps)
+	ev.Discovery.EntriesFound = len(ev.Entries)
+	ev.Discovery.FinishedAt = nowStamp()
+	ev.Sources = sources
+
+	if ctx.Err() != nil && ev.Discovery.Status == "COMPLETED" {
+		ev.Discovery.Status = "ATTEMPTED_INCOMPLETE"
+		ev.Discovery.StopReason = "context_canceled"
+	}
+
+	return ev, entries, read
 }
 
+// sitemapFetchTelemetry captures raw HTTP and parse diagnostics for a sitemap document.
+type sitemapFetchTelemetry struct {
+	InitialStatus int
+	FinalStatus   int
+	RedirectTo    string
+	RedirectHops  int
+	FetchComplete bool
+	FetchError    string
+	DocType       string
+	ParseStatus   string
+	ParseError    string
+	ByteCapped    bool
+	EntryCount    int
+}
+
+// fetchSitemap fetches and decodes a sitemap document, maintaining backward compatibility.
 func fetchSitemap(ctx context.Context, client *http.Client, ua uaPreset, rawURL string) (*sitemapDoc, bool) {
+	doc, tel := fetchSitemapWithTelemetry(ctx, client, ua, rawURL)
+	return doc, tel.ParseStatus == "parsed"
+}
+
+// fetchSitemapWithTelemetry fetches a sitemap document, recording initial/final HTTP status,
+// redirect traversal, decompression, and permissive XML decode diagnostics.
+func fetchSitemapWithTelemetry(ctx context.Context, client *http.Client, ua uaPreset, rawURL string) (*sitemapDoc, sitemapFetchTelemetry) {
+	var tel sitemapFetchTelemetry
+	tel.ParseStatus = "not_attempted"
+	tel.DocType = "unknown"
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, false
+		tel.FetchError = err.Error()
+		return nil, tel
 	}
 	ua.apply(req, "", nil)
 
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, false
-	}
-	defer res.Body.Close()
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		io.Copy(io.Discard, io.LimitReader(res.Body, drainCap))
-		return nil, false
+	var (
+		initialStatus int
+		hops          int
+		finalTarget   string
+	)
+
+	reqClient := *client
+	origCheck := client.CheckRedirect
+	reqClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		hops = len(via)
+		if initialStatus == 0 {
+			if req.Response != nil {
+				initialStatus = req.Response.StatusCode
+			} else if len(via) > 0 && via[0].Response != nil {
+				initialStatus = via[0].Response.StatusCode
+			}
+		}
+		finalTarget = req.URL.String()
+		if origCheck != nil {
+			return origCheck(req, via)
+		}
+		if len(via) >= 10 {
+			return http.ErrUseLastResponse
+		}
+		return nil
 	}
 
-	var body io.Reader = io.LimitReader(res.Body, sitemapByteCap)
-	// Go's transport decompresses Content-Encoding: gzip transparently, but a
-	// .xml.gz served as application/gzip is a gzip *payload* and has to be
-	// unwrapped by hand.
+	res, err := reqClient.Do(req)
+	tel.RedirectHops = hops
+	if hops > 0 {
+		tel.InitialStatus = initialStatus
+		tel.RedirectTo = finalTarget
+	}
+
+	if err != nil {
+		tel.FetchError = err.Error()
+		return nil, tel
+	}
+	defer res.Body.Close()
+
+	tel.FetchComplete = true
+	tel.FinalStatus = res.StatusCode
+	if hops == 0 {
+		tel.InitialStatus = res.StatusCode
+	}
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		io.Copy(io.Discard, io.LimitReader(res.Body, drainCap))
+		return nil, tel
+	}
+
+	var body io.Reader = io.LimitReader(res.Body, sitemapByteCap+1)
 	if strings.HasSuffix(strings.ToLower(rawURL), ".gz") ||
 		strings.Contains(strings.ToLower(res.Header.Get("Content-Type")), "gzip") {
 		zr, err := gzip.NewReader(body)
 		if err != nil {
-			return nil, false
+			tel.ParseStatus = "unavailable"
+			tel.ParseError = "gzip: " + err.Error()
+			return nil, tel
 		}
 		defer zr.Close()
-		body = io.LimitReader(zr, sitemapByteCap)
+		body = io.LimitReader(zr, sitemapByteCap+1)
+	}
+
+	rawBytes, err := io.ReadAll(body)
+	if err != nil {
+		tel.ParseStatus = "unavailable"
+		tel.ParseError = err.Error()
+		return nil, tel
+	}
+	if len(rawBytes) > sitemapByteCap {
+		tel.ByteCapped = true
+		rawBytes = rawBytes[:sitemapByteCap]
+	}
+	if len(rawBytes) == 0 {
+		tel.ParseStatus = "empty_input"
+		tel.DocType = "unknown"
+		return nil, tel
 	}
 
 	var doc sitemapDoc
-	dec := xml.NewDecoder(body)
-	// Sitemaps in the wild carry undeclared entities and stray encodings;
-	// refusing to parse those would silently lose whole sites.
+	dec := xml.NewDecoder(bytes.NewReader(rawBytes))
 	dec.Strict = false
 	dec.CharsetReader = func(_ string, input io.Reader) (io.Reader, error) { return input, nil }
 	if err := dec.Decode(&doc); err != nil {
-		return nil, false
+		tel.ParseStatus = "xml_error"
+		tel.ParseError = err.Error()
+		tel.DocType = "unknown"
+		return nil, tel
 	}
 	if len(doc.URLs) == 0 && len(doc.Sitemaps) == 0 {
-		return nil, false
+		tel.ParseStatus = "unsupported_structure"
+		tel.DocType = "unknown"
+		return nil, tel
 	}
-	return &doc, true
+	if len(doc.URLs) > 0 {
+		tel.DocType = "urlset"
+		tel.ParseStatus = "parsed"
+		tel.EntryCount = len(doc.URLs)
+	} else {
+		tel.DocType = "sitemapindex"
+		tel.ParseStatus = "parsed"
+		tel.EntryCount = 0
+	}
+	return &doc, tel
 }
