@@ -43,10 +43,11 @@ var commonSitemapPaths = []string{
 // sitemapEntry is one <url> element. Only loc is required; the rest feed the
 // Sitemaps tab.
 type sitemapEntry struct {
-	Loc        string
-	LastMod    string
-	ChangeFreq string
-	Priority   string
+	Loc           string
+	LastMod       string
+	ChangeFreq    string
+	Priority      string
+	evidenceIndex int
 }
 
 // sitemapDoc covers both a urlset and a sitemapindex. Namespaces are ignored
@@ -85,6 +86,19 @@ func discoverSitemaps(ctx context.Context, client *http.Client, ua uaPreset, ori
 // document, source provenance, entry, and limit telemetry.
 func discoverSitemapsDetailed(ctx context.Context, client *http.Client, ua uaPreset, origin string,
 	declared []string, parallel int) (sitemapEvidence, []sitemapEntry, []string) {
+	return discoverSitemapsDetailedWithLimits(ctx, client, ua, origin, declared, parallel, sitemapMaxURLs, sitemapMaxDepth)
+}
+
+// discoverSitemapsDetailedWithLimits allows configuring URL and depth limits for testing.
+func discoverSitemapsDetailedWithLimits(ctx context.Context, client *http.Client, ua uaPreset, origin string,
+	declared []string, parallel int, maxURLs int, maxDepth int) (sitemapEvidence, []sitemapEntry, []string) {
+
+	if maxURLs <= 0 {
+		maxURLs = sitemapMaxURLs
+	}
+	if maxDepth < 0 {
+		maxDepth = sitemapMaxDepth
+	}
 
 	startedAt := nowStamp()
 
@@ -150,7 +164,7 @@ func discoverSitemapsDetailed(ctx context.Context, client *http.Client, ua uaPre
 
 	var depthReached int
 
-	for depth := 0; depth <= sitemapMaxDepth; depth++ {
+	for depth := 0; depth <= maxDepth; depth++ {
 		depthReached = depth
 		if len(queue) == 0 {
 			break
@@ -160,9 +174,12 @@ func discoverSitemapsDetailed(ctx context.Context, client *http.Client, ua uaPre
 			ev.Discovery.StopReason = "context_canceled"
 			break
 		}
-		if len(entries) >= sitemapMaxURLs {
+		if len(entries) >= maxURLs {
 			ev.Discovery.URLsCapped = true
-			ev.Discovery.StopReason = "urls_capped"
+			ev.Discovery.Status = "ATTEMPTED_INCOMPLETE"
+			if ev.Discovery.StopReason == "" {
+				ev.Discovery.StopReason = "urls_capped"
+			}
 			break
 		}
 
@@ -252,18 +269,23 @@ func discoverSitemapsDetailed(ctx context.Context, client *http.Client, ua uaPre
 					ChangeFreq: strings.TrimSpace(u.ChangeFreq),
 					Priority:   strings.TrimSpace(u.Priority),
 				}
+				evidenceIndex := len(ev.Entries)
 				ev.Entries = append(ev.Entries, eRec)
 
-				if len(entries) < sitemapMaxURLs {
+				if len(entries) < maxURLs {
 					entries = append(entries, sitemapEntry{
-						Loc:        loc,
-						LastMod:    eRec.LastMod,
-						ChangeFreq: eRec.ChangeFreq,
-						Priority:   eRec.Priority,
+						Loc:           loc,
+						LastMod:       eRec.LastMod,
+						ChangeFreq:    eRec.ChangeFreq,
+						Priority:      eRec.Priority,
+						evidenceIndex: evidenceIndex,
 					})
 				} else {
 					ev.Discovery.URLsCapped = true
-					ev.Discovery.StopReason = "urls_capped"
+					ev.Discovery.Status = "ATTEMPTED_INCOMPLETE"
+					if ev.Discovery.StopReason == "" {
+						ev.Discovery.StopReason = "urls_capped"
+					}
 				}
 			}
 
@@ -272,7 +294,7 @@ func discoverSitemapsDetailed(ctx context.Context, client *http.Client, ua uaPre
 				if loc != "" {
 					childID := getDocID(loc)
 					addSource(childID, "sitemap_index", docID)
-					if depth < sitemapMaxDepth {
+					if depth < maxDepth {
 						queue = append(queue, queuedSitemap{
 							url:      loc,
 							source:   "sitemap_index",
@@ -280,7 +302,10 @@ func discoverSitemapsDetailed(ctx context.Context, client *http.Client, ua uaPre
 						})
 					} else {
 						ev.Discovery.DepthCapped = true
-						ev.Discovery.StopReason = "depth_capped"
+						ev.Discovery.Status = "ATTEMPTED_INCOMPLETE"
+						if ev.Discovery.StopReason == "" {
+							ev.Discovery.StopReason = "depth_capped"
+						}
 					}
 				}
 			}

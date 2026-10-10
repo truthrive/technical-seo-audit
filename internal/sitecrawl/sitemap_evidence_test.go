@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -546,5 +547,400 @@ func TestSitemapIndexRecursionDepthAndLimits(t *testing.T) {
 		if sm.ID == child2ID && sm.ParentID != child1ID {
 			t.Errorf("child2 parentID want %d, got %d", child1ID, sm.ParentID)
 		}
+	}
+}
+
+// TestSitemapURLCapBoundarySuite tests:
+// 1. Under cap: fewer than cap observed entries -> all admitted, urls_capped=false
+// 2. Exact cap: exactly cap entries -> all admitted, urls_capped=false
+// 3. Over cap: more than cap entries -> bounded entries offered to frontier, urls_capped=true,
+//    unadmitted entries retain url_id = 0 even if duplicate of admitted URL
+func TestSitemapURLCapBoundarySuite(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		switch r.URL.Path {
+		case "/sitemap.xml":
+			// 5 entries: p1, p2, p3, p4, p1 (duplicate at end)
+			fmt.Fprintf(w, `<?xml version="1.0"?><urlset>
+				<url><loc>%s/p1</loc></url>
+				<url><loc>%s/p2</loc></url>
+				<url><loc>%s/p3</loc></url>
+				<url><loc>%s/p4</loc></url>
+				<url><loc>%s/p1</loc></url>
+			</urlset>`, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	// 1. Under cap: cap = 10, entries = 5
+	evUnder, entriesUnder, _ := discoverSitemapsDetailedWithLimits(context.Background(), srv.Client(), presetFor(DefaultUserAgent), srv.URL, nil, 1, 10, 10)
+	if len(entriesUnder) != 5 {
+		t.Errorf("under-cap entries count want 5, got %d", len(entriesUnder))
+	}
+	if len(evUnder.Entries) != 5 {
+		t.Errorf("under-cap evidence entries want 5, got %d", len(evUnder.Entries))
+	}
+	if evUnder.Discovery.URLsCapped {
+		t.Errorf("under-cap urls_capped want false, got true")
+	}
+	if evUnder.Discovery.Status != "COMPLETED" {
+		t.Errorf("under-cap status want COMPLETED, got %s", evUnder.Discovery.Status)
+	}
+
+	// 2. Exact cap: cap = 5, entries = 5
+	evExact, entriesExact, _ := discoverSitemapsDetailedWithLimits(context.Background(), srv.Client(), presetFor(DefaultUserAgent), srv.URL, nil, 1, 5, 10)
+	if len(entriesExact) != 5 {
+		t.Errorf("exact-cap entries count want 5, got %d", len(entriesExact))
+	}
+	if len(evExact.Entries) != 5 {
+		t.Errorf("exact-cap evidence entries want 5, got %d", len(evExact.Entries))
+	}
+	if evExact.Discovery.URLsCapped {
+		t.Errorf("exact-cap urls_capped want false, got true")
+	}
+	if evExact.Discovery.Status != "COMPLETED" {
+		t.Errorf("exact-cap status want COMPLETED, got %s", evExact.Discovery.Status)
+	}
+
+	// 3. Over cap: cap = 3, entries = 5
+	evOver, entriesOver, _ := discoverSitemapsDetailedWithLimits(context.Background(), srv.Client(), presetFor(DefaultUserAgent), srv.URL, nil, 1, 3, 10)
+	if len(entriesOver) != 3 {
+		t.Errorf("over-cap entries count want 3, got %d", len(entriesOver))
+	}
+	if len(evOver.Entries) != 5 {
+		t.Errorf("over-cap evidence entries want 5, got %d", len(evOver.Entries))
+	}
+	if !evOver.Discovery.URLsCapped {
+		t.Errorf("over-cap urls_capped want true, got false")
+	}
+	if evOver.Discovery.Status != "ATTEMPTED_INCOMPLETE" {
+		t.Errorf("over-cap status want ATTEMPTED_INCOMPLETE, got %s", evOver.Discovery.Status)
+	}
+	if evOver.Discovery.StopReason != "urls_capped" {
+		t.Errorf("over-cap stop_reason want urls_capped, got %s", evOver.Discovery.StopReason)
+	}
+
+	// Simulate admission loop from coordinator.prepare on evOver
+	opts := Options{CrawlSubdomains: false, MaxURLs: 100}
+	u, _ := url.Parse(srv.URL)
+	front := newFrontier(opts, u.Hostname())
+	for _, e := range entriesOver {
+		parsed, err := url.Parse(e.Loc)
+		if err != nil || !sameSite(u.Hostname(), parsed.Hostname(), opts.crawlSubdomains()) {
+			continue
+		}
+		id, _ := front.admit(e.Loc, 0, SourceSitemap, 0)
+		if e.evidenceIndex >= 0 && e.evidenceIndex < len(evOver.Entries) {
+			evOver.Entries[e.evidenceIndex].URLID = id
+		}
+	}
+
+	// Entries 0, 1, 2 must have URLID > 0
+	for i := 0; i < 3; i++ {
+		if evOver.Entries[i].URLID == 0 {
+			t.Errorf("entry %d within cap want urlID > 0, got 0", i)
+		}
+	}
+	// Entries 3, 4 (beyond cap) must have URLID == 0
+	// Entry 4 has loc = p1 (same as entry 0), must NOT borrow entry 0's URLID!
+	if evOver.Entries[3].URLID != 0 {
+		t.Errorf("entry 3 beyond cap want urlID == 0, got %d", evOver.Entries[3].URLID)
+	}
+	if evOver.Entries[4].URLID != 0 {
+		t.Errorf("entry 4 beyond cap (duplicate p1) want urlID == 0, got %d", evOver.Entries[4].URLID)
+	}
+	// Frontier queue must contain exactly 3 items
+	if front.discovered() != 3 {
+		t.Errorf("frontier discovered count want 3, got %d", front.discovered())
+	}
+}
+
+// TestSitemapDuplicateEntryIdentitySuite tests:
+// 1. Duplicate URLs within one sitemap retain distinct entry sequence and both receive verified url_id.
+// 2. Duplicate URLs across two sitemaps retain distinct sitemap document identity.
+// 3. Repeated sitemap discovery sources are preserved.
+func TestSitemapDuplicateEntryIdentitySuite(t *testing.T) {
+	db, _ := tempTestDB(t)
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		switch r.URL.Path {
+		case "/robots.txt":
+			fmt.Fprintf(w, "User-agent: *\nSitemap: %s/sitemap.xml\n", srv.URL)
+		case "/sitemap.xml":
+			// Two duplicates of /page1 in the same document
+			fmt.Fprintf(w, `<?xml version="1.0"?><urlset>
+				<url><loc>%s/page1</loc><lastmod>2026-10-01</lastmod></url>
+				<url><loc>%s/page1</loc><lastmod>2026-10-02</lastmod></url>
+			</urlset>`, srv.URL, srv.URL)
+		default:
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<html><body>Page</body></html>`))
+		}
+	}))
+	defer srv.Close()
+
+	runner := NewRunner(db)
+	h, err := runner.Start(context.Background(), []string{srv.URL}, Options{DiscoverSitemaps: true, MaxURLs: 10})
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if _, err := h.Wait(); err != nil {
+		t.Fatalf("Wait failed: %v", err)
+	}
+
+	// 1. Verify two distinct entries preserved in SQLite
+	rows, err := db.Query(`SELECT seq, url_id, loc, lastmod FROM sitecrawl_sitemap_entries WHERE run_id=? ORDER BY seq`, h.RunID())
+	if err != nil {
+		t.Fatalf("query entries failed: %v", err)
+	}
+	defer rows.Close()
+
+	type ent struct {
+		seq     int
+		urlID   int64
+		loc     string
+		lastmod string
+	}
+	var entries []ent
+	for rows.Next() {
+		var e ent
+		if err := rows.Scan(&e.seq, &e.urlID, &e.loc, &e.lastmod); err != nil {
+			t.Fatalf("scan entry failed: %v", err)
+		}
+		entries = append(entries, e)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 distinct entries in SQLite, got %d", len(entries))
+	}
+	if entries[0].seq != 0 || entries[1].seq != 1 {
+		t.Errorf("entry sequence mismatch: seq0=%d, seq1=%d", entries[0].seq, entries[1].seq)
+	}
+	if entries[0].urlID == 0 || entries[1].urlID == 0 {
+		t.Errorf("expected both entries to have valid url_id, got %d and %d", entries[0].urlID, entries[1].urlID)
+	}
+	if entries[0].urlID != entries[1].urlID {
+		t.Errorf("both duplicate entries should map to the same dictionary url_id, got %d != %d", entries[0].urlID, entries[1].urlID)
+	}
+	if entries[0].lastmod != "2026-10-01" || entries[1].lastmod != "2026-10-02" {
+		t.Errorf("lastmod mismatch: %s vs %s", entries[0].lastmod, entries[1].lastmod)
+	}
+
+	// 2. Verify frontier deduplication: /page1 was only crawled once!
+	var page1Crawls int
+	err = db.QueryRow(`SELECT count(*) FROM sitecrawl_pages p JOIN sitecrawl_urls u ON p.url_id=u.id WHERE p.run_id=? AND u.url LIKE '%/page1'`, h.RunID()).Scan(&page1Crawls)
+	if err != nil || page1Crawls != 1 {
+		t.Errorf("page1 should be crawled exactly once, got %d crawls", page1Crawls)
+	}
+
+	// 3. Verify repeated discovery sources: sitemap.xml discovered via robots.txt AND common_path
+	var srcCount int
+	err = db.QueryRow(`SELECT count(*) FROM sitecrawl_sitemap_sources WHERE run_id=?`, h.RunID()).Scan(&srcCount)
+	if err != nil || srcCount < 2 {
+		t.Errorf("expected at least 2 discovery sources for dual-discovered sitemap, got %d: %v", srcCount, err)
+	}
+}
+
+// TestSitemapRejectedEntriesSuite tests that external and malformed URLs
+// do not receive frontier admission or fabricated URL IDs.
+func TestSitemapRejectedEntriesSuite(t *testing.T) {
+	db, _ := tempTestDB(t)
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		switch r.URL.Path {
+		case "/sitemap.xml":
+			fmt.Fprintf(w, `<?xml version="1.0"?><urlset>
+				<url><loc>%s/valid1</loc></url>
+				<url><loc>https://external.example.com/external1</loc></url>
+				<url><loc>http://[invalid:host/bad</loc></url>
+				<url><loc>%s/valid2</loc></url>
+			</urlset>`, srv.URL, srv.URL)
+		default:
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<html><body>OK</body></html>`))
+		}
+	}))
+	defer srv.Close()
+
+	runner := NewRunner(db)
+	h, err := runner.Start(context.Background(), []string{srv.URL}, Options{DiscoverSitemaps: true, MaxURLs: 10})
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if _, err := h.Wait(); err != nil {
+		t.Fatalf("Wait failed: %v", err)
+	}
+
+	rows, err := db.Query(`SELECT seq, url_id, loc FROM sitecrawl_sitemap_entries WHERE run_id=? ORDER BY seq`, h.RunID())
+	if err != nil {
+		t.Fatalf("query entries failed: %v", err)
+	}
+	defer rows.Close()
+
+	type ent struct {
+		seq   int
+		urlID int64
+		loc   string
+	}
+	var entries []ent
+	for rows.Next() {
+		var e ent
+		if err := rows.Scan(&e.seq, &e.urlID, &e.loc); err != nil {
+			t.Fatalf("scan failed: %v", err)
+		}
+		entries = append(entries, e)
+	}
+
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 entries in SQLite, got %d", len(entries))
+	}
+	// Entry 0 (/valid1): admitted -> urlID > 0
+	if entries[0].urlID == 0 {
+		t.Errorf("valid1 should have urlID > 0, got 0")
+	}
+	// Entry 1 (external): rejected -> urlID == 0
+	if entries[1].urlID != 0 {
+		t.Errorf("external entry should have urlID == 0, got %d", entries[1].urlID)
+	}
+	// Entry 2 (malformed): rejected -> urlID == 0
+	if entries[2].urlID != 0 {
+		t.Errorf("malformed entry should have urlID == 0, got %d", entries[2].urlID)
+	}
+	// Entry 3 (/valid2): admitted -> urlID > 0
+	if entries[3].urlID == 0 {
+		t.Errorf("valid2 should have urlID > 0, got 0")
+	}
+
+	// Verify external URL not in sitecrawl_urls
+	var externalInDict int
+	err = db.QueryRow(`SELECT count(*) FROM sitecrawl_urls WHERE run_id=? AND url LIKE '%external.example.com%'`, h.RunID()).Scan(&externalInDict)
+	if err != nil || externalInDict != 0 {
+		t.Errorf("external URL must not exist in sitecrawl_urls, got %d", externalInDict)
+	}
+}
+
+// TestSitemapFrontierParitySuite tests that frontier admission order,
+// deduplication, and source attribution match the baseline contract.
+func TestSitemapFrontierParitySuite(t *testing.T) {
+	db, _ := tempTestDB(t)
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		switch r.URL.Path {
+		case "/robots.txt":
+			fmt.Fprintf(w, "User-agent: *\nSitemap: %s/sitemap.xml\n", srv.URL)
+		case "/sitemap.xml":
+			fmt.Fprintf(w, `<?xml version="1.0"?><urlset>
+				<url><loc>%s/alpha</loc></url>
+				<url><loc>%s/beta</loc></url>
+				<url><loc>%s/alpha</loc></url>
+				<url><loc>https://other.com/gamma</loc></url>
+				<url><loc>%s/delta</loc></url>
+			</urlset>`, srv.URL, srv.URL, srv.URL, srv.URL)
+		default:
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<html><body>OK</body></html>`))
+		}
+	}))
+	defer srv.Close()
+
+	runner := NewRunner(db)
+	h, err := runner.Start(context.Background(), []string{srv.URL}, Options{DiscoverSitemaps: true, MaxURLs: 20})
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if _, err := h.Wait(); err != nil {
+		t.Fatalf("Wait failed: %v", err)
+	}
+
+	// 1. Verify frontier admission semantics on candidate URLs:
+	// - candidate order preserved
+	// - attribution is SourceSitemap
+	// - duplicate /alpha is deduped
+	// - external /gamma is rejected
+	u, _ := url.Parse(srv.URL)
+	fOpts := Options{CrawlSubdomains: false, MaxURLs: 20}
+	front := newFrontier(fOpts, u.Hostname())
+	front.admit(srv.URL, 0, SourceSeed, 0)
+
+	_, entries, _ := discoverSitemapsDetailed(context.Background(), srv.Client(), presetFor(DefaultUserAgent), srv.URL, nil, 1)
+	for _, e := range entries {
+		parsed, err := url.Parse(e.Loc)
+		if err != nil || !sameSite(u.Hostname(), parsed.Hostname(), fOpts.crawlSubdomains()) {
+			continue
+		}
+		front.admit(e.Loc, 0, SourceSitemap, 0)
+	}
+
+	snap := front.snapshot()
+	if len(snap) != 4 {
+		t.Fatalf("expected 4 frontier items in queue, got %d", len(snap))
+	}
+	if snap[0].URL != srv.URL || snap[0].Source != SourceSeed {
+		t.Errorf("item 0 want seed (%s), got %+v", SourceSeed, snap[0])
+	}
+	if snap[1].URL != srv.URL+"/alpha" || snap[1].Source != SourceSitemap {
+		t.Errorf("item 1 want alpha (%s), got %+v", SourceSitemap, snap[1])
+	}
+	if snap[2].URL != srv.URL+"/beta" || snap[2].Source != SourceSitemap {
+		t.Errorf("item 2 want beta (%s), got %+v", SourceSitemap, snap[2])
+	}
+	if snap[3].URL != srv.URL+"/delta" || snap[3].Source != SourceSitemap {
+		t.Errorf("item 3 want delta (%s), got %+v", SourceSitemap, snap[3])
+	}
+
+	// 2. Verify complete crawl output in SQLite:
+	// - seed, alpha, beta, delta crawled (4 pages)
+	// - external gamma was not crawled or admitted
+	var pageCount int
+	err = db.QueryRow(`SELECT count(*) FROM sitecrawl_pages WHERE run_id=?`, h.RunID()).Scan(&pageCount)
+	if err != nil || pageCount != 4 {
+		t.Errorf("crawled pages count want 4, got %d: %v", pageCount, err)
+	}
+
+	var gammaInUrls int
+	err = db.QueryRow(`SELECT count(*) FROM sitecrawl_urls WHERE run_id=? AND url LIKE '%other.com%'`, h.RunID()).Scan(&gammaInUrls)
+	if err != nil || gammaInUrls != 0 {
+		t.Errorf("rejected external gamma must not exist in sitecrawl_urls, got %d", gammaInUrls)
+	}
+
+	// 3. Verify sitemap entries in SQLite:
+	// 5 entries total, alpha duplicate preserved with matching urlID, gamma has urlID=0
+	rows, err := db.Query(`SELECT seq, url_id, loc FROM sitecrawl_sitemap_entries WHERE run_id=? ORDER BY seq`, h.RunID())
+	if err != nil {
+		t.Fatalf("query sitemap entries failed: %v", err)
+	}
+	defer rows.Close()
+
+	type smRow struct {
+		seq   int
+		urlID int64
+		loc   string
+	}
+	var smEntries []smRow
+	for rows.Next() {
+		var r smRow
+		if err := rows.Scan(&r.seq, &r.urlID, &r.loc); err != nil {
+			t.Fatalf("scan failed: %v", err)
+		}
+		smEntries = append(smEntries, r)
+	}
+	if len(smEntries) != 5 {
+		t.Fatalf("expected 5 sitemap entry rows, got %d", len(smEntries))
+	}
+	// alpha (seq 0) and alpha dup (seq 2) must have same non-zero urlID
+	if smEntries[0].urlID == 0 || smEntries[2].urlID == 0 || smEntries[0].urlID != smEntries[2].urlID {
+		t.Errorf("alpha entries urlID mismatch: seq0=%d, seq2=%d", smEntries[0].urlID, smEntries[2].urlID)
+	}
+	// gamma (seq 3) must have urlID == 0
+	if smEntries[3].urlID != 0 {
+		t.Errorf("external gamma want urlID=0, got %d", smEntries[3].urlID)
 	}
 }

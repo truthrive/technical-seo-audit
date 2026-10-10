@@ -270,10 +270,10 @@ func (c *coordinator) prepare(ctx context.Context, seeds []string) error {
 		}
 	} else if origin != "" {
 		declared := c.robots.Sitemaps(ctx, origin)
-		evidence, _, _ := discoverSitemapsDetailed(ctx, c.fetch.robotsClient(), c.opts.preset(), origin,
+		evidence, entries, _ := discoverSitemapsDetailed(ctx, c.fetch.robotsClient(), c.opts.preset(), origin,
 			declared, c.opts.Concurrency)
 
-		for i, e := range evidence.Entries {
+		for _, e := range entries {
 			if ctx.Err() != nil {
 				break
 			}
@@ -282,7 +282,9 @@ func (c *coordinator) prepare(ctx context.Context, seeds []string) error {
 				continue
 			}
 			id, _ := c.frontier.admit(e.Loc, 0, SourceSitemap, 0)
-			evidence.Entries[i].URLID = id
+			if e.evidenceIndex >= 0 && e.evidenceIndex < len(evidence.Entries) {
+				evidence.Entries[e.evidenceIndex].URLID = id
+			}
 		}
 
 		evidence.Discovery.RunID = c.runID
