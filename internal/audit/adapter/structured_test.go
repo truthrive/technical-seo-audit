@@ -491,6 +491,148 @@ func TestAdapter_StructuredData_JSONLD(t *testing.T) {
 			t.Errorf("expected indices 0 and 1, got %d and %d", b0.BlockIndex, b1.BlockIndex)
 		}
 	})
+
+	t.Run("Valid @graph with string or null value", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:sd:graph:special"
+		auditRunID := audit.AuditRunID("audit:sd:graph:special")
+		snapshotID := audit.SnapshotID("snap:sd:graph:special")
+		seed := "https://example.com/graph-special"
+		setupTestRun(t, db, runID, seed)
+		insertURL(t, db, runID, 1, seed)
+
+		raw1 := `{"@graph": "unexpected"}`
+		raw2 := `{"@graph": null}`
+		pageData, _ := json.Marshal(sitecrawl.Page{
+			URL:       seed,
+			Status:    200,
+			Kind:      "html",
+			CrawledAt: "2026-10-01T12:00:00Z",
+			JSONLD:    []string{raw1, raw2},
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, kind, crawled_at)
+			VALUES(?, 1, ?, ?, 200, 'html', '2026-10-01T12:00:00Z')`, runID, seed, string(pageData))
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: auditRunID,
+			SnapshotID: snapshotID,
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+
+		if len(res.StructuredDataBlocks) != 2 {
+			t.Fatalf("expected 2 blocks, got %d", len(res.StructuredDataBlocks))
+		}
+		for i, b := range res.StructuredDataBlocks {
+			if b.ParseStatus != adapter.ParseStatusSuccess {
+				t.Errorf("block %d expected %s, got %s (err: %s)", i, adapter.ParseStatusSuccess, b.ParseStatus, b.ParseError)
+			}
+			if b.ParseError != "" {
+				t.Errorf("block %d expected empty parse error, got %q", i, b.ParseError)
+			}
+		}
+	})
+
+	t.Run("Valid top-level primitive types and payload preservation", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:sd:primitives"
+		auditRunID := audit.AuditRunID("audit:sd:primitives")
+		snapshotID := audit.SnapshotID("snap:sd:primitives")
+		seed := "https://example.com/primitives"
+		setupTestRun(t, db, runID, seed)
+		insertURL(t, db, runID, 1, seed)
+
+		primitives := []string{
+			`"plain string"`,
+			`123`,
+			`true`,
+			`null`,
+		}
+		pageData, _ := json.Marshal(sitecrawl.Page{
+			URL:       seed,
+			Status:    200,
+			Kind:      "html",
+			CrawledAt: "2026-10-01T12:00:00Z",
+			JSONLD:    primitives,
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, kind, crawled_at)
+			VALUES(?, 1, ?, ?, 200, 'html', '2026-10-01T12:00:00Z')`, runID, seed, string(pageData))
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: auditRunID,
+			SnapshotID: snapshotID,
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+
+		if len(res.StructuredDataBlocks) != len(primitives) {
+			t.Fatalf("expected %d blocks, got %d", len(primitives), len(res.StructuredDataBlocks))
+		}
+		for i, b := range res.StructuredDataBlocks {
+			if b.ParseStatus != adapter.ParseStatusSuccess {
+				t.Errorf("primitive %d (%s) expected %s, got %s (err: %s)", i, primitives[i], adapter.ParseStatusSuccess, b.ParseStatus, b.ParseError)
+			}
+			if b.ParseError != "" {
+				t.Errorf("primitive %d expected empty parse error, got %q", i, b.ParseError)
+			}
+			// Verify structured_raw preserves exact persisted payload
+			obs := getStructuredDataObservations(res.EvidenceSnapshot, string(b.StructuredBlockID))
+			rawVals := obs["structured_raw"]
+			if len(rawVals) != 1 || rawVals[0] != primitives[i] {
+				t.Errorf("primitive %d expected structured_raw %q, got %v", i, primitives[i], rawVals)
+			}
+		}
+	})
+
+	t.Run("Invalid syntax with unquoted token, concatenated documents, or trailing garbage", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:sd:invalid:tokens"
+		auditRunID := audit.AuditRunID("audit:sd:invalid:tokens")
+		snapshotID := audit.SnapshotID("snap:sd:invalid:tokens")
+		seed := "https://example.com/invalid-tokens"
+		setupTestRun(t, db, runID, seed)
+		insertURL(t, db, runID, 1, seed)
+
+		invalidInputs := []string{
+			`{"name":}`,
+			`{"name":"A"} {"name":"B"}`,
+			`{"name":"A"} trailing garbage`,
+		}
+		pageData, _ := json.Marshal(sitecrawl.Page{
+			URL:       seed,
+			Status:    200,
+			Kind:      "html",
+			CrawledAt: "2026-10-01T12:00:00Z",
+			JSONLD:    invalidInputs,
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, kind, crawled_at)
+			VALUES(?, 1, ?, ?, 200, 'html', '2026-10-01T12:00:00Z')`, runID, seed, string(pageData))
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: auditRunID,
+			SnapshotID: snapshotID,
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+
+		if len(res.StructuredDataBlocks) != len(invalidInputs) {
+			t.Fatalf("expected %d blocks, got %d", len(invalidInputs), len(res.StructuredDataBlocks))
+		}
+		for i, b := range res.StructuredDataBlocks {
+			if b.ParseStatus != adapter.ParseStatusError {
+				t.Errorf("invalid input %d (%s) expected %s, got %s", i, invalidInputs[i], adapter.ParseStatusError, b.ParseStatus)
+			}
+			if b.ParseError == "" {
+				t.Errorf("invalid input %d expected non-empty parse error", i)
+			}
+		}
+	})
 }
 
 // ============================================================================
@@ -886,6 +1028,142 @@ func TestAdapter_StructuredData_Coverage(t *testing.T) {
 
 		if len(res.StructuredDataBlocks) != 0 {
 			t.Errorf("expected 0 blocks, got %d", len(res.StructuredDataBlocks))
+		}
+	})
+}
+
+// ============================================================================
+// Group C2: EvidenceGap Semantics Tests (Section 7.C)
+// ============================================================================
+
+func TestAdapter_StructuredData_EvidenceGapSemantics(t *testing.T) {
+	t.Run("Scenario 1 — Structured data present: Global capability gap exists without asserting site-level absence", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:sd:gap:present"
+		auditRunID := audit.AuditRunID("audit:sd:gap:present")
+		snapshotID := audit.SnapshotID("snap:sd:gap:present")
+		seed := "https://example.com/present"
+		setupTestRun(t, db, runID, seed)
+		insertURL(t, db, runID, 1, seed)
+
+		pageData, _ := json.Marshal(sitecrawl.Page{
+			URL:       seed,
+			Status:    200,
+			Kind:      "html",
+			CrawledAt: "2026-10-01T12:00:00Z",
+			JSONLD:    []string{`{"@context": "https://schema.org", "@type": "WebPage", "name": "Present"}`},
+			SchemaOrg: []sitecrawl.Schema{{Type: "https://schema.org/Thing", Properties: map[string]string{"name": "Thing"}}},
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, kind, crawled_at)
+			VALUES(?, 1, ?, ?, 200, 'html', '2026-10-01T12:00:00Z')`, runID, seed, string(pageData))
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: auditRunID,
+			SnapshotID: snapshotID,
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+
+		if len(res.StructuredDataBlocks) != 2 {
+			t.Fatalf("expected 2 blocks, got %d", len(res.StructuredDataBlocks))
+		}
+
+		var absenceGap *adapter.EvidenceGap
+		for _, g := range res.EvidenceGaps {
+			if g.GapCode == adapter.GapStructuredDataAbsenceUnprovable {
+				gCopy := g
+				absenceGap = &gCopy
+				break
+			}
+		}
+		if absenceGap == nil {
+			t.Fatalf("expected global gap %s to be present", adapter.GapStructuredDataAbsenceUnprovable)
+		}
+
+		// Verify it does NOT attach a URL-specific subject
+		if absenceGap.SubjectRef != "" {
+			t.Errorf("global capability gap must not attach URL-specific SubjectRef, got %q", absenceGap.SubjectRef)
+		}
+
+		// Verify reason is accurate and does not assert that the site/page lacks structured data
+		expectedReason := "The frozen SiteCrawl acquisition pipeline does not provide complete structured-data format coverage, including RDFa. Therefore, absence of observed JSON-LD/Microdata cannot be treated as proof that a page contains no structured data."
+		if absenceGap.Reason != expectedReason {
+			t.Errorf("expected reason %q, got %q", expectedReason, absenceGap.Reason)
+		}
+
+		// Verify no fabricated page-level absence observations or verdicts
+		for _, obs := range res.EvidenceSnapshot.NormalizedObservations {
+			if obs.Field == "structured_data_absence" || obs.Field == "has_structured_data" {
+				t.Errorf("unexpected page-level absence observation emitted: %+v", obs)
+			}
+		}
+	})
+
+	t.Run("Scenario 2 — No structured data observed: Capability gap describes incomplete coverage without concluding absence", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:sd:gap:empty"
+		auditRunID := audit.AuditRunID("audit:sd:gap:empty")
+		snapshotID := audit.SnapshotID("snap:sd:gap:empty")
+		seed := "https://example.com/no-sd"
+		setupTestRun(t, db, runID, seed)
+		insertURL(t, db, runID, 1, seed)
+
+		pageData, _ := json.Marshal(sitecrawl.Page{
+			URL:       seed,
+			Status:    200,
+			Kind:      "html",
+			CrawledAt: "2026-10-01T12:00:00Z",
+			JSONLD:    nil,
+			SchemaOrg: nil,
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, status, kind, crawled_at)
+			VALUES(?, 1, ?, ?, 200, 'html', '2026-10-01T12:00:00Z')`, runID, seed, string(pageData))
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: auditRunID,
+			SnapshotID: snapshotID,
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+
+		if len(res.StructuredDataBlocks) != 0 {
+			t.Fatalf("expected 0 blocks, got %d", len(res.StructuredDataBlocks))
+		}
+
+		var absenceGap *adapter.EvidenceGap
+		for _, g := range res.EvidenceGaps {
+			if g.GapCode == adapter.GapStructuredDataAbsenceUnprovable {
+				gCopy := g
+				absenceGap = &gCopy
+				break
+			}
+		}
+		if absenceGap == nil {
+			t.Fatalf("expected global gap %s to be present", adapter.GapStructuredDataAbsenceUnprovable)
+		}
+
+		if absenceGap.SubjectRef != "" {
+			t.Errorf("global capability gap must not attach URL-specific SubjectRef, got %q", absenceGap.SubjectRef)
+		}
+
+		expectedReason := "The frozen SiteCrawl acquisition pipeline does not provide complete structured-data format coverage, including RDFa. Therefore, absence of observed JSON-LD/Microdata cannot be treated as proof that a page contains no structured data."
+		if absenceGap.Reason != expectedReason {
+			t.Errorf("expected reason %q, got %q", expectedReason, absenceGap.Reason)
+		}
+
+		// Verify no automatic NOT_APPLICABLE or FAIL rule results produced for AR-ENTITY-001
+		eng, err := engine.New()
+		if err != nil {
+			t.Fatalf("engine.New failed: %v", err)
+		}
+		for _, ruleID := range eng.ImplementedRuleIDs() {
+			if ruleID == "AR-ENTITY-001" {
+				t.Fatalf("AR-ENTITY-001 must not be implemented in V1.7a")
+			}
 		}
 	})
 }

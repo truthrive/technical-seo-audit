@@ -12,7 +12,14 @@ import (
 )
 
 // parseJSONLDSyntax validates JSON-LD raw script content against strict JSON syntax rules
-// without invoking Schema.org semantic rules, external validators, or Google APIs.
+// using Go's standard encoding/json parser without structural or semantic Schema.org validation.
+//
+// Critical boundary:
+// JSON syntax parse success != JSON-LD structural validity != Schema.org validity != Google rich-result eligibility
+//
+// PARSE_SUCCESS means the preserved JSON-LD script text is syntactically valid JSON.
+// PARSE_ERROR means deterministic JSON syntax parsing failed.
+// EMPTY_INPUT remains reserved for empty or whitespace-only preserved content.
 //
 // It returns:
 // - parseStatus: PARSE_SUCCESS, PARSE_ERROR, or EMPTY_INPUT.
@@ -40,27 +47,7 @@ func parseJSONLDSyntax(raw string) (string, string) {
 		return ParseStatusError, fmt.Sprintf("trailing data after top-level JSON value: %v", err)
 	}
 
-	switch v := val.(type) {
-	case map[string]any:
-		// Check @graph if present at top level
-		if graphVal, hasGraph := v["@graph"]; hasGraph {
-			switch graphVal.(type) {
-			case []any, map[string]any:
-				// Valid @graph structure at JSON syntax level
-			case nil:
-				return ParseStatusError, "@graph value cannot be null"
-			default:
-				return ParseStatusError, "@graph value must be a JSON object or array"
-			}
-		}
-		return ParseStatusSuccess, ""
-	case []any:
-		return ParseStatusSuccess, ""
-	case nil:
-		return ParseStatusError, "JSON-LD top-level value must be an object or array, got null"
-	default:
-		return ParseStatusError, fmt.Sprintf("JSON-LD top-level value must be an object or array, got %T", val)
-	}
+	return ParseStatusSuccess, ""
 }
 
 // buildStructuredDataEvidence processes Page.JSONLD and Page.SchemaOrg for a crawled page record

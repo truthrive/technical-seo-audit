@@ -1471,7 +1471,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		EvidenceGap{
 			GapCode:         GapStructuredDataAbsenceUnprovable,
 			Field:           "structured_data_absence",
-			Reason:          "Absence of observed JSON-LD and Microdata does not prove complete structured-data absence due to unsupported RDFa and format coverage limitations.",
+			Reason:          "The frozen SiteCrawl acquisition pipeline does not provide complete structured-data format coverage, including RDFa. Therefore, absence of observed JSON-LD/Microdata cannot be treated as proof that a page contains no structured data.",
 			SourceComponent: "sitecrawl",
 		},
 		EvidenceGap{
