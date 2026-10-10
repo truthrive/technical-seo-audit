@@ -33,17 +33,28 @@ type linkTestFixture struct {
 	anchor         string
 	location       string
 
+	// Source URL observations on sourceSubjRef
+	sourceURLIdent     string
+	sourceURLIdents    []string
+	sourceStatus       string
+	omitSourceSubject  bool
+	omitSourceURLIdent bool
+
 	// Target URL observations on targetSubjRef
-	targetURLIdent string
-	targetStatus   string
-	targetStatuses []string
-	targetFinalURL string
+	targetURLIdent     string
+	targetURLIdents    []string
+	targetStatus       string
+	targetStatuses     []string
+	targetFinalURL     string
+	omitTargetSubject  bool
+	omitTargetURLIdent bool
 }
 
 func newLinkSnapshot(fixtures []linkTestFixture, auditRunID audit.AuditRunID, snapID audit.SnapshotID) *audit.EvidenceSnapshot {
 	now := time.Now().UTC()
 	var obs []audit.NormalizedObservation
 
+	seenSources := make(map[string]bool)
 	seenTargets := make(map[string]bool)
 	for _, f := range fixtures {
 		// --- Link Observations ---
@@ -227,22 +238,94 @@ func newLinkSnapshot(fixtures []linkTestFixture, auditRunID audit.AuditRunID, sn
 			})
 		}
 
-		// --- Target Observations on Target Subject Ref ---
-		if f.targetSubjRef != "" && !seenTargets[f.targetSubjRef] {
-			seenTargets[f.targetSubjRef] = true
-			if f.targetURLIdent != "" {
+		// --- Source Observations on Source Subject Ref ---
+		if f.sourceSubjRef != "" && !seenSources[f.sourceSubjRef] && !f.omitSourceSubject {
+			seenSources[f.sourceSubjRef] = true
+			if len(f.sourceURLIdents) > 0 {
+				for i, u := range f.sourceURLIdents {
+					obs = append(obs, audit.NormalizedObservation{
+						ObservationID:      audit.ObservationID(fmt.Sprintf("obs:src_ident:%s:%d", f.sourceSubjRef, i)),
+						AuditRunID:         auditRunID,
+						SnapshotID:         snapID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         f.sourceSubjRef,
+						Field:              "url_identity",
+						Value:              u,
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{"sitecrawl_urls:1"},
+						ObservedAt:         now,
+					})
+				}
+			} else if !f.omitSourceURLIdent {
+				srcIdent := f.sourceURLIdent
+				if srcIdent == "" {
+					srcIdent = f.sourceURL
+				}
+				if srcIdent != "" {
+					obs = append(obs, audit.NormalizedObservation{
+						ObservationID:      audit.ObservationID(fmt.Sprintf("obs:src_ident:%s", f.sourceSubjRef)),
+						AuditRunID:         auditRunID,
+						SnapshotID:         snapID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         f.sourceSubjRef,
+						Field:              "url_identity",
+						Value:              srcIdent,
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{"sitecrawl_urls:1"},
+						ObservedAt:         now,
+					})
+				}
+			}
+
+			if f.sourceStatus != "" {
 				obs = append(obs, audit.NormalizedObservation{
-					ObservationID:      audit.ObservationID(fmt.Sprintf("obs:tgt_ident:%s", f.targetSubjRef)),
+					ObservationID:      audit.ObservationID(fmt.Sprintf("obs:src_stat:%s", f.sourceSubjRef)),
 					AuditRunID:         auditRunID,
 					SnapshotID:         snapID,
 					SubjectType:        audit.SubjectURL,
-					SubjectRef:         f.targetSubjRef,
-					Field:              "url_identity",
-					Value:              f.targetURLIdent,
+					SubjectRef:         f.sourceSubjRef,
+					Field:              "http_status",
+					Value:              f.sourceStatus,
 					DerivationType:     audit.DerivationDirect,
-					SourceEvidenceRefs: []string{"sitecrawl_urls:2"},
+					SourceEvidenceRefs: []string{"sitecrawl_pages:1"},
 					ObservedAt:         now,
 				})
+			}
+		}
+
+		// --- Target Observations on Target Subject Ref ---
+		if f.targetSubjRef != "" && !seenTargets[f.targetSubjRef] && !f.omitTargetSubject {
+			seenTargets[f.targetSubjRef] = true
+			if len(f.targetURLIdents) > 0 {
+				for i, u := range f.targetURLIdents {
+					obs = append(obs, audit.NormalizedObservation{
+						ObservationID:      audit.ObservationID(fmt.Sprintf("obs:tgt_ident:%s:%d", f.targetSubjRef, i)),
+						AuditRunID:         auditRunID,
+						SnapshotID:         snapID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         f.targetSubjRef,
+						Field:              "url_identity",
+						Value:              u,
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{"sitecrawl_urls:2"},
+						ObservedAt:         now,
+					})
+				}
+			} else if !f.omitTargetURLIdent {
+				if f.targetURLIdent != "" {
+					obs = append(obs, audit.NormalizedObservation{
+						ObservationID:      audit.ObservationID(fmt.Sprintf("obs:tgt_ident:%s", f.targetSubjRef)),
+						AuditRunID:         auditRunID,
+						SnapshotID:         snapID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         f.targetSubjRef,
+						Field:              "url_identity",
+						Value:              f.targetURLIdent,
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{"sitecrawl_urls:2"},
+						ObservedAt:         now,
+					})
+				}
 			}
 
 			if len(f.targetStatuses) > 0 {
@@ -1121,4 +1204,710 @@ func TestEngine_Link_HermeticSQLiteIntegration(t *testing.T) {
 			}
 		}
 	}
+}
+
+// ============================================================================
+// Group I: Mandatory Correction Tests — Source Identity (Section 8.A)
+// ============================================================================
+
+func TestEngine_Link_Correction_SourceIdentity(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	runID := audit.AuditRunID("run:link:src:ident")
+	snapID := audit.SnapshotID("snap:link:src:ident")
+
+	t.Run("valid source subject and matching URL -> evaluation proceeds", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:src:ident:1:0",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:src:ident:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/target",
+			targetSubjRef:  "url:run:link:src:ident:2",
+			targetURLIdent: "https://example.com/target",
+			targetStatus:   "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusPass {
+				t.Errorf("%s: expected PASS for valid source and 200 target, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("source subject reference has correct prefix but subject does not exist -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:        "link:run:link:src:ident:1:1",
+			sourceURL:         "https://example.com/source",
+			sourceSubjRef:     "url:run:link:src:ident:99", // Well-formed ref but subject not in snapshot
+			omitSourceSubject: true,
+			isInternal:        "true",
+			targetURL:         "https://example.com/target",
+			targetSubjRef:     "url:run:link:src:ident:2",
+			targetURLIdent:    "https://example.com/target",
+			targetStatus:      "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN when source subject does not exist, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("source subject exists but url_identity differs from link_source_url -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:      "link:run:link:src:ident:1:2",
+			sourceURL:       "https://example.com/source-a",
+			sourceSubjRef:   "url:run:link:src:ident:1",
+			sourceURLIdent:  "https://example.com/source-b", // Mismatch!
+			isInternal:      "true",
+			targetURL:       "https://example.com/target",
+			targetSubjRef:   "url:run:link:src:ident:2",
+			targetURLIdent:  "https://example.com/target",
+			targetStatus:    "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN when source url_identity differs from link_source_url, got %v", rID, res[0].Status)
+			}
+			// Verify relevant identity evidence was preserved even on UNKNOWN
+			hasSrcIdent := false
+			for _, ref := range res[0].EvidenceRefs {
+				if ref.EvidenceRef == "obs:src_ident:url:run:link:src:ident:1" {
+					hasSrcIdent = true
+					break
+				}
+			}
+			if !hasSrcIdent {
+				t.Errorf("%s: expected source url_identity to be cited in evidence refs on UNKNOWN result", rID)
+			}
+		}
+	})
+
+	t.Run("source subject has no url_identity -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:         "link:run:link:src:ident:1:3",
+			sourceURL:          "https://example.com/source",
+			sourceSubjRef:      "url:run:link:src:ident:1",
+			omitSourceURLIdent: true,
+			sourceStatus:       "200", // Subject exists via http_status observation, but has no url_identity!
+			isInternal:         "true",
+			targetURL:          "https://example.com/target",
+			targetSubjRef:      "url:run:link:src:ident:2",
+			targetURLIdent:     "https://example.com/target",
+			targetStatus:       "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN when source subject has no url_identity, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("source subject has conflicting url_identity observations -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:      "link:run:link:src:ident:1:4",
+			sourceURL:       "https://example.com/source",
+			sourceSubjRef:   "url:run:link:src:ident:1",
+			sourceURLIdents: []string{"https://example.com/source", "https://example.com/source-conflict"},
+			isInternal:      "true",
+			targetURL:       "https://example.com/target",
+			targetSubjRef:   "url:run:link:src:ident:2",
+			targetURLIdent:  "https://example.com/target",
+			targetStatus:    "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN when source subject has conflicting url_identity, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("source subject reference belongs to another audit run -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:src:ident:1:5",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:OTHER_RUN:1", // Cross-run source reference!
+			isInternal:     "true",
+			targetURL:      "https://example.com/target",
+			targetSubjRef:  "url:run:link:src:ident:2",
+			targetURLIdent: "https://example.com/target",
+			targetStatus:   "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN when source subject reference is from another run, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("malformed source subject reference -> UNKNOWN", func(t *testing.T) {
+		for _, badRef := range []string{"not-a-url-ref", "url:", "url:run:link:src:ident:"} {
+			fixture := linkTestFixture{
+				subjectRef:     "link:run:link:src:ident:1:6",
+				sourceURL:      "https://example.com/source",
+				sourceSubjRef:  badRef,
+				isInternal:     "true",
+				targetURL:      "https://example.com/target",
+				targetSubjRef:  "url:run:link:src:ident:2",
+				targetURLIdent: "https://example.com/target",
+				targetStatus:   "200",
+			}
+			snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+			for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+				res, err := eng.EvaluateRule(context.Background(), snap, rID)
+				if err != nil {
+					t.Fatalf("%s failed with bad ref %q: %v", rID, badRef, err)
+				}
+				if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+					t.Errorf("%s: expected UNKNOWN for malformed source ref %q, got %v", rID, badRef, res[0].Status)
+				}
+			}
+		}
+	})
+}
+
+// ============================================================================
+// Group J: Mandatory Correction Tests — Target Identity (Section 8.B)
+// ============================================================================
+
+func TestEngine_Link_Correction_TargetIdentity(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	runID := audit.AuditRunID("run:link:tgt:ident")
+	snapID := audit.SnapshotID("snap:link:tgt:ident")
+
+	t.Run("valid target subject and matching URL -> status evaluation proceeds", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:tgt:ident:1:0",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:tgt:ident:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/target-404",
+			targetSubjRef:  "url:run:link:tgt:ident:2",
+			targetURLIdent: "https://example.com/target-404",
+			targetStatus:   "404",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		res003, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-003")
+		if err != nil {
+			t.Fatalf("Evaluate AR-LINK-003 failed: %v", err)
+		}
+		if len(res003) != 1 || res003[0].Status != audit.StatusFail {
+			t.Errorf("AR-LINK-003: expected FAIL for valid target with 404, got %v", res003[0].Status)
+		}
+	})
+
+	t.Run("target ref has correct prefix but subject does not exist -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:        "link:run:link:tgt:ident:1:1",
+			sourceURL:         "https://example.com/source",
+			sourceSubjRef:     "url:run:link:tgt:ident:1",
+			isInternal:        "true",
+			targetURL:         "https://example.com/target",
+			targetSubjRef:     "url:run:link:tgt:ident:99", // Referenced target subject does not exist
+			omitTargetSubject: true,
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN when target subject does not exist, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("target subject exists but url_identity differs from link_target -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:tgt:ident:1:2",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:tgt:ident:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/target-a",
+			targetSubjRef:  "url:run:link:tgt:ident:2",
+			targetURLIdent: "https://example.com/target-b", // Mismatch!
+			targetStatus:   "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN when target url_identity differs from link_target, got %v", rID, res[0].Status)
+			}
+			// Verify relevant identity evidence was preserved even on UNKNOWN
+			hasTgtIdent := false
+			for _, ref := range res[0].EvidenceRefs {
+				if ref.EvidenceRef == "obs:tgt_ident:url:run:link:tgt:ident:2" {
+					hasTgtIdent = true
+					break
+				}
+			}
+			if !hasTgtIdent {
+				t.Errorf("%s: expected target url_identity to be cited in evidence refs on UNKNOWN result", rID)
+			}
+		}
+	})
+
+	t.Run("target subject has no url_identity -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:         "link:run:link:tgt:ident:1:3",
+			sourceURL:          "https://example.com/source",
+			sourceSubjRef:      "url:run:link:tgt:ident:1",
+			isInternal:         "true",
+			targetURL:          "https://example.com/target",
+			targetSubjRef:      "url:run:link:tgt:ident:2",
+			omitTargetURLIdent: true,
+			targetStatus:       "200", // Target subject exists via http_status, but has no url_identity!
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN when target subject has no url_identity, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("target subject has conflicting url_identity observations -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:      "link:run:link:tgt:ident:1:4",
+			sourceURL:       "https://example.com/source",
+			sourceSubjRef:   "url:run:link:tgt:ident:1",
+			isInternal:      "true",
+			targetURL:       "https://example.com/target",
+			targetSubjRef:   "url:run:link:tgt:ident:2",
+			targetURLIdents: []string{"https://example.com/target", "https://example.com/target-conflict"},
+			targetStatus:    "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN when target subject has conflicting url_identity, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("target subject reference belongs to another audit run -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:tgt:ident:1:5",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:tgt:ident:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/target",
+			targetSubjRef:  "url:run:OTHER_RUN:2", // Cross-run target reference!
+			targetURLIdent: "https://example.com/target",
+			targetStatus:   "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN when target subject reference belongs to another run, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("malformed target subject reference -> UNKNOWN", func(t *testing.T) {
+		for _, badRef := range []string{"invalid-target-ref", "url:", "url:run:link:tgt:ident:"} {
+			fixture := linkTestFixture{
+				subjectRef:     "link:run:link:tgt:ident:1:6",
+				sourceURL:      "https://example.com/source",
+				sourceSubjRef:  "url:run:link:tgt:ident:1",
+				isInternal:     "true",
+				targetURL:      "https://example.com/target",
+				targetSubjRef:  badRef,
+				targetURLIdent: "https://example.com/target",
+				targetStatus:   "200",
+			}
+			snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+			for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+				res, err := eng.EvaluateRule(context.Background(), snap, rID)
+				if err != nil {
+					t.Fatalf("%s failed with bad ref %q: %v", rID, badRef, err)
+				}
+				if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+					t.Errorf("%s: expected UNKNOWN for malformed target ref %q, got %v", rID, badRef, res[0].Status)
+				}
+			}
+		}
+	})
+}
+
+// ============================================================================
+// Group K: Mandatory Correction Tests — False-Positive Prevention (Section 8.C)
+// ============================================================================
+
+func TestEngine_Link_Correction_FalsePositivePrevention(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	runID := audit.AuditRunID("run:link:fp:prev")
+	snapID := audit.SnapshotID("snap:link:fp:prev")
+
+	t.Run("mismatched target subject returning HTTP 404 does NOT produce FAIL -> UNKNOWN", func(t *testing.T) {
+		// Link target: https://example.com/a
+		// Target subject reference points to URL /b
+		// URL /b has verified HTTP 404
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:fp:prev:1:0",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:fp:prev:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/a",
+			targetSubjRef:  "url:run:link:fp:prev:2",
+			targetURLIdent: "https://example.com/b", // URL /b identity mismatch!
+			targetStatus:   "404",                    // 404 belongs to /b, not /a!
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		// AR-LINK-002 -> UNKNOWN
+		res002, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-002")
+		if err != nil {
+			t.Fatalf("AR-LINK-002 failed: %v", err)
+		}
+		if len(res002) != 1 || res002[0].Status != audit.StatusUnknown {
+			t.Errorf("AR-LINK-002 expected UNKNOWN, got %v", res002[0].Status)
+		}
+
+		// AR-LINK-003 -> UNKNOWN (CRITICAL: Must NOT be FAIL because 404 belongs to /b!)
+		res003, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-003")
+		if err != nil {
+			t.Fatalf("AR-LINK-003 failed: %v", err)
+		}
+		if len(res003) != 1 || res003[0].Status != audit.StatusUnknown {
+			t.Errorf("AR-LINK-003 expected UNKNOWN, got %v (must NOT conclude /a returns 404!)", res003[0].Status)
+		}
+
+		// AR-LINK-004 -> UNKNOWN
+		res004, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-004")
+		if err != nil {
+			t.Fatalf("AR-LINK-004 failed: %v", err)
+		}
+		if len(res004) != 1 || res004[0].Status != audit.StatusUnknown {
+			t.Errorf("AR-LINK-004 expected UNKNOWN, got %v", res004[0].Status)
+		}
+	})
+
+	t.Run("mismatched target subject returning HTTP 301 does NOT produce FAIL -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:fp:prev:1:1",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:fp:prev:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/a",
+			targetSubjRef:  "url:run:link:fp:prev:2",
+			targetURLIdent: "https://example.com/b", // URL /b identity mismatch!
+			targetStatus:   "301",                    // 301 belongs to /b, not /a!
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		// AR-LINK-002 -> UNKNOWN (Must NOT be FAIL!)
+		res002, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-002")
+		if err != nil {
+			t.Fatalf("AR-LINK-002 failed: %v", err)
+		}
+		if len(res002) != 1 || res002[0].Status != audit.StatusUnknown {
+			t.Errorf("AR-LINK-002 expected UNKNOWN, got %v (must NOT conclude /a returns 301!)", res002[0].Status)
+		}
+
+		// AR-LINK-003 -> UNKNOWN
+		res003, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-003")
+		if err != nil {
+			t.Fatalf("AR-LINK-003 failed: %v", err)
+		}
+		if len(res003) != 1 || res003[0].Status != audit.StatusUnknown {
+			t.Errorf("AR-LINK-003 expected UNKNOWN, got %v", res003[0].Status)
+		}
+
+		// AR-LINK-004 -> UNKNOWN
+		res004, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-004")
+		if err != nil {
+			t.Fatalf("AR-LINK-004 failed: %v", err)
+		}
+		if len(res004) != 1 || res004[0].Status != audit.StatusUnknown {
+			t.Errorf("AR-LINK-004 expected UNKNOWN, got %v", res004[0].Status)
+		}
+	})
+
+	t.Run("mismatched target subject returning HTTP 500 does NOT produce FAIL -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:fp:prev:1:2",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:fp:prev:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/a",
+			targetSubjRef:  "url:run:link:fp:prev:2",
+			targetURLIdent: "https://example.com/b", // URL /b identity mismatch!
+			targetStatus:   "500",                    // 500 belongs to /b, not /a!
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		// AR-LINK-002 -> UNKNOWN
+		res002, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-002")
+		if err != nil {
+			t.Fatalf("AR-LINK-002 failed: %v", err)
+		}
+		if len(res002) != 1 || res002[0].Status != audit.StatusUnknown {
+			t.Errorf("AR-LINK-002 expected UNKNOWN, got %v", res002[0].Status)
+		}
+
+		// AR-LINK-003 -> UNKNOWN
+		res003, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-003")
+		if err != nil {
+			t.Fatalf("AR-LINK-003 failed: %v", err)
+		}
+		if len(res003) != 1 || res003[0].Status != audit.StatusUnknown {
+			t.Errorf("AR-LINK-003 expected UNKNOWN, got %v", res003[0].Status)
+		}
+
+		// AR-LINK-004 -> UNKNOWN (Must NOT be FAIL!)
+		res004, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-004")
+		if err != nil {
+			t.Fatalf("AR-LINK-004 failed: %v", err)
+		}
+		if len(res004) != 1 || res004[0].Status != audit.StatusUnknown {
+			t.Errorf("AR-LINK-004 expected UNKNOWN, got %v (must NOT conclude /a returns 500!)", res004[0].Status)
+		}
+	})
+}
+
+// ============================================================================
+// Group L: Mandatory Correction Tests — Identity Edge Cases (Section 8.D)
+// ============================================================================
+
+func TestEngine_Link_Correction_IdentityEdgeCases(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	runID := audit.AuditRunID("run:link:edge")
+	snapID := audit.SnapshotID("snap:link:edge")
+
+	t.Run("same hostname, different paths -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:edge:1:0",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:edge:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/path-one",
+			targetSubjRef:  "url:run:link:edge:2",
+			targetURLIdent: "https://example.com/path-two",
+			targetStatus:   "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN for different paths, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("same path, different query parameters -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:edge:1:1",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:edge:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/search?q=foo",
+			targetSubjRef:  "url:run:link:edge:2",
+			targetURLIdent: "https://example.com/search?q=bar",
+			targetStatus:   "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN for different query params, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("HTTP vs HTTPS scheme difference -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:edge:1:2",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:edge:1",
+			isInternal:     "true",
+			targetURL:      "http://example.com/page",
+			targetSubjRef:  "url:run:link:edge:2",
+			targetURLIdent: "https://example.com/page",
+			targetStatus:   "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN for HTTP vs HTTPS mismatch, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("trailing slash difference -> UNKNOWN", func(t *testing.T) {
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:edge:1:3",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:edge:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/about",
+			targetSubjRef:  "url:run:link:edge:2",
+			targetURLIdent: "https://example.com/about/",
+			targetStatus:   "200",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN for trailing slash mismatch, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("target redirect destination is not treated as original URL identity -> UNKNOWN", func(t *testing.T) {
+		// Link target is /original, but target subject identity is /redirected-target
+		fixture := linkTestFixture{
+			subjectRef:     "link:run:link:edge:1:4",
+			sourceURL:      "https://example.com/source",
+			sourceSubjRef:  "url:run:link:edge:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/original",
+			targetSubjRef:  "url:run:link:edge:2",
+			targetURLIdent: "https://example.com/redirected-target", // Redirect destination cannot substitute original identity!
+			targetStatus:   "200",
+			targetFinalURL: "https://example.com/redirected-target",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{fixture}, runID, snapID)
+
+		for _, rID := range []string{"AR-LINK-002", "AR-LINK-003", "AR-LINK-004"} {
+			res, err := eng.EvaluateRule(context.Background(), snap, rID)
+			if err != nil {
+				t.Fatalf("%s failed: %v", rID, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("%s: expected UNKNOWN when target redirect destination differs from original target identity, got %v", rID, res[0].Status)
+			}
+		}
+	})
+
+	t.Run("two distinct link subjects referencing the same valid target -> both evaluated properly", func(t *testing.T) {
+		f1 := linkTestFixture{
+			subjectRef:     "link:run:link:edge:1:5",
+			sourceURL:      "https://example.com/source-1",
+			sourceSubjRef:  "url:run:link:edge:1",
+			isInternal:     "true",
+			targetURL:      "https://example.com/shared-target",
+			targetSubjRef:  "url:run:link:edge:3",
+			targetURLIdent: "https://example.com/shared-target",
+			targetStatus:   "404",
+		}
+		f2 := linkTestFixture{
+			subjectRef:     "link:run:link:edge:2:5",
+			sourceURL:      "https://example.com/source-2",
+			sourceSubjRef:  "url:run:link:edge:2",
+			isInternal:     "true",
+			targetURL:      "https://example.com/shared-target",
+			targetSubjRef:  "url:run:link:edge:3",
+			targetURLIdent: "https://example.com/shared-target",
+			targetStatus:   "404",
+		}
+		snap := newLinkSnapshot([]linkTestFixture{f1, f2}, runID, snapID)
+
+		res003, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule AR-LINK-003 failed: %v", err)
+		}
+		if len(res003) != 2 {
+			t.Fatalf("expected 2 results, got %d", len(res003))
+		}
+		if res003[0].Status != audit.StatusFail || res003[1].Status != audit.StatusFail {
+			t.Errorf("both links to 404 target must evaluate to FAIL on AR-LINK-003: %v, %v", res003[0].Status, res003[1].Status)
+		}
+		if res003[0].RuleResultID == res003[1].RuleResultID {
+			t.Errorf("rule result IDs must be distinct: %s vs %s", res003[0].RuleResultID, res003[1].RuleResultID)
+		}
+	})
 }

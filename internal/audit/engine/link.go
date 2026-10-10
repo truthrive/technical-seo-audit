@@ -183,7 +183,7 @@ func evaluateLinkTargetStatus(
 		}
 
 		// 4. Check source URL identity and source subject reference
-		_, sourceURLUsable, sourceURLConflict := extractSingleObsValue(sourceURLObs)
+		sourceURLVal, sourceURLUsable, sourceURLConflict := extractSingleObsValue(sourceURLObs)
 		sourceRefVal, sourceRefUsable, sourceRefConflict := extractSingleObsValue(sourceRefObs)
 		if !sourceURLUsable || !sourceRefUsable {
 			var summary string
@@ -200,11 +200,14 @@ func evaluateLinkTargetStatus(
 			continue
 		}
 
-		if !strings.HasPrefix(sourceRefVal, expectedURLPrefix) {
-			summary := fmt.Sprintf("Source subject reference %q does not match current audit run %q.", sourceRefVal, snapshot.AuditRunID)
+		sourceValidation := validateReferencedURLSubject(idx, snapshot, "Source", sourceRefVal, sourceURLVal, expectedURLPrefix)
+		if !sourceValidation.valid {
 			refs := buildLinkContextRefs()
 			refs = append(refs, buildEvidenceRefs(ruleResultID, isInternalObs, "link_is_internal", audit.EvidenceRoleContext)...)
-			results = append(results, makeLinkResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
+			if len(sourceValidation.urlIdentityObs) > 0 {
+				refs = append(refs, buildEvidenceRefs(ruleResultID, sourceValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
+			}
+			results = append(results, makeLinkResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, sourceValidation.summary, expectedSummary, evalTime, refs))
 			continue
 		}
 
@@ -221,23 +224,20 @@ func evaluateLinkTargetStatus(
 			}
 			refs := buildLinkContextRefs()
 			refs = append(refs, buildEvidenceRefs(ruleResultID, isInternalObs, "link_is_internal", audit.EvidenceRoleContext)...)
+			refs = append(refs, buildEvidenceRefs(ruleResultID, sourceValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
 			results = append(results, makeLinkResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
 			continue
 		}
 
-		if !strings.HasPrefix(targetRefVal, "url:") {
-			summary := fmt.Sprintf("Target subject reference %q is not a valid URL subject.", targetRefVal)
+		targetValidation := validateReferencedURLSubject(idx, snapshot, "Target", targetRefVal, targetURLVal, expectedURLPrefix)
+		if !targetValidation.valid {
 			refs := buildLinkContextRefs()
 			refs = append(refs, buildEvidenceRefs(ruleResultID, isInternalObs, "link_is_internal", audit.EvidenceRoleContext)...)
-			results = append(results, makeLinkResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
-			continue
-		}
-
-		if !strings.HasPrefix(targetRefVal, expectedURLPrefix) {
-			summary := fmt.Sprintf("Target subject reference %q does not match current audit run %q.", targetRefVal, snapshot.AuditRunID)
-			refs := buildLinkContextRefs()
-			refs = append(refs, buildEvidenceRefs(ruleResultID, isInternalObs, "link_is_internal", audit.EvidenceRoleContext)...)
-			results = append(results, makeLinkResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
+			refs = append(refs, buildEvidenceRefs(ruleResultID, sourceValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
+			if len(targetValidation.urlIdentityObs) > 0 {
+				refs = append(refs, buildEvidenceRefs(ruleResultID, targetValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
+			}
+			results = append(results, makeLinkResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, targetValidation.summary, expectedSummary, evalTime, refs))
 			continue
 		}
 
@@ -247,8 +247,8 @@ func evaluateLinkTargetStatus(
 			summary := "Target URL was discovered but not fetched; HTTP status observation is unavailable."
 			refs := buildLinkContextRefs()
 			refs = append(refs, buildEvidenceRefs(ruleResultID, isInternalObs, "link_is_internal", audit.EvidenceRoleContext)...)
-			targetURLIdentityObs := idx.GetObservations(audit.SubjectURL, targetRefVal, "url_identity")
-			refs = append(refs, buildEvidenceRefs(ruleResultID, targetURLIdentityObs, "url", audit.EvidenceRoleContext)...)
+			refs = append(refs, buildEvidenceRefs(ruleResultID, sourceValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
+			refs = append(refs, buildEvidenceRefs(ruleResultID, targetValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
 			results = append(results, makeLinkResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
 			continue
 		}
@@ -263,6 +263,8 @@ func evaluateLinkTargetStatus(
 			}
 			refs := buildLinkContextRefs()
 			refs = append(refs, buildEvidenceRefs(ruleResultID, isInternalObs, "link_is_internal", audit.EvidenceRoleContext)...)
+			refs = append(refs, buildEvidenceRefs(ruleResultID, sourceValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
+			refs = append(refs, buildEvidenceRefs(ruleResultID, targetValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
 			refs = append(refs, buildEvidenceRefs(ruleResultID, targetStatusObs, "http_status", audit.EvidenceRoleContext)...)
 			results = append(results, makeLinkResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
 			continue
@@ -273,6 +275,8 @@ func evaluateLinkTargetStatus(
 			summary := fmt.Sprintf("Target HTTP status observation %q is malformed.", statusVal)
 			refs := buildLinkContextRefs()
 			refs = append(refs, buildEvidenceRefs(ruleResultID, isInternalObs, "link_is_internal", audit.EvidenceRoleContext)...)
+			refs = append(refs, buildEvidenceRefs(ruleResultID, sourceValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
+			refs = append(refs, buildEvidenceRefs(ruleResultID, targetValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
 			refs = append(refs, buildEvidenceRefs(ruleResultID, targetStatusObs, "http_status", audit.EvidenceRoleContext)...)
 			results = append(results, makeLinkResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
 			continue
@@ -282,6 +286,8 @@ func evaluateLinkTargetStatus(
 			summary := fmt.Sprintf("Target HTTP status code %d is outside valid HTTP range 100-599.", statusCode)
 			refs := buildLinkContextRefs()
 			refs = append(refs, buildEvidenceRefs(ruleResultID, isInternalObs, "link_is_internal", audit.EvidenceRoleContext)...)
+			refs = append(refs, buildEvidenceRefs(ruleResultID, sourceValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
+			refs = append(refs, buildEvidenceRefs(ruleResultID, targetValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
 			refs = append(refs, buildEvidenceRefs(ruleResultID, targetStatusObs, "http_status", audit.EvidenceRoleContext)...)
 			results = append(results, makeLinkResult(rule, snapshot, subjectRef, ruleResultID, audit.StatusUnknown, summary, expectedSummary, evalTime, refs))
 			continue
@@ -323,10 +329,9 @@ func evaluateLinkTargetStatus(
 		// Build final evidence refs
 		refs := buildLinkContextRefs()
 		refs = append(refs, buildEvidenceRefs(ruleResultID, isInternalObs, "link_is_internal", audit.EvidenceRoleContext)...)
+		refs = append(refs, buildEvidenceRefs(ruleResultID, sourceValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
+		refs = append(refs, buildEvidenceRefs(ruleResultID, targetValidation.urlIdentityObs, "url", audit.EvidenceRoleContext)...)
 		refs = append(refs, buildEvidenceRefs(ruleResultID, targetStatusObs, "http_status", audit.EvidenceRolePrimary)...)
-
-		targetURLIdentityObs := idx.GetObservations(audit.SubjectURL, targetRefVal, "url_identity")
-		refs = append(refs, buildEvidenceRefs(ruleResultID, targetURLIdentityObs, "url", audit.EvidenceRoleContext)...)
 
 		targetFinalURLObs := idx.GetObservations(audit.SubjectURL, targetRefVal, "redirect_final_url")
 		if len(targetFinalURLObs) > 0 {
@@ -337,6 +342,95 @@ func evaluateLinkTargetStatus(
 	}
 
 	return results, nil
+}
+
+// subjectIdentityValidation holds the result of validating a referenced URL subject's identity.
+type subjectIdentityValidation struct {
+	valid          bool
+	summary        string
+	urlIdentityObs []audit.NormalizedObservation
+}
+
+// validateReferencedURLSubject verifies that a subject reference:
+// 1. Is well-formed and belongs to the current audit run (url:<audit_run_id>:<id>).
+// 2. Exists as an actual SubjectURL in the frozen snapshot.
+// 3. Has usable url_identity evidence (present, non-empty, non-conflicting).
+// 4. Matches the expected normalized URL string exactly.
+func validateReferencedURLSubject(
+	idx *EvidenceIndex,
+	snapshot *audit.EvidenceSnapshot,
+	subjectRole string, // "Source" or "Target"
+	refVal string,
+	expectedURL string,
+	expectedURLPrefix string,
+) subjectIdentityValidation {
+	if !strings.HasPrefix(refVal, "url:") {
+		return subjectIdentityValidation{
+			valid:   false,
+			summary: fmt.Sprintf("%s subject reference %q is not a valid URL subject.", subjectRole, refVal),
+		}
+	}
+
+	if !strings.HasPrefix(refVal, expectedURLPrefix) {
+		return subjectIdentityValidation{
+			valid:   false,
+			summary: fmt.Sprintf("%s subject reference %q does not match current audit run %q.", subjectRole, refVal, snapshot.AuditRunID),
+		}
+	}
+
+	if refVal == expectedURLPrefix {
+		return subjectIdentityValidation{
+			valid:   false,
+			summary: fmt.Sprintf("%s subject reference %q is malformed; missing subject identifier.", subjectRole, refVal),
+		}
+	}
+
+	// 2. Verify referenced SubjectURL exists in snapshot
+	if idx.bySubject == nil || idx.bySubject[audit.SubjectURL] == nil || idx.bySubject[audit.SubjectURL][refVal] == nil {
+		return subjectIdentityValidation{
+			valid:   false,
+			summary: fmt.Sprintf("Referenced %s URL subject %q does not exist in snapshot.", strings.ToLower(subjectRole), refVal),
+		}
+	}
+
+	// 3. Inspect url_identity observations on the referenced SubjectURL
+	urlIdentObs := idx.GetObservations(audit.SubjectURL, refVal, "url_identity")
+	if len(urlIdentObs) == 0 {
+		return subjectIdentityValidation{
+			valid:   false,
+			summary: fmt.Sprintf("Referenced %s URL subject %q has no url_identity observation.", strings.ToLower(subjectRole), refVal),
+		}
+	}
+
+	identVal, identUsable, identConflict := extractSingleObsValue(urlIdentObs)
+	if identConflict {
+		return subjectIdentityValidation{
+			valid:          false,
+			summary:        fmt.Sprintf("Referenced %s URL subject %q has conflicting url_identity observations.", strings.ToLower(subjectRole), refVal),
+			urlIdentityObs: urlIdentObs,
+		}
+	}
+	if !identUsable {
+		return subjectIdentityValidation{
+			valid:          false,
+			summary:        fmt.Sprintf("Referenced %s URL subject %q has malformed url_identity observation.", strings.ToLower(subjectRole), refVal),
+			urlIdentityObs: urlIdentObs,
+		}
+	}
+
+	// 4. Verify url_identity matches expected URL exactly
+	if identVal != expectedURL {
+		return subjectIdentityValidation{
+			valid:          false,
+			summary:        fmt.Sprintf("Referenced %s URL subject %q identity %q does not match link %s %q.", strings.ToLower(subjectRole), refVal, identVal, strings.ToLower(subjectRole), expectedURL),
+			urlIdentityObs: urlIdentObs,
+		}
+	}
+
+	return subjectIdentityValidation{
+		valid:          true,
+		urlIdentityObs: urlIdentObs,
+	}
 }
 
 // checkNonHTTPScheme determines whether a target URL is verified to have a non-HTTP scheme.
