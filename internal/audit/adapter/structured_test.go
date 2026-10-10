@@ -1155,15 +1155,17 @@ func TestAdapter_StructuredData_EvidenceGapSemantics(t *testing.T) {
 			t.Errorf("expected reason %q, got %q", expectedReason, absenceGap.Reason)
 		}
 
-		// Verify no automatic NOT_APPLICABLE or FAIL rule results produced for AR-ENTITY-001
+		// Verify no automatic NOT_APPLICABLE, PASS, or FAIL rule results produced for AR-ENTITY-001 when no blocks exist
 		eng, err := engine.New()
 		if err != nil {
 			t.Fatalf("engine.New failed: %v", err)
 		}
-		for _, ruleID := range eng.ImplementedRuleIDs() {
-			if ruleID == "AR-ENTITY-001" {
-				t.Fatalf("AR-ENTITY-001 must not be implemented in V1.7a")
-			}
+		results, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, "AR-ENTITY-001")
+		if err != nil {
+			t.Fatalf("EvaluateRule AR-ENTITY-001 failed: %v", err)
+		}
+		if len(results) != 0 {
+			t.Fatalf("expected 0 results for AR-ENTITY-001 on page without structured data, got %d", len(results))
 		}
 	})
 }
@@ -1321,8 +1323,8 @@ func TestAdapter_StructuredData_Regression(t *testing.T) {
 			t.Fatalf("engine.New failed: %v", err)
 		}
 		ruleIDs := eng.ImplementedRuleIDs()
-		if len(ruleIDs) != 12 {
-			t.Fatalf("expected exactly 12 implemented rules, got %d", len(ruleIDs))
+		if len(ruleIDs) != 13 {
+			t.Fatalf("expected exactly 13 implemented rules, got %d", len(ruleIDs))
 		}
 
 		for _, ruleID := range ruleIDs {
