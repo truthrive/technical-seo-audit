@@ -1241,13 +1241,13 @@ func TestAdapter_Sitemap_ExistingRuleRegression(t *testing.T) {
 		t.Fatalf("engine.New failed: %v", err)
 	}
 
-	// Verify exactly 16 evaluators implemented
+	// Verify exactly 17 evaluators implemented
 	implIDs := eng.ImplementedRuleIDs()
-	if len(implIDs) != 16 {
-		t.Errorf("expected exactly 16 implemented rules, got %d: %v", len(implIDs), implIDs)
+	if len(implIDs) != 17 {
+		t.Errorf("expected exactly 17 implemented rules, got %d: %v", len(implIDs), implIDs)
 	}
 
-	// Execute all 16 evaluators
+	// Execute all 17 evaluators
 	for _, ruleID := range implIDs {
 		results, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, ruleID)
 		if err != nil {
@@ -1258,12 +1258,12 @@ func TestAdapter_Sitemap_ExistingRuleRegression(t *testing.T) {
 		}
 	}
 
-	// Verify remaining sitemap rules (AR-DISC-001, 002, 006) are NOT implemented
-	for _, i := range []int{1, 2, 6} {
+	// Verify remaining sitemap rules (AR-DISC-001, 002) are NOT implemented
+	for _, i := range []int{1, 2} {
 		discRuleID := fmt.Sprintf("AR-DISC-%03d", i)
 		_, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, discRuleID)
 		if err == nil {
-			t.Errorf("sitemap rule %s must NOT be implemented in V1.8d-3", discRuleID)
+			t.Errorf("sitemap rule %s must NOT be implemented in V1.8d-4", discRuleID)
 		}
 	}
 }

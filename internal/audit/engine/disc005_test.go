@@ -1663,8 +1663,8 @@ func TestAR_DISC_005_HermeticSQLiteIntegrationSuite(t *testing.T) {
 		}
 	})
 
-	// 14. All 16 evaluators remain green and unaffected
-	t.Run("14. All 16 evaluators execute without regression", func(t *testing.T) {
+	// 14. All 17 evaluators remain green and unaffected
+	t.Run("14. All 17 evaluators execute without regression", func(t *testing.T) {
 		db := newIntegrationDB(t)
 		runID := "run:int:disc005:allrules"
 		auditRunID := audit.AuditRunID("audit:" + runID)
@@ -1698,8 +1698,8 @@ func TestAR_DISC_005_HermeticSQLiteIntegrationSuite(t *testing.T) {
 		}
 
 		implIDs := eng.ImplementedRuleIDs()
-		if len(implIDs) != 16 {
-			t.Fatalf("expected exactly 16 implemented rules, got %d", len(implIDs))
+		if len(implIDs) != 17 {
+			t.Fatalf("expected exactly 17 implemented rules, got %d", len(implIDs))
 		}
 
 		for _, ruleID := range implIDs {
@@ -1707,8 +1707,8 @@ func TestAR_DISC_005_HermeticSQLiteIntegrationSuite(t *testing.T) {
 			if err != nil {
 				t.Fatalf("evaluating rule %s failed: %v", ruleID, err)
 			}
-			// AR-DISC-003, AR-DISC-004, and AR-DISC-005 evaluate with non-empty results
-			if ruleID == "AR-DISC-003" || ruleID == "AR-DISC-004" || ruleID == "AR-DISC-005" {
+			// AR-DISC-003, AR-DISC-004, AR-DISC-005, and AR-DISC-006 evaluate with non-empty results
+			if ruleID == "AR-DISC-003" || ruleID == "AR-DISC-004" || ruleID == "AR-DISC-005" || ruleID == "AR-DISC-006" {
 				if len(res) == 0 {
 					t.Errorf("expected non-empty results for %s", ruleID)
 				}
