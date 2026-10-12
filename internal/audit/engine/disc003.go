@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,7 +29,7 @@ const ruleIDDISC003 = "AR-DISC-003"
 // - UNKNOWN: Parser execution could not be completed or its outcome is unavailable
 //            (unavailable, missing parse status, missing/conflicting URL identity, or contradictory evidence).
 // - NOT_APPLICABLE: The sitemap body was not retrieved
-//                   (not_attempted with non-2xx status, HTTP 404/500, network failure before response body).
+//                   (not_attempted with non-200 status, HTTP 404/500, network failure before response body).
 //
 // Consumed observations on SubjectSitemap:
 // - sitemap_url            (Context)
@@ -137,9 +138,10 @@ func evaluateDISC003(
 		// 4. Resolve sitemap_fetch_complete
 		fetchCompleteObs := idx.GetObservations(audit.SubjectSitemap, subjectRef, "sitemap_fetch_complete")
 		var (
-			fetchCompleteUsable   bool
-			fetchCompleteConflict bool
-			fetchCompleteVal      bool
+			fetchCompleteUsable    bool
+			fetchCompleteConflict  bool
+			fetchCompleteMalformed bool
+			fetchCompleteVal       bool
 		)
 		if len(fetchCompleteObs) > 0 {
 			firstFC := strings.TrimSpace(fetchCompleteObs[0].Value)
@@ -157,6 +159,7 @@ func evaluateDISC003(
 					fetchCompleteVal = b
 				} else {
 					fetchCompleteUsable = false
+					fetchCompleteMalformed = true
 				}
 			}
 		}
@@ -238,73 +241,24 @@ func evaluateDISC003(
 			observedSummary = "Required final HTTP status evidence is unavailable or malformed."
 		} else if len(parseStatusObs) == 0 {
 			// Parse status observation is missing entirely
-			if finalStatusCode >= 200 && finalStatusCode <= 299 {
+			if finalStatusCode == http.StatusOK {
 				evalStatus = audit.StatusUnknown
 				observedSummary = "Required sitemap parse status evidence is unavailable."
 			} else {
 				evalStatus = audit.StatusNotApplicable
 				observedSummary = "Sitemap document body was not retrieved."
 			}
-		} else {
-			// We have a single consistent parseStatusVal and finalStatusCode
-			is2xx := finalStatusCode >= 200 && finalStatusCode <= 299
-
+		} else if finalStatusCode != http.StatusOK {
+			// Precondition requires HTTP 200. For non-200 responses, distinguish a clearly unmet
+			// body-retrieval precondition from contradictory or insufficient observations.
 			switch parseStatusVal {
-			case "parsed":
-				if !is2xx {
-					evalStatus = audit.StatusUnknown
-					observedSummary = fmt.Sprintf("Contradictory evidence: sitemap returned HTTP %d but reported parsed status.", finalStatusCode)
-				} else if docTypeUsable && docTypeVal == "URLSET" {
-					evalStatus = audit.StatusPass
-					observedSummary = "Sitemap document was successfully parsed as a supported urlset."
-				} else if docTypeUsable && docTypeVal == "SITEMAP_INDEX" {
-					evalStatus = audit.StatusPass
-					observedSummary = "Sitemap document was successfully parsed as a supported sitemap index."
+			case "not_attempted":
+				evalStatus = audit.StatusNotApplicable
+				if finalStatusCode > 0 {
+					observedSummary = fmt.Sprintf("Sitemap document body was not retrieved (HTTP status %d).", finalStatusCode)
 				} else {
-					evalStatus = audit.StatusUnknown
-					observedSummary = fmt.Sprintf("Contradictory evidence: sitemap parse status is parsed but document type %q is unsupported.", docTypeVal)
+					observedSummary = "Sitemap document body was not retrieved due to acquisition failure."
 				}
-
-			case "xml_error":
-				if !is2xx {
-					evalStatus = audit.StatusUnknown
-					observedSummary = fmt.Sprintf("Contradictory evidence: sitemap returned HTTP %d but reported xml_error parse status.", finalStatusCode)
-				} else if docTypeVal == "URLSET" || docTypeVal == "SITEMAP_INDEX" {
-					evalStatus = audit.StatusUnknown
-					observedSummary = "Contradictory evidence: sitemap reported xml_error but indicated a supported document type."
-				} else {
-					evalStatus = audit.StatusFail
-					if parseErrVal != "" {
-						observedSummary = fmt.Sprintf("Sitemap document is malformed XML: %s.", parseErrVal)
-					} else {
-						observedSummary = "Sitemap document is malformed XML."
-					}
-				}
-
-			case "unsupported_structure":
-				if !is2xx {
-					evalStatus = audit.StatusUnknown
-					observedSummary = fmt.Sprintf("Contradictory evidence: sitemap returned HTTP %d but reported unsupported_structure parse status.", finalStatusCode)
-				} else if docTypeVal == "URLSET" || docTypeVal == "SITEMAP_INDEX" {
-					evalStatus = audit.StatusUnknown
-					observedSummary = "Contradictory evidence: sitemap reported unsupported_structure but indicated a supported document type."
-				} else {
-					evalStatus = audit.StatusFail
-					observedSummary = "Sitemap document structure is unsupported; document contains no valid URL or sitemap entries."
-				}
-
-			case "empty_input":
-				if !is2xx {
-					evalStatus = audit.StatusUnknown
-					observedSummary = fmt.Sprintf("Contradictory evidence: sitemap returned HTTP %d but reported empty_input parse status.", finalStatusCode)
-				} else if docTypeVal == "URLSET" || docTypeVal == "SITEMAP_INDEX" {
-					evalStatus = audit.StatusUnknown
-					observedSummary = "Contradictory evidence: sitemap reported empty_input but indicated a supported document type."
-				} else {
-					evalStatus = audit.StatusFail
-					observedSummary = "Retrieved sitemap document body is empty."
-				}
-
 			case "unavailable":
 				evalStatus = audit.StatusUnknown
 				if parseErrVal != "" {
@@ -312,24 +266,101 @@ func evaluateDISC003(
 				} else {
 					observedSummary = "Sitemap parser execution could not be completed or parser outcome is unavailable."
 				}
-
-			case "not_attempted":
-				if !is2xx || (fetchCompleteUsable && !fetchCompleteVal) || finalStatusCode == 0 {
-					evalStatus = audit.StatusNotApplicable
-					if finalStatusCode > 0 {
-						observedSummary = fmt.Sprintf("Sitemap document body was not retrieved (HTTP status %d).", finalStatusCode)
-					} else {
-						observedSummary = "Sitemap document body was not retrieved due to acquisition failure."
-					}
-				} else {
-					// 2xx response but parsing was not attempted
-					evalStatus = audit.StatusUnknown
-					observedSummary = "HTTP response 200 was received but sitemap parser execution was not attempted."
-				}
-
+			case "parsed", "xml_error", "unsupported_structure", "empty_input":
+				evalStatus = audit.StatusUnknown
+				observedSummary = fmt.Sprintf("Contradictory evidence: sitemap returned HTTP %d but reported %s parse status.", finalStatusCode, parseStatusVal)
 			default:
 				evalStatus = audit.StatusUnknown
 				observedSummary = fmt.Sprintf("Unrecognized sitemap parse status %q.", parseStatusVal)
+			}
+		} else {
+			// Precondition: finalStatusCode == http.StatusOK.
+			// Validate fetch completion and body retrieval integrity before evaluating parse outcome.
+			if len(fetchCompleteObs) == 0 || !fetchCompleteUsable {
+				evalStatus = audit.StatusUnknown
+				if fetchCompleteMalformed {
+					observedSummary = "Sitemap fetch completion evidence is malformed."
+				} else {
+					observedSummary = "Sitemap fetch completion evidence is unavailable."
+				}
+			} else if !fetchCompleteVal {
+				// sitemap_fetch_complete is false (fetch incomplete)
+				switch parseStatusVal {
+				case "not_attempted":
+					evalStatus = audit.StatusNotApplicable
+					observedSummary = "Sitemap document body was not retrieved (fetch incomplete)."
+				case "unavailable":
+					evalStatus = audit.StatusUnknown
+					observedSummary = "Sitemap parser execution could not be completed and fetch was incomplete."
+				case "parsed", "xml_error", "unsupported_structure", "empty_input":
+					evalStatus = audit.StatusUnknown
+					observedSummary = fmt.Sprintf("Contradictory evidence: sitemap fetch was incomplete but reported %s parse status.", parseStatusVal)
+				default:
+					evalStatus = audit.StatusUnknown
+					observedSummary = fmt.Sprintf("Unrecognized sitemap parse status %q.", parseStatusVal)
+				}
+			} else {
+				// Precondition fully met: finalStatusCode == http.StatusOK AND fetchCompleteUsable && fetchCompleteVal
+				switch parseStatusVal {
+				case "parsed":
+					if docTypeUsable && docTypeVal == "URLSET" {
+						evalStatus = audit.StatusPass
+						observedSummary = "Sitemap document was successfully parsed as a supported urlset."
+					} else if docTypeUsable && docTypeVal == "SITEMAP_INDEX" {
+						evalStatus = audit.StatusPass
+						observedSummary = "Sitemap document was successfully parsed as a supported sitemap index."
+					} else {
+						evalStatus = audit.StatusUnknown
+						observedSummary = fmt.Sprintf("Contradictory evidence: sitemap parse status is parsed but document type %q is unsupported.", docTypeVal)
+					}
+
+				case "xml_error":
+					if docTypeVal == "URLSET" || docTypeVal == "SITEMAP_INDEX" {
+						evalStatus = audit.StatusUnknown
+						observedSummary = "Contradictory evidence: sitemap reported xml_error but indicated a supported document type."
+					} else {
+						evalStatus = audit.StatusFail
+						if parseErrVal != "" {
+							observedSummary = fmt.Sprintf("Sitemap document is malformed XML: %s.", parseErrVal)
+						} else {
+							observedSummary = "Sitemap document is malformed XML."
+						}
+					}
+
+				case "unsupported_structure":
+					if docTypeVal == "URLSET" || docTypeVal == "SITEMAP_INDEX" {
+						evalStatus = audit.StatusUnknown
+						observedSummary = "Contradictory evidence: sitemap reported unsupported_structure but indicated a supported document type."
+					} else {
+						evalStatus = audit.StatusFail
+						observedSummary = "Sitemap document structure is unsupported; document contains no valid URL or sitemap entries."
+					}
+
+				case "empty_input":
+					if docTypeVal == "URLSET" || docTypeVal == "SITEMAP_INDEX" {
+						evalStatus = audit.StatusUnknown
+						observedSummary = "Contradictory evidence: sitemap reported empty_input but indicated a supported document type."
+					} else {
+						evalStatus = audit.StatusFail
+						observedSummary = "Retrieved sitemap document body is empty."
+					}
+
+				case "unavailable":
+					evalStatus = audit.StatusUnknown
+					if parseErrVal != "" {
+						observedSummary = fmt.Sprintf("Sitemap parser execution could not be completed: %s.", parseErrVal)
+					} else {
+						observedSummary = "Sitemap parser execution could not be completed or parser outcome is unavailable."
+					}
+
+				case "not_attempted":
+					evalStatus = audit.StatusUnknown
+					observedSummary = "HTTP response 200 was received but sitemap parser execution was not attempted."
+
+				default:
+					evalStatus = audit.StatusUnknown
+					observedSummary = fmt.Sprintf("Unrecognized sitemap parse status %q.", parseStatusVal)
+				}
 			}
 		}
 
@@ -440,18 +471,23 @@ func evaluateDISC003(
 			return dedupedRefs[i].RuleEvidenceRefID < dedupedRefs[j].RuleEvidenceRefID
 		})
 
-		// Guard: PASS or FAIL requires usable inputs
+		// Guard: PASS or FAIL requires usable inputs and satisfied preconditions
 		if evalStatus == audit.StatusPass || evalStatus == audit.StatusFail {
-			if !urlUsable || !finalStatusUsable || !parseStatusUsable || (evalStatus == audit.StatusPass && !docTypeUsable) {
+			if !urlUsable || !finalStatusUsable || finalStatusCode != http.StatusOK ||
+				!fetchCompleteUsable || !fetchCompleteVal || !parseStatusUsable ||
+				(evalStatus == audit.StatusPass && !docTypeUsable) {
 				return nil, fmt.Errorf("audit engine: internal error: rule result %s produced %s without usable inputs", ruleResultID, evalStatus)
 			}
-			var hasURLContext, hasFinalStatusContext, hasParseStatusPrimary, hasDocTypePrimary bool
+			var hasURLContext, hasFinalStatusContext, hasFetchCompleteContext, hasParseStatusPrimary, hasDocTypePrimary bool
 			for _, ref := range dedupedRefs {
 				if ref.Field == "sitemap_url" && ref.Role == audit.EvidenceRoleContext {
 					hasURLContext = true
 				}
 				if ref.Field == "final_http_status" && ref.Role == audit.EvidenceRoleContext {
 					hasFinalStatusContext = true
+				}
+				if ref.Field == "sitemap_fetch_complete" && ref.Role == audit.EvidenceRoleContext {
+					hasFetchCompleteContext = true
 				}
 				if ref.Field == "sitemap_parse_status" && ref.Role == audit.EvidenceRolePrimary {
 					hasParseStatusPrimary = true
@@ -460,9 +496,9 @@ func evaluateDISC003(
 					hasDocTypePrimary = true
 				}
 			}
-			if !hasURLContext || !hasFinalStatusContext || !hasParseStatusPrimary || (evalStatus == audit.StatusPass && !hasDocTypePrimary) {
-				return nil, fmt.Errorf("audit engine: internal error: rule result %s missing required evidence refs (url: %v, status: %v, parse: %v, docType: %v)",
-					ruleResultID, hasURLContext, hasFinalStatusContext, hasParseStatusPrimary, hasDocTypePrimary)
+			if !hasURLContext || !hasFinalStatusContext || !hasFetchCompleteContext || !hasParseStatusPrimary || (evalStatus == audit.StatusPass && !hasDocTypePrimary) {
+				return nil, fmt.Errorf("audit engine: internal error: rule result %s missing required evidence refs (url: %v, status: %v, fetchComplete: %v, parse: %v, docType: %v)",
+					ruleResultID, hasURLContext, hasFinalStatusContext, hasFetchCompleteContext, hasParseStatusPrimary, hasDocTypePrimary)
 			}
 		}
 

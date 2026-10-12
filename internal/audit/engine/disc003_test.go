@@ -693,6 +693,595 @@ func TestAR_DISC_003_MandatoryUnitSuite(t *testing.T) {
 }
 
 // ============================================================================
+// Section 10b: V1.8d-1 Correction Regression Tests
+// ============================================================================
+
+func TestAR_DISC_003_Correction_RegressionSuite(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	// ------------------------------------------------------------------------
+	// Group A: Exact HTTP 200 Precondition
+	// ------------------------------------------------------------------------
+	t.Run("A.1: HTTP 200 + parsed URLSET -> PASS", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:a1",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "true",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+			},
+		}, "run:test:a1", "snap:test:a1")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:a1", audit.StatusPass)
+	})
+
+	t.Run("A.2: HTTP 201 + parsed URLSET -> not PASS (UNKNOWN)", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:a2",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "201",
+				initialStatus: "201",
+				fetchComplete: "true",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+			},
+		}, "run:test:a2", "snap:test:a2")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status == audit.StatusPass {
+			t.Fatalf("HTTP 201 must not satisfy precondition to produce PASS")
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:a2", audit.StatusUnknown)
+	})
+
+	t.Run("A.3: HTTP 202 + xml_error -> not FAIL (UNKNOWN)", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:a3",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "202",
+				initialStatus: "202",
+				fetchComplete: "true",
+				parseStatus:   "xml_error",
+				docType:       "UNKNOWN",
+				parseError:    "syntax error",
+			},
+		}, "run:test:a3", "snap:test:a3")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status == audit.StatusFail {
+			t.Fatalf("HTTP 202 must not satisfy precondition to produce FAIL")
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:a3", audit.StatusUnknown)
+	})
+
+	t.Run("A.4: HTTP 204 + parsed URLSET -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:a4",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "204",
+				initialStatus: "204",
+				fetchComplete: "true",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+			},
+		}, "run:test:a4", "snap:test:a4")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status == audit.StatusPass {
+			t.Fatalf("HTTP 204 must not produce PASS")
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:a4", audit.StatusUnknown)
+	})
+
+	t.Run("A.5: HTTP 404 + not_attempted -> NOT_APPLICABLE", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:a5",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "404",
+				initialStatus: "404",
+				fetchComplete: "true",
+				parseStatus:   "not_attempted",
+				docType:       "UNKNOWN",
+			},
+		}, "run:test:a5", "snap:test:a5")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:a5", audit.StatusNotApplicable)
+	})
+
+	// ------------------------------------------------------------------------
+	// Group B: Fetch Completion Integrity
+	// ------------------------------------------------------------------------
+	t.Run("B.1: HTTP 200 + fetch_complete=false + parsed URLSET -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:b1",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "false",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+			},
+		}, "run:test:b1", "snap:test:b1")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status == audit.StatusPass {
+			t.Fatalf("fetch_complete=false must never produce PASS")
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:b1", audit.StatusUnknown)
+	})
+
+	t.Run("B.2: HTTP 200 + fetch_complete=false + xml_error -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:b2",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "false",
+				parseStatus:   "xml_error",
+				docType:       "UNKNOWN",
+				parseError:    "unexpected EOF",
+			},
+		}, "run:test:b2", "snap:test:b2")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status == audit.StatusFail {
+			t.Fatalf("fetch_complete=false must never produce FAIL")
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:b2", audit.StatusUnknown)
+	})
+
+	t.Run("B.3: HTTP 200 + fetch_complete=false + unsupported_structure -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:b3",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "false",
+				parseStatus:   "unsupported_structure",
+				docType:       "UNKNOWN",
+			},
+		}, "run:test:b3", "snap:test:b3")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status == audit.StatusFail {
+			t.Fatalf("fetch_complete=false must never produce FAIL")
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:b3", audit.StatusUnknown)
+	})
+
+	t.Run("B.4: HTTP 200 + fetch_complete=false + empty_input -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:b4",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "false",
+				parseStatus:   "empty_input",
+				docType:       "UNKNOWN",
+			},
+		}, "run:test:b4", "snap:test:b4")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status == audit.StatusFail {
+			t.Fatalf("fetch_complete=false must not produce FAIL for empty_input")
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:b4", audit.StatusUnknown)
+	})
+
+	t.Run("B.5: HTTP 200 + fetch_complete=true + parsed URLSET -> PASS", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:b5",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "true",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+			},
+		}, "run:test:b5", "snap:test:b5")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:b5", audit.StatusPass)
+	})
+
+	t.Run("B.6: HTTP 200 + fetch_complete=true + xml_error -> FAIL", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:b6",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "true",
+				parseStatus:   "xml_error",
+				docType:       "UNKNOWN",
+				parseError:    "unclosed tag",
+			},
+		}, "run:test:b6", "snap:test:b6")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:b6", audit.StatusFail)
+	})
+
+	// ------------------------------------------------------------------------
+	// Group C: Missing or Contradictory Evidence
+	// ------------------------------------------------------------------------
+	t.Run("C.1: Missing final HTTP status -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:c1",
+				url:           "https://example.com/sitemap.xml",
+				initialStatus: "200",
+				fetchComplete: "true",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+				omitFields:    []string{"final_http_status"},
+			},
+		}, "run:test:c1", "snap:test:c1")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:c1", audit.StatusUnknown)
+	})
+
+	t.Run("C.2: Malformed final HTTP status -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:c2",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "not_a_number",
+				initialStatus: "200",
+				fetchComplete: "true",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+			},
+		}, "run:test:c2", "snap:test:c2")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:c2", audit.StatusUnknown)
+	})
+
+	t.Run("C.3: Missing parse status with HTTP 200 -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:c3",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "true",
+				docType:       "URLSET",
+				omitFields:    []string{"sitemap_parse_status"},
+			},
+		}, "run:test:c3", "snap:test:c3")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:c3", audit.StatusUnknown)
+	})
+
+	t.Run("C.4: Missing parse status with HTTP 404 -> NOT_APPLICABLE", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:c4",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "404",
+				initialStatus: "404",
+				fetchComplete: "true",
+				omitFields:    []string{"sitemap_parse_status"},
+			},
+		}, "run:test:c4", "snap:test:c4")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:c4", audit.StatusNotApplicable)
+	})
+
+	t.Run("C.5: Conflicting parse status -> UNKNOWN", func(t *testing.T) {
+		now := time.Now().UTC()
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:c5",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "true",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+				customObs: []audit.NormalizedObservation{
+					{
+						ObservationID:      "obs:c5:conflict",
+						AuditRunID:         "run:test:c5",
+						SnapshotID:         "snap:test:c5",
+						SubjectType:        audit.SubjectSitemap,
+						SubjectRef:         "sm:run:c5",
+						Field:              "sitemap_parse_status",
+						Value:              "unavailable",
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{"sitecrawl_sitemaps:test"},
+						ObservedAt:         now,
+					},
+				},
+			},
+		}, "run:test:c5", "snap:test:c5")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:c5", audit.StatusUnknown)
+	})
+
+	t.Run("C.6: Conflicting fetch completion -> UNKNOWN", func(t *testing.T) {
+		now := time.Now().UTC()
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:c6",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "true",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+				customObs: []audit.NormalizedObservation{
+					{
+						ObservationID:      "obs:c6:conflict",
+						AuditRunID:         "run:test:c6",
+						SnapshotID:         "snap:test:c6",
+						SubjectType:        audit.SubjectSitemap,
+						SubjectRef:         "sm:run:c6",
+						Field:              "sitemap_fetch_complete",
+						Value:              "false",
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{"sitecrawl_sitemaps:test"},
+						ObservedAt:         now,
+					},
+				},
+			},
+		}, "run:test:c6", "snap:test:c6")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:c6", audit.StatusUnknown)
+	})
+
+	t.Run("C.7: Non-200 with contradictory parsed result -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:c7",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "500",
+				initialStatus: "500",
+				fetchComplete: "true",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+			},
+		}, "run:test:c7", "snap:test:c7")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status == audit.StatusPass {
+			t.Fatalf("HTTP 500 with parsed status must not produce PASS")
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:c7", audit.StatusUnknown)
+	})
+
+	t.Run("C.8: Network failure before receiving response -> NOT_APPLICABLE", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:c8",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "0",
+				initialStatus: "0",
+				fetchComplete: "false",
+				parseStatus:   "not_attempted",
+				docType:       "UNKNOWN",
+			},
+		}, "run:test:c8", "snap:test:c8")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:c8", audit.StatusNotApplicable)
+	})
+
+	t.Run("C.9: HTTP 200 with parser unavailable -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:c9",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "true",
+				parseStatus:   "unavailable",
+				docType:       "UNKNOWN",
+				parseError:    "decompression bomb limit exceeded",
+			},
+		}, "run:test:c9", "snap:test:c9")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:c9", audit.StatusUnknown)
+	})
+
+	t.Run("C.10: Missing fetch completion with HTTP 200 + parsed -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:c10",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+				omitFields:    []string{"sitemap_fetch_complete"},
+			},
+		}, "run:test:c10", "snap:test:c10")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status == audit.StatusPass {
+			t.Fatalf("missing fetch completion must not produce PASS")
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:c10", audit.StatusUnknown)
+	})
+
+	t.Run("C.11: Malformed fetch completion with HTTP 200 + parsed -> UNKNOWN", func(t *testing.T) {
+		snap := newSitemapSnapshot([]sitemapDocFixture{
+			{
+				subjectRef:    "sm:run:c11",
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				fetchComplete: "maybe",
+				parseStatus:   "parsed",
+				docType:       "URLSET",
+			},
+		}, "run:test:c11", "snap:test:c11")
+
+		results, err := eng.EvaluateRule(context.Background(), snap, "AR-DISC-003")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status == audit.StatusPass {
+			t.Fatalf("malformed fetch completion must not produce PASS")
+		}
+		assertResultIntegrity(t, results[0], "AR-DISC-003", "sm:run:c11", audit.StatusUnknown)
+	})
+}
+
+// ============================================================================
 // Section 11: Mandatory Hermetic Integration Tests
 // Full path: SQLite -> adapter.Build() -> EvidenceSnapshot -> engine.Evaluate()
 // ============================================================================
