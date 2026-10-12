@@ -1246,10 +1246,10 @@ func TestEngine_Entity001_HermeticIntegration(t *testing.T) {
 func TestEngine_Entity001_Regression(t *testing.T) {
 	eng := newTestEngine(t)
 
-	// 1. Exactly 13 implemented rules
+	// 1. Exactly 14 implemented rules
 	ruleIDs := eng.ImplementedRuleIDs()
-	if len(ruleIDs) != 13 {
-		t.Fatalf("expected exactly 13 implemented rules, got %d: %v", len(ruleIDs), ruleIDs)
+	if len(ruleIDs) != 14 {
+		t.Fatalf("expected exactly 14 implemented rules, got %d: %v", len(ruleIDs), ruleIDs)
 	}
 
 	// 2. Frozen registry contains 47 rules

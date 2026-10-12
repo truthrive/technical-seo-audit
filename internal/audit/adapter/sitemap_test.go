@@ -1241,13 +1241,13 @@ func TestAdapter_Sitemap_ExistingRuleRegression(t *testing.T) {
 		t.Fatalf("engine.New failed: %v", err)
 	}
 
-	// Verify exactly 13 evaluators implemented
+	// Verify exactly 14 evaluators implemented
 	implIDs := eng.ImplementedRuleIDs()
-	if len(implIDs) != 13 {
-		t.Errorf("expected exactly 13 implemented rules, got %d: %v", len(implIDs), implIDs)
+	if len(implIDs) != 14 {
+		t.Errorf("expected exactly 14 implemented rules, got %d: %v", len(implIDs), implIDs)
 	}
 
-	// Execute all 13 evaluators
+	// Execute all 14 evaluators
 	for _, ruleID := range implIDs {
 		results, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, ruleID)
 		if err != nil {
@@ -1258,12 +1258,12 @@ func TestAdapter_Sitemap_ExistingRuleRegression(t *testing.T) {
 		}
 	}
 
-	// Verify NO sitemap rules (AR-DISC-001 through AR-DISC-006) are implemented
-	for i := 1; i <= 6; i++ {
+	// Verify remaining sitemap rules (AR-DISC-001, 002, 004, 005, 006) are NOT implemented
+	for _, i := range []int{1, 2, 4, 5, 6} {
 		discRuleID := fmt.Sprintf("AR-DISC-%03d", i)
 		_, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, discRuleID)
 		if err == nil {
-			t.Errorf("sitemap rule %s must NOT be implemented in V1.8c (adapter only milestone)", discRuleID)
+			t.Errorf("sitemap rule %s must NOT be implemented in V1.8d-1", discRuleID)
 		}
 	}
 }
@@ -1392,14 +1392,14 @@ func TestAdapter_Sitemap_V1_8c_MandatoryRegressions(t *testing.T) {
 					t.Errorf("AR-DISC-002 must NOT be executable")
 				}
 
-				// No sitemap PASS/FAIL RuleResult is generated
+				// Only AR-DISC-003 is generated; no other sitemap rules are executable
 				for _, rID := range eng.ImplementedRuleIDs() {
 					results, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, rID)
 					if err != nil {
 						t.Fatalf("rule %s evaluation failed: %v", rID, err)
 					}
 					for _, r := range results {
-						if len(r.RuleID) >= 7 && r.RuleID[:7] == "AR-DISC" {
+						if len(r.RuleID) >= 7 && r.RuleID[:7] == "AR-DISC" && r.RuleID != "AR-DISC-003" {
 							t.Fatalf("unexpected sitemap RuleResult generated: %s", r.RuleID)
 						}
 					}

@@ -1032,6 +1032,7 @@ func TestEngine_Link_Regression_Rules(t *testing.T) {
 		"AR-CANON-007",
 		"AR-CANON-008",
 		"AR-CANON-009",
+		"AR-DISC-003",
 		"AR-ENTITY-001",
 		"AR-INDEX-001",
 		"AR-INDEX-002",
@@ -1040,8 +1041,8 @@ func TestEngine_Link_Regression_Rules(t *testing.T) {
 		"AR-LINK-004",
 	}
 
-	if len(implementedIDs) != 13 {
-		t.Fatalf("expected exactly 13 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
+	if len(implementedIDs) != 14 {
+		t.Fatalf("expected exactly 14 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
 	}
 	if !reflect.DeepEqual(implementedIDs, expectedIDs) {
 		t.Fatalf("expected implemented IDs %v, got %v", expectedIDs, implementedIDs)
