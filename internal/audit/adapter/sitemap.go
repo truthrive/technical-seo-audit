@@ -608,18 +608,6 @@ func buildSitemapEvidence(
 				SnapshotID:         req.SnapshotID,
 				SubjectType:        audit.SubjectSitemap,
 				SubjectRef:         smIDRef,
-				Field:              "sitemap_fetch_status",
-				Value:              strconv.Itoa(doc.status),
-				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{smSrcRef},
-				ObservedAt:         obsTime,
-			},
-			audit.NormalizedObservation{
-				ObservationID:      nextObsID(),
-				AuditRunID:         req.AuditRunID,
-				SnapshotID:         req.SnapshotID,
-				SubjectType:        audit.SubjectSitemap,
-				SubjectRef:         smIDRef,
 				Field:              "sitemap_redirect_hops",
 				Value:              strconv.Itoa(doc.redirectHops),
 				DerivationType:     audit.DerivationDirect,
@@ -804,11 +792,12 @@ func buildSitemapEvidence(
 		// URL normalization on entry.loc
 		normListedURL, _, normErr := normalizeURL(entry.loc)
 
-		// Correlate with URL dictionary record under Section 9 integrity rules
+		// Correlate with URL dictionary record under Section 9 integrity rules.
+		// URL Subject correlation requires parent sitemap document existence as a strict precondition.
 		var targetURLSubjectRef audit.URLID
-		if entry.urlID > 0 {
+		if parentExists && entry.urlID > 0 {
 			dictURL, existsInDict := urlsByID[int(entry.urlID)]
-			if !existsInDict {
+			if !existsInDict || dictURL == "" {
 				// Dangling URL dictionary ID
 				gaps = append(gaps, EvidenceGap{
 					GapCode:         GapInvalidSitemapURLCorrelation,
@@ -838,15 +827,13 @@ func buildSitemapEvidence(
 					})
 				} else {
 					targetURLSubjectRef = audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, entry.urlID))
-					if parentExists {
-						correlationsByURLID[int(entry.urlID)] = append(correlationsByURLID[int(entry.urlID)], entryCorrelation{
-							entryRef:  smeIDRef,
-							docRef:    parentRef,
-							docURL:    parentDoc.url,
-							entrySeq:  entry.seq,
-							sitemapID: entry.sitemapID,
-						})
-					}
+					correlationsByURLID[int(entry.urlID)] = append(correlationsByURLID[int(entry.urlID)], entryCorrelation{
+						entryRef:  smeIDRef,
+						docRef:    parentRef,
+						docURL:    parentDoc.url,
+						entrySeq:  entry.seq,
+						sitemapID: entry.sitemapID,
+					})
 				}
 			}
 		}

@@ -126,8 +126,13 @@ func TestAdapter_Sitemap_DocumentEvidence(t *testing.T) {
 		if v := obs["final_http_status"]; len(v) != 1 || v[0] != "200" {
 			t.Errorf("expected final_http_status '200', got %v", v)
 		}
-		if v := obs["sitemap_fetch_status"]; len(v) != 1 || v[0] != "200" {
-			t.Errorf("expected sitemap_fetch_status '200', got %v", v)
+		if v := obs["sitemap_fetch_status"]; len(v) != 0 {
+			t.Errorf("expected no sitemap_fetch_status observation, got %v", v)
+		}
+		for _, o := range res.EvidenceSnapshot.NormalizedObservations {
+			if o.Field == "sitemap_fetch_status" {
+				t.Fatalf("forbidden normalized observation sitemap_fetch_status found: %+v", o)
+			}
 		}
 		if v := obs["sitemap_document_type"]; len(v) != 1 || v[0] != "URLSET" {
 			t.Errorf("expected sitemap_document_type 'URLSET', got %v", v)
@@ -692,9 +697,13 @@ func TestAdapter_Sitemap_EntryEvidence(t *testing.T) {
 		snapshotID := audit.SnapshotID("snap:sm:ent:orphan")
 		setupSitemapTestRun(t, db, runID, "https://example.com/")
 
+		orphanURL := "https://example.com/orphan"
+		insertURL(t, db, runID, 1, orphanURL)
+		insertPage(t, db, runID, 1, orphanURL, 200)
+
 		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_discovery(run_id, status, sitemaps_found, entries_found) VALUES (?, 'COMPLETED', 0, 1)`, runID)
-		// No sitemap doc with ID 99 inserted!
-		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc) VALUES (?, 99, 0, 0, 'https://example.com/orphan')`, runID)
+		// No sitemap doc with ID 99 inserted! Entry has valid url_id = 1 pointing to valid dictionary URL
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc) VALUES (?, 99, 0, 1, ?)`, runID, orphanURL)
 
 		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
 			CrawlRunID: runID,
@@ -711,9 +720,47 @@ func TestAdapter_Sitemap_EntryEvidence(t *testing.T) {
 			t.Errorf("expected GapOrphanSitemapEntry gap for entry with missing parent document")
 		}
 
+		// Entry subject exists and preserves raw loc
+		if len(res.SitemapEntries) != 1 {
+			t.Fatalf("expected 1 sitemap entry, got %d", len(res.SitemapEntries))
+		}
+		se := res.SitemapEntries[0]
+		if string(se.SitemapEntryID) != expectedEID {
+			t.Errorf("expected SitemapEntryID %s, got %s", expectedEID, se.SitemapEntryID)
+		}
+		if se.ListedURLRaw != orphanURL {
+			t.Errorf("expected raw loc %q preserved, got %q", orphanURL, se.ListedURLRaw)
+		}
+		// Typed ListedURLID must be empty
+		if se.ListedURLID != "" {
+			t.Errorf("expected empty ListedURLID for orphan entry, got %s", se.ListedURLID)
+		}
+
 		entObs := getObservations(res.EvidenceSnapshot, expectedEID)
 		if v := entObs["parent_sitemap_ref"]; len(v) != 0 {
 			t.Errorf("expected no parent_sitemap_ref for orphan entry, got %v", v)
+		}
+		if v := entObs["url_subject_ref"]; len(v) != 0 {
+			t.Errorf("expected no url_subject_ref for orphan entry, got %v", v)
+		}
+		if v := entObs["loc_raw"]; len(v) != 1 || v[0] != orphanURL {
+			t.Errorf("expected loc_raw preserved, got %v", v)
+		}
+
+		// No bilateral sitemap references appear on the URL subject
+		urlSubjRef := fmt.Sprintf("url:%s:1", auditRunID)
+		urlObs := getObservations(res.EvidenceSnapshot, urlSubjRef)
+		if v := urlObs["listed_in_sitemap"]; len(v) != 0 {
+			t.Errorf("expected no listed_in_sitemap on URL subject for orphan entry, got %v", v)
+		}
+		if v := urlObs["sitemap_entry_ref"]; len(v) != 0 {
+			t.Errorf("expected no sitemap_entry_ref on URL subject for orphan entry, got %v", v)
+		}
+		if v := urlObs["sitemap_document_ref"]; len(v) != 0 {
+			t.Errorf("expected no sitemap_document_ref on URL subject for orphan entry, got %v", v)
+		}
+		if v := urlObs["sitemap_url"]; len(v) != 0 {
+			t.Errorf("expected no sitemap_url on URL subject for orphan entry, got %v", v)
 		}
 	})
 
@@ -1219,4 +1266,456 @@ func TestAdapter_Sitemap_ExistingRuleRegression(t *testing.T) {
 			t.Errorf("sitemap rule %s must NOT be implemented in V1.8c (adapter only milestone)", discRuleID)
 		}
 	}
+}
+
+// ============================================================================
+// Group G: V1.8c Correction Mandatory Regression Tests (Section 6)
+// ============================================================================
+
+func TestAdapter_Sitemap_V1_8c_MandatoryRegressions(t *testing.T) {
+	// A. Fetch-status semantics
+	t.Run("A. Fetch-status semantics across 4 redirect/fetch scenarios", func(t *testing.T) {
+		scenarios := []struct {
+			name          string
+			initStatus    int
+			finalStatus   int
+			redirectHops  int
+			redirectTo    string
+			fetchError    string
+			fetchComplete int
+		}{
+			{
+				name:          "1. Direct HTTP 200 sitemap",
+				initStatus:    200,
+				finalStatus:   200,
+				redirectHops:  0,
+				redirectTo:    "",
+				fetchError:    "",
+				fetchComplete: 1,
+			},
+			{
+				name:          "2. Initial 301 to final 200",
+				initStatus:    301,
+				finalStatus:   200,
+				redirectHops:  1,
+				redirectTo:    "https://example.com/sitemap_target.xml",
+				fetchError:    "",
+				fetchComplete: 1,
+			},
+			{
+				name:          "3. Initial 301 to final 404",
+				initStatus:    301,
+				finalStatus:   404,
+				redirectHops:  1,
+				redirectTo:    "https://example.com/missing.xml",
+				fetchError:    "",
+				fetchComplete: 1,
+			},
+			{
+				name:          "4. Fetch failure before HTTP response",
+				initStatus:    0,
+				finalStatus:   0,
+				redirectHops:  0,
+				redirectTo:    "",
+				fetchError:    "dial tcp: connection refused",
+				fetchComplete: 0,
+			},
+		}
+
+		eng, err := engine.New()
+		if err != nil {
+			t.Fatalf("engine.New failed: %v", err)
+		}
+
+		for _, tc := range scenarios {
+			t.Run(tc.name, func(t *testing.T) {
+				db := newTestDB(t)
+				runID := fmt.Sprintf("run:v18c:fetch:%d_%d", tc.initStatus, tc.finalStatus)
+				auditRunID := audit.AuditRunID("audit:" + runID)
+				snapshotID := audit.SnapshotID("snap:" + runID)
+				setupSitemapTestRun(t, db, runID, "https://example.com/")
+
+				_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_discovery(run_id, status, sitemaps_found, entries_found) VALUES (?, 'COMPLETED', 1, 0)`, runID)
+				_, _ = db.Exec(`INSERT INTO sitecrawl_sitemaps(
+					run_id, id, url, initial_status, final_status, status, redirect_hops, redirect_to, fetch_error, fetch_complete, doc_type, parse_status
+				) VALUES (?, 1, 'https://example.com/sitemap.xml', ?, ?, ?, ?, ?, ?, ?, 'urlset', 'parsed')`,
+					runID, tc.initStatus, tc.finalStatus, tc.finalStatus, tc.redirectHops, tc.redirectTo, tc.fetchError, tc.fetchComplete)
+
+				res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+					CrawlRunID: runID,
+					AuditRunID: auditRunID,
+					SnapshotID: snapshotID,
+				})
+				if err != nil {
+					t.Fatalf("build failed: %v", err)
+				}
+
+				docRef := fmt.Sprintf("sm:%s:1", auditRunID)
+				obs := getObservations(res.EvidenceSnapshot, docRef)
+
+				// Initial and final HTTP status observations are independent
+				if v := obs["initial_http_status"]; len(v) != 1 || v[0] != fmt.Sprintf("%d", tc.initStatus) {
+					t.Errorf("expected initial_http_status %d, got %v", tc.initStatus, v)
+				}
+				if v := obs["final_http_status"]; len(v) != 1 || v[0] != fmt.Sprintf("%d", tc.finalStatus) {
+					t.Errorf("expected final_http_status %d, got %v", tc.finalStatus, v)
+				}
+
+				// Redirect evidence is retained
+				if v := obs["sitemap_redirect_hops"]; len(v) != 1 || v[0] != fmt.Sprintf("%d", tc.redirectHops) {
+					t.Errorf("expected sitemap_redirect_hops %d, got %v", tc.redirectHops, v)
+				}
+				if tc.redirectTo != "" {
+					if v := obs["sitemap_final_url"]; len(v) != 1 || v[0] != tc.redirectTo {
+						t.Errorf("expected sitemap_final_url %q, got %v", tc.redirectTo, v)
+					}
+				}
+				if tc.fetchError != "" {
+					if v := obs["sitemap_fetch_error"]; len(v) != 1 || v[0] != tc.fetchError {
+						t.Errorf("expected sitemap_fetch_error %q, got %v", tc.fetchError, v)
+					}
+				}
+
+				// Negative assertion: no normalized sitemap_fetch_status field is emitted anywhere
+				if v := obs["sitemap_fetch_status"]; len(v) != 0 {
+					t.Errorf("forbidden sitemap_fetch_status observation emitted on document: %v", v)
+				}
+				for _, o := range res.EvidenceSnapshot.NormalizedObservations {
+					if o.Field == "sitemap_fetch_status" {
+						t.Fatalf("forbidden normalized observation sitemap_fetch_status found in snapshot on subject %s", o.SubjectRef)
+					}
+				}
+
+				// AR-DISC-002 is not executable
+				_, err = eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, "AR-DISC-002")
+				if err == nil {
+					t.Errorf("AR-DISC-002 must NOT be executable")
+				}
+
+				// No sitemap PASS/FAIL RuleResult is generated
+				for _, rID := range eng.ImplementedRuleIDs() {
+					results, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, rID)
+					if err != nil {
+						t.Fatalf("rule %s evaluation failed: %v", rID, err)
+					}
+					for _, r := range results {
+						if len(r.RuleID) >= 7 && r.RuleID[:7] == "AR-DISC" {
+							t.Fatalf("unexpected sitemap RuleResult generated: %s", r.RuleID)
+						}
+					}
+				}
+			})
+		}
+	})
+
+	// B. Orphan entry correlation
+	t.Run("B. Orphan entry with valid url_id and matching dictionary URL", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:v18c:orphan:validurl"
+		auditRunID := audit.AuditRunID("audit:" + runID)
+		snapshotID := audit.SnapshotID("snap:" + runID)
+		setupSitemapTestRun(t, db, runID, "https://example.com/")
+
+		pageURL := "https://example.com/orphan-page"
+		insertURL(t, db, runID, 42, pageURL)
+		insertPage(t, db, runID, 42, pageURL, 200)
+
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_discovery(run_id, status, sitemaps_found, entries_found) VALUES (?, 'COMPLETED', 0, 1)`, runID)
+		// Missing parent sitemap document 77; valid url_id = 42
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc) VALUES (?, 77, 0, 42, ?)`, runID, pageURL)
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: auditRunID,
+			SnapshotID: snapshotID,
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+
+		expectedEID := fmt.Sprintf("sme:%s:77:0", auditRunID)
+
+		// 1. Entry subject exists
+		if len(res.SitemapEntries) != 1 {
+			t.Fatalf("expected 1 sitemap entry, got %d", len(res.SitemapEntries))
+		}
+		se := res.SitemapEntries[0]
+		if string(se.SitemapEntryID) != expectedEID {
+			t.Errorf("expected entry ID %s, got %s", expectedEID, se.SitemapEntryID)
+		}
+
+		// 2. GAP_ORPHAN_SITEMAP_ENTRY exists
+		gap := findGap(res.EvidenceGaps, adapter.GapOrphanSitemapEntry, expectedEID)
+		if gap == nil {
+			t.Errorf("expected GapOrphanSitemapEntry gap for orphan entry")
+		}
+
+		// 3. No parent_sitemap_ref
+		entObs := getObservations(res.EvidenceSnapshot, expectedEID)
+		if v := entObs["parent_sitemap_ref"]; len(v) != 0 {
+			t.Errorf("expected no parent_sitemap_ref on orphan entry, got %v", v)
+		}
+
+		// 4. No url_subject_ref
+		if v := entObs["url_subject_ref"]; len(v) != 0 {
+			t.Errorf("expected no url_subject_ref on orphan entry, got %v", v)
+		}
+
+		// 5. Typed SitemapEntry.ListedURLID is empty
+		if se.ListedURLID != "" {
+			t.Errorf("expected empty ListedURLID on orphan entry, got %q", se.ListedURLID)
+		}
+
+		// 6. No bilateral sitemap references appear on the URL subject
+		urlSubjRef := fmt.Sprintf("url:%s:42", auditRunID)
+		urlObs := getObservations(res.EvidenceSnapshot, urlSubjRef)
+		if v := urlObs["listed_in_sitemap"]; len(v) != 0 {
+			t.Errorf("expected no listed_in_sitemap on URL subject for orphan entry, got %v", v)
+		}
+		if v := urlObs["sitemap_entry_ref"]; len(v) != 0 {
+			t.Errorf("expected no sitemap_entry_ref on URL subject for orphan entry, got %v", v)
+		}
+		if v := urlObs["sitemap_document_ref"]; len(v) != 0 {
+			t.Errorf("expected no sitemap_document_ref on URL subject for orphan entry, got %v", v)
+		}
+		if v := urlObs["sitemap_url"]; len(v) != 0 {
+			t.Errorf("expected no sitemap_url on URL subject for orphan entry, got %v", v)
+		}
+
+		// 7. Raw loc remains preserved
+		if se.ListedURLRaw != pageURL {
+			t.Errorf("expected ListedURLRaw %q, got %q", pageURL, se.ListedURLRaw)
+		}
+		if v := entObs["loc_raw"]; len(v) != 1 || v[0] != pageURL {
+			t.Errorf("expected loc_raw %q, got %v", pageURL, v)
+		}
+	})
+
+	// C. Valid correlation non-regression
+	t.Run("C. Valid correlation non-regression", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:v18c:valid:corr"
+		auditRunID := audit.AuditRunID("audit:" + runID)
+		snapshotID := audit.SnapshotID("snap:" + runID)
+		setupSitemapTestRun(t, db, runID, "https://example.com/")
+
+		pageURL := "https://example.com/valid-page"
+		insertURL(t, db, runID, 10, pageURL)
+		insertPage(t, db, runID, 10, pageURL, 200)
+
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_discovery(run_id, status, sitemaps_found, entries_found) VALUES (?, 'COMPLETED', 1, 1)`, runID)
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemaps(run_id, id, url, initial_status, final_status, status, fetch_complete, doc_type, parse_status, entry_count)
+			VALUES (?, 1, 'https://example.com/sitemap.xml', 200, 200, 200, 1, 'urlset', 'parsed', 1)`, runID)
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc) VALUES (?, 1, 0, 10, ?)`, runID, pageURL)
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: auditRunID,
+			SnapshotID: snapshotID,
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+
+		expectedDocRef := fmt.Sprintf("sm:%s:1", auditRunID)
+		expectedEID := fmt.Sprintf("sme:%s:1:0", auditRunID)
+		expectedURLRef := fmt.Sprintf("url:%s:10", auditRunID)
+
+		if len(res.SitemapEntries) != 1 {
+			t.Fatalf("expected 1 sitemap entry, got %d", len(res.SitemapEntries))
+		}
+		se := res.SitemapEntries[0]
+
+		// parent_sitemap_ref exists
+		entObs := getObservations(res.EvidenceSnapshot, expectedEID)
+		if v := entObs["parent_sitemap_ref"]; len(v) != 1 || v[0] != expectedDocRef {
+			t.Errorf("expected parent_sitemap_ref %s, got %v", expectedDocRef, v)
+		}
+
+		// url_subject_ref exists
+		if v := entObs["url_subject_ref"]; len(v) != 1 || v[0] != expectedURLRef {
+			t.Errorf("expected url_subject_ref %s, got %v", expectedURLRef, v)
+		}
+
+		// Typed ListedURLID is correct
+		if string(se.ListedURLID) != expectedURLRef {
+			t.Errorf("expected ListedURLID %s, got %s", expectedURLRef, se.ListedURLID)
+		}
+
+		// Bilateral URL observations reference the correct entry
+		urlObs := getObservations(res.EvidenceSnapshot, expectedURLRef)
+		if v := urlObs["listed_in_sitemap"]; len(v) != 1 || v[0] != "true" {
+			t.Errorf("expected listed_in_sitemap 'true', got %v", v)
+		}
+		if v := urlObs["sitemap_entry_ref"]; len(v) != 1 || v[0] != expectedEID {
+			t.Errorf("expected sitemap_entry_ref %s, got %v", expectedEID, v)
+		}
+		if v := urlObs["sitemap_document_ref"]; len(v) != 1 || v[0] != expectedDocRef {
+			t.Errorf("expected sitemap_document_ref %s, got %v", expectedDocRef, v)
+		}
+
+		// No inappropriate orphan or correlation gaps
+		if hasGap(res.EvidenceGaps, adapter.GapOrphanSitemapEntry) {
+			t.Errorf("unexpected GapOrphanSitemapEntry gap")
+		}
+		if hasGap(res.EvidenceGaps, adapter.GapInvalidSitemapURLCorrelation) {
+			t.Errorf("unexpected GapInvalidSitemapURLCorrelation gap")
+		}
+	})
+
+	// D. Duplicate behavior
+	t.Run("D. Duplicate entries and orphan isolation", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:v18c:dupe:orphan"
+		auditRunID := audit.AuditRunID("audit:" + runID)
+		snapshotID := audit.SnapshotID("snap:" + runID)
+		setupSitemapTestRun(t, db, runID, "https://example.com/")
+
+		commonURL := "https://example.com/duplicate"
+		insertURL(t, db, runID, 5, commonURL)
+		insertPage(t, db, runID, 5, commonURL, 200)
+
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_discovery(run_id, status, sitemaps_found, entries_found) VALUES (?, 'COMPLETED', 1, 3)`, runID)
+		// Valid sitemap doc 1
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemaps(run_id, id, url, initial_status, final_status, status, fetch_complete, doc_type, parse_status, entry_count)
+			VALUES (?, 1, 'https://example.com/sitemap.xml', 200, 200, 200, 1, 'urlset', 'parsed', 2)`, runID)
+
+		// Two duplicate entries in valid doc 1 (seq 0 and seq 1)
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc) VALUES (?, 1, 0, 5, ?)`, runID, commonURL)
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc) VALUES (?, 1, 1, 5, ?)`, runID, commonURL)
+
+		// One orphan entry in non-existent sitemap doc 99 (seq 0) referencing same URL
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc) VALUES (?, 99, 0, 5, ?)`, runID, commonURL)
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: auditRunID,
+			SnapshotID: snapshotID,
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+
+		if len(res.SitemapEntries) != 3 {
+			t.Fatalf("expected 3 entries, got %d", len(res.SitemapEntries))
+		}
+
+		eid0 := fmt.Sprintf("sme:%s:1:0", auditRunID)
+		eid1 := fmt.Sprintf("sme:%s:1:1", auditRunID)
+		orphanEID := fmt.Sprintf("sme:%s:99:0", auditRunID)
+		docRef := fmt.Sprintf("sm:%s:1", auditRunID)
+		urlRef := fmt.Sprintf("url:%s:5", auditRunID)
+
+		// Preserve distinct entry identities
+		if string(res.SitemapEntries[0].SitemapEntryID) != eid0 || string(res.SitemapEntries[1].SitemapEntryID) != eid1 {
+			t.Errorf("duplicate entries must preserve distinct identities: %s, %s", res.SitemapEntries[0].SitemapEntryID, res.SitemapEntries[1].SitemapEntryID)
+		}
+
+		// Both duplicates retain correct parent document references and URL correlation
+		for _, eid := range []string{eid0, eid1} {
+			obs := getObservations(res.EvidenceSnapshot, eid)
+			if v := obs["parent_sitemap_ref"]; len(v) != 1 || v[0] != docRef {
+				t.Errorf("entry %s expected parent_sitemap_ref %s, got %v", eid, docRef, v)
+			}
+			if v := obs["url_subject_ref"]; len(v) != 1 || v[0] != urlRef {
+				t.Errorf("entry %s expected url_subject_ref %s, got %v", eid, urlRef, v)
+			}
+		}
+
+		// Orphan entry does not borrow correlation
+		orphanObs := getObservations(res.EvidenceSnapshot, orphanEID)
+		if v := orphanObs["parent_sitemap_ref"]; len(v) != 0 {
+			t.Errorf("orphan entry must not have parent_sitemap_ref, got %v", v)
+		}
+		if v := orphanObs["url_subject_ref"]; len(v) != 0 {
+			t.Errorf("orphan entry must not have url_subject_ref, got %v", v)
+		}
+		if res.SitemapEntries[2].ListedURLID != "" {
+			t.Errorf("orphan entry must have empty ListedURLID, got %s", res.SitemapEntries[2].ListedURLID)
+		}
+
+		// Bilateral URL subject references exactly the 2 valid entries, NOT the orphan entry
+		urlObs := getObservations(res.EvidenceSnapshot, urlRef)
+		if v := urlObs["sitemap_entry_ref"]; len(v) != 2 {
+			t.Fatalf("expected exactly 2 sitemap_entry_ref on URL subject, got %d: %v", len(v), v)
+		}
+		for _, ref := range urlObs["sitemap_entry_ref"] {
+			if ref == orphanEID {
+				t.Errorf("URL subject must NOT reference orphan entry %s", orphanEID)
+			}
+		}
+	})
+
+	// E. Determinism
+	t.Run("E. Determinism across two builds", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:v18c:determinism"
+		auditRunID := audit.AuditRunID("audit:" + runID)
+		snapshotID := audit.SnapshotID("snap:" + runID)
+		setupSitemapTestRun(t, db, runID, "https://example.com/")
+
+		insertURL(t, db, runID, 1, "https://example.com/p1")
+		insertPage(t, db, runID, 1, "https://example.com/p1", 200)
+		insertURL(t, db, runID, 2, "https://example.com/p2")
+		insertPage(t, db, runID, 2, "https://example.com/p2", 200)
+
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_discovery(run_id, status, sitemaps_found, entries_found) VALUES (?, 'COMPLETED', 2, 3)`, runID)
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemaps(run_id, id, url, initial_status, final_status, status, fetch_complete, doc_type, parse_status, entry_count)
+			VALUES (?, 1, 'https://example.com/sitemap_a.xml', 200, 200, 200, 1, 'urlset', 'parsed', 2)`, runID)
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemaps(run_id, id, url, initial_status, final_status, status, redirect_hops, redirect_to, fetch_complete, doc_type, parse_status, entry_count)
+			VALUES (?, 2, 'https://example.com/sitemap_b.xml', 301, 200, 200, 1, 'https://example.com/sitemap_target.xml', 1, 'urlset', 'parsed', 1)`, runID)
+
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc) VALUES (?, 1, 0, 1, 'https://example.com/p1')`, runID)
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc) VALUES (?, 1, 1, 1, 'https://example.com/p1')`, runID)
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc) VALUES (?, 2, 0, 2, 'https://example.com/p2')`, runID)
+		// Orphan entry
+		_, _ = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc) VALUES (?, 99, 0, 1, 'https://example.com/p1')`, runID)
+
+		res1, err1 := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: auditRunID,
+			SnapshotID: snapshotID,
+		})
+		if err1 != nil {
+			t.Fatalf("build 1 failed: %v", err1)
+		}
+
+		res2, err2 := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: auditRunID,
+			SnapshotID: snapshotID,
+		})
+		if err2 != nil {
+			t.Fatalf("build 2 failed: %v", err2)
+		}
+
+		// NormalizationVersion remains v1.9.0
+		if res1.EvidenceSnapshot.NormalizationVersion != "v1.9.0" {
+			t.Errorf("expected NormalizationVersion v1.9.0, got %s", res1.EvidenceSnapshot.NormalizationVersion)
+		}
+
+		// Observation counts and ordering match
+		obs1 := res1.EvidenceSnapshot.NormalizedObservations
+		obs2 := res2.EvidenceSnapshot.NormalizedObservations
+		if len(obs1) != len(obs2) {
+			t.Fatalf("observation count mismatch: %d vs %d", len(obs1), len(obs2))
+		}
+		for i := range obs1 {
+			if obs1[i].ObservationID != obs2[i].ObservationID {
+				t.Fatalf("obs[%d] ID mismatch: %s vs %s", i, obs1[i].ObservationID, obs2[i].ObservationID)
+			}
+			if obs1[i].SubjectRef != obs2[i].SubjectRef || obs1[i].Field != obs2[i].Field || obs1[i].Value != obs2[i].Value {
+				t.Fatalf("obs[%d] mismatch: (%s, %s, %s) vs (%s, %s, %s)",
+					i, obs1[i].SubjectRef, obs1[i].Field, obs1[i].Value,
+					obs2[i].SubjectRef, obs2[i].Field, obs2[i].Value)
+			}
+		}
+
+		// Verify no dangling references and no sitemap_fetch_status in either snapshot
+		for _, o := range obs1 {
+			if o.Field == "sitemap_fetch_status" {
+				t.Errorf("forbidden observation sitemap_fetch_status found in determinism snapshot")
+			}
+		}
+	})
 }

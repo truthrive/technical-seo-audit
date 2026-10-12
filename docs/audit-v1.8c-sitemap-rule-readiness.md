@@ -37,7 +37,7 @@ The V1.8c Adapter reads raw sitemap acquisition evidence from SQLite (`sitecrawl
 - `parent_sitemap_ref`: Validated parent document reference (`sm:<audit_run_id>:<parent_id>`) when `parent_id > 0`
 - `initial_http_status`: Initial HTTP response status (e.g. `200`, `301`, `404`, `0`)
 - `final_http_status`: Final terminal HTTP response status (e.g. `200`, `404`, `0`)
-- `sitemap_fetch_status`: Authoritative fetch status from acquisition
+*(Note: Initial and final HTTP statuses are intentionally kept separate; no authoritative `sitemap_fetch_status` observation is emitted to prevent premature resolution of redirect semantics)*
 - `sitemap_redirect_hops`: Observed redirect hop count
 - `sitemap_final_url`: Final redirect target URL when redirected
 - `sitemap_fetch_error`: Direct network/TLS/timeout error string when fetch failed
@@ -92,9 +92,21 @@ The Adapter strictly enforces the frozen data model boundaries:
 
 2. **Entry-URL Subject Integrity:**
    - An entry links to a `SubjectURL` only if:
-     1. `url_id > 0`.
-     2. `url_id` exists in `sitecrawl_urls` for the current crawl run.
-     3. The listed `<loc>` and dictionary URL are consistent under URL normalization.
+     1. Parent sitemap document exists in the current crawl run (`parentExists == true`).
+     2. `url_id > 0`.
+     3. Referenced URL dictionary record exists within the same CrawlRunID (`url_id` in `sitecrawl_urls`).
+     4. The listed `<loc>` and dictionary URL are consistent under URL normalization.
+     5. The normalized URL subject exists and is valid within the current snapshot.
+   - If the parent sitemap document is missing (orphan entry):
+     - Entry subject identity is preserved (`sme:<audit_run_id>:<sitemap_id>:<seq>`).
+     - Raw `<loc>` is preserved (`loc_raw`, `ListedURLRaw`).
+     - Available entry metadata is preserved (`lastmod_raw`, `changefreq_raw`, `priority_raw`).
+     - `GAP_ORPHAN_SITEMAP_ENTRY` is emitted.
+     - `parent_sitemap_ref` is NOT emitted.
+     - `url_subject_ref` is NOT emitted.
+     - Typed `SitemapEntry.ListedURLID` is left empty.
+     - No reverse `sitemap_entry_ref` or bilateral observations are emitted on any `SubjectURL`.
+     - No sitemap document or URL subject is synthesized.
    - If `url_id == 0`, no `url_subject_ref` is synthesized.
    - If `url_id > 0` but points to a nonexistent dictionary ID or a conflicting URL, `GAP_INVALID_SITEMAP_URL_CORRELATION` is emitted, and dangling references are suppressed.
    - Sitemaps never synthesize new `SubjectURL` entities.
@@ -143,7 +155,7 @@ If the crawl run was canceled, discovery was disabled, limits were hit, or legac
 | Rule ID | Catalog Check | Evaluator Title | Readiness Status | Supporting Normalized Evidence | Remaining Blocker / Dependency |
 |---|---|---|---|---|---|
 | **`AR-DISC-001`** | `DISC-001` | Sitemap presence matches project policy | **`NEEDS_POLICY`** | `sitemaps_found_count`, `sitemap_discovery_complete`, `discovery_sources` | Requires integrating `PolicyKeySitemapExpected` (`sitemap_expected`) into the Rule Engine evaluation context. |
-| **`AR-DISC-002`** | `DISC-002` | Sitemap document returns 200 | **`BLOCKED`** | `initial_http_status`, `final_http_status`, `sitemap_fetch_status`, `sitemap_redirect_hops` | **Open contract decision:** Whether initial 3xx redirect to 200 document evaluates as `PASS` (terminal authoritative) or `FAIL` (initial authoritative). Blocked until authoritative contract resolution. |
+| **`AR-DISC-002`** | `DISC-002` | Sitemap document returns 200 | **`BLOCKED`** | `initial_http_status`, `final_http_status`, `sitemap_redirect_hops`, `sitemap_final_url`, `sitemap_fetch_error`, `sitemap_fetch_complete` | **Open contract decision:** Whether initial 3xx redirect to 200 document evaluates as `PASS` (terminal authoritative) or `FAIL` (initial authoritative). Blocked until authoritative contract resolution. |
 | **`AR-DISC-003`** | `DISC-002` | Sitemap is parseable | **`READY_TO_IMPLEMENT`** | `sitemap_document_type`, `sitemap_parse_status`, `sitemap_parse_error`, `sitemap_fetch_complete` | None. All inputs fully normalized on `SubjectSitemap`. Evaluates independently from crawling or policy. |
 | **`AR-DISC-004`** | `DISC-002` | Sitemap-listed URL returns final 200 | **`READY_TO_IMPLEMENT`** | `SubjectSitemapEntry` correlated to `SubjectURL.http_status`, `url_subject_ref` | None. Precondition and direct HTTP status observations fully verified. Uncrawled entries produce `UNKNOWN` cleanly. |
 | **`AR-DISC-005`** | `DISC-002` | Sitemap-listed URL is not noindex | **`READY_TO_IMPLEMENT`** | `SubjectSitemapEntry` correlated to `SubjectURL.effective_noindex`, `http_status` | None. Evaluates on 200 HTML correlated URLs using existing normalized robots directives. |
@@ -177,7 +189,8 @@ If the crawl run was canceled, discovery was disabled, limits were hit, or legac
   - *Option A (Initial Authoritative):* Produces `FAIL` for `https://example.com/sitemap.xml` because its immediate status was non-200.
   - *Option B (Terminal Authoritative):* Produces `PASS` because following redirects led to a terminal 200 sitemap document.
 - **Why it Remains BLOCKED:**
-  Neither the frozen atomic rule manifest nor authoritative RFC/spec documentation dictates whether a redirected sitemap is a PASS or FAIL. Picking one arbitrarily would violate product principles. The Adapter preserves both `initial_http_status` and `final_http_status` truthfully, allowing `AR-DISC-002` to remain blocked until an authoritative contract decision is approved.
+  Neither the frozen atomic rule manifest nor authoritative RFC/spec documentation dictates whether a redirected sitemap is a PASS or FAIL. Picking one arbitrarily would violate product principles.
+  The Adapter intentionally avoids emitting a premature authoritative `sitemap_fetch_status` observation. Instead, initial and final HTTP statuses are intentionally kept separate (`initial_http_status` and `final_http_status`), preserving raw redirect provenance truthfully while `AR-DISC-002` remains classified as **`BLOCKED`** under the OPEN CONTRACT DECISION. The Adapter does not imply that authoritative status semantics are resolved.
 
 ---
 
