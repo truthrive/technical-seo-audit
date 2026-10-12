@@ -187,6 +187,8 @@ func TestAR_CANON_004_RequiredCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create engine: %v", err)
 	}
+	fixedTime := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	eng.SetClock(func() time.Time { return fixedTime })
 
 	ctx := context.Background()
 	auditRunID := audit.AuditRunID("audit:run:canon004")

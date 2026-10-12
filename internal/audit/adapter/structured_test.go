@@ -1323,8 +1323,8 @@ func TestAdapter_StructuredData_Regression(t *testing.T) {
 			t.Fatalf("engine.New failed: %v", err)
 		}
 		ruleIDs := eng.ImplementedRuleIDs()
-		if len(ruleIDs) != 14 {
-			t.Fatalf("expected exactly 14 implemented rules, got %d", len(ruleIDs))
+		if len(ruleIDs) != 15 {
+			t.Fatalf("expected exactly 15 implemented rules, got %d", len(ruleIDs))
 		}
 
 		for _, ruleID := range ruleIDs {
