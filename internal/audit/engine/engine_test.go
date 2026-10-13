@@ -263,6 +263,7 @@ func TestEngine_ImplementedRuleIDs(t *testing.T) {
 		"AR-CANON-007",
 		"AR-CANON-008",
 		"AR-CANON-009",
+		"AR-DISC-001",
 		"AR-DISC-003",
 		"AR-DISC-004",
 		"AR-DISC-005",

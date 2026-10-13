@@ -392,8 +392,8 @@ func TestEngine_PolicyIntegration(t *testing.T) {
 		}
 	})
 
-	// 4e. Implemented rule set remains strictly 17 executable rules for V1.8d-4
-	t.Run("implemented rules remain strictly 17 executable rules", func(t *testing.T) {
+	// 4e. Implemented rule set remains strictly 18 executable rules for V1.8f
+	t.Run("implemented rules remain strictly 18 executable rules", func(t *testing.T) {
 		ids := eng.ImplementedRuleIDs()
 		expected := []string{
 			"AR-ACC-004",
@@ -403,6 +403,7 @@ func TestEngine_PolicyIntegration(t *testing.T) {
 			"AR-CANON-007",
 			"AR-CANON-008",
 			"AR-CANON-009",
+			"AR-DISC-001",
 			"AR-DISC-003",
 			"AR-DISC-004",
 			"AR-DISC-005",

@@ -72,6 +72,7 @@ func NewWithRegistry(reg *audit.Registry) (*Engine, error) {
 	e.register(ruleIDCANON007, evaluateCANON007)
 	e.register(ruleIDCANON008, evaluateCANON008)
 	e.register(ruleIDCANON009, evaluateCANON009)
+	e.register(ruleIDDISC001, evaluateDISC001)
 	e.register(ruleIDDISC003, evaluateDISC003)
 	e.register(ruleIDDISC004, evaluateDISC004)
 	e.register(ruleIDDISC005, evaluateDISC005)
@@ -99,8 +100,8 @@ func (e *Engine) register(ruleID string, fn Evaluator) {
 }
 
 // ImplementedRuleIDs returns the deterministically sorted list of rule IDs currently
-// supported with an executable evaluator. For Audit V1.8d-4, this is exactly
-// ["AR-ACC-004", "AR-CANON-003", "AR-CANON-004", "AR-CANON-006", "AR-CANON-007", "AR-CANON-008", "AR-CANON-009", "AR-DISC-003", "AR-DISC-004", "AR-DISC-005", "AR-DISC-006", "AR-ENTITY-001", "AR-INDEX-001", "AR-INDEX-002", "AR-LINK-002", "AR-LINK-003", "AR-LINK-004"].
+// supported with an executable evaluator. For Audit V1.8f, this is exactly
+// ["AR-ACC-004", "AR-CANON-003", "AR-CANON-004", "AR-CANON-006", "AR-CANON-007", "AR-CANON-008", "AR-CANON-009", "AR-DISC-001", "AR-DISC-003", "AR-DISC-004", "AR-DISC-005", "AR-DISC-006", "AR-ENTITY-001", "AR-INDEX-001", "AR-INDEX-002", "AR-LINK-002", "AR-LINK-003", "AR-LINK-004"].
 func (e *Engine) ImplementedRuleIDs() []string {
 	ids := make([]string, 0, len(e.evaluators))
 	for id := range e.evaluators {

@@ -1241,13 +1241,13 @@ func TestAdapter_Sitemap_ExistingRuleRegression(t *testing.T) {
 		t.Fatalf("engine.New failed: %v", err)
 	}
 
-	// Verify exactly 17 evaluators implemented
+	// Verify exactly 18 evaluators implemented
 	implIDs := eng.ImplementedRuleIDs()
-	if len(implIDs) != 17 {
-		t.Errorf("expected exactly 17 implemented rules, got %d: %v", len(implIDs), implIDs)
+	if len(implIDs) != 18 {
+		t.Errorf("expected exactly 18 implemented rules, got %d: %v", len(implIDs), implIDs)
 	}
 
-	// Execute all 17 evaluators
+	// Execute all 18 evaluators
 	for _, ruleID := range implIDs {
 		results, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, ruleID)
 		if err != nil {
@@ -1258,13 +1258,11 @@ func TestAdapter_Sitemap_ExistingRuleRegression(t *testing.T) {
 		}
 	}
 
-	// Verify remaining sitemap rules (AR-DISC-001, 002) are NOT implemented
-	for _, i := range []int{1, 2} {
-		discRuleID := fmt.Sprintf("AR-DISC-%03d", i)
-		_, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, discRuleID)
-		if err == nil {
-			t.Errorf("sitemap rule %s must NOT be implemented in V1.8d-4", discRuleID)
-		}
+	// Verify remaining sitemap rule (AR-DISC-002) is NOT implemented
+	discRuleID := "AR-DISC-002"
+	_, err = eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, discRuleID)
+	if err == nil {
+		t.Errorf("sitemap rule %s must NOT be implemented in V1.8f", discRuleID)
 	}
 }
 
@@ -1392,14 +1390,14 @@ func TestAdapter_Sitemap_V1_8c_MandatoryRegressions(t *testing.T) {
 					t.Errorf("AR-DISC-002 must NOT be executable")
 				}
 
-				// Only AR-DISC-003, AR-DISC-004, and AR-DISC-005 are generated; no other sitemap rules are executable
+				// Only AR-DISC-001, AR-DISC-003, AR-DISC-004, and AR-DISC-005 are generated; no other sitemap rules are executable
 				for _, rID := range eng.ImplementedRuleIDs() {
 					results, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, rID)
 					if err != nil {
 						t.Fatalf("rule %s evaluation failed: %v", rID, err)
 					}
 					for _, r := range results {
-						if len(r.RuleID) >= 7 && r.RuleID[:7] == "AR-DISC" && r.RuleID != "AR-DISC-003" && r.RuleID != "AR-DISC-004" && r.RuleID != "AR-DISC-005" {
+						if len(r.RuleID) >= 7 && r.RuleID[:7] == "AR-DISC" && r.RuleID != "AR-DISC-001" && r.RuleID != "AR-DISC-003" && r.RuleID != "AR-DISC-004" && r.RuleID != "AR-DISC-005" {
 							t.Fatalf("unexpected sitemap RuleResult generated: %s", r.RuleID)
 						}
 					}
