@@ -2,11 +2,11 @@
 
 ## 1. Executive Summary
 
-- **Milestone:** Audit V1.8e — Sitemap Policy & HTTP Status Contract Review
+- **Milestone:** Audit V1.8e — Sitemap Policy & HTTP Status Contract Review (Correction)
 - **Repository:** `truthrive/technical-seo-audit`
 - **Branch:** `main`
-- **Baseline Git HEAD:** `96197db6a9100a014e62e4b0e33a5fdbe6ea21ec`
-- **Current Milestone Phase:** Research, Contract Analysis, and Design Only (Zero production Go code diff; no evaluator registrations; no SQLite schema modifications; no NormalizationVersion bump)
+- **Correction Baseline Git HEAD:** `f8ba9de1c590e475cba1ba6e4899a95a2dd6b344`
+- **Current Milestone Phase:** Research, Contract Analysis, and Design Correction Only (Zero production Go code diff; no evaluator registrations; no SQLite schema modifications; no NormalizationVersion bump)
 - **Executable Rule Count:** Strictly `17 / 47` (`AR-ACC-004`, `AR-CANON-003`, `AR-CANON-004`, `AR-CANON-006`, `AR-CANON-007`, `AR-CANON-008`, `AR-CANON-009`, `AR-DISC-003`, `AR-DISC-004`, `AR-DISC-005`, `AR-DISC-006`, `AR-ENTITY-001`, `AR-INDEX-001`, `AR-INDEX-002`, `AR-LINK-002`, `AR-LINK-003`, `AR-LINK-004`)
 - **NormalizationVersion:** `v1.9.0` (frozen, unchanged)
 - **Current Sitemap Rule Statuses:**
@@ -14,16 +14,19 @@
   - `AR-DISC-004`: LOCKED (`internal/audit/engine/disc004.go`)
   - `AR-DISC-005`: LOCKED (`internal/audit/engine/disc005.go`)
   - `AR-DISC-006`: LOCKED (`internal/audit/engine/disc006.go`)
-  - `AR-DISC-001`: `NEEDS_POLICY_WIRING` (Evaluator unimplemented; policy schema defined; site-level targetRef wiring required)
-  - `AR-DISC-002`: `BLOCKED` (Open contract decision: Initial vs. Terminal HTTP status semantics unresolved)
+  - `AR-DISC-001`: `NEEDS_POLICY_WIRING` (Evaluator unimplemented; policy schema defined; canonical `"site"` targetRef wiring required)
+  - `AR-DISC-002`: `BLOCKED` (Open contract decision: Initial vs. Terminal HTTP status semantics pending external product review)
 
 ### 1.1 Objective & Scope
 
-This milestone performs the necessary contract analysis, official platform documentation audit, and engine integration design for the two remaining sitemap rules in the frozen 47-rule V1 manifest:
+This design document establishes the precise requirements, evidence dependencies, official documentation alignment, and contract decisions needed before implementing the two remaining sitemap rules in the frozen 47-rule V1 manifest:
 1. `AR-DISC-001 — Sitemap presence matches project policy`
 2. `AR-DISC-002 — Sitemap document returns 200`
 
-This milestone does **not** implement evaluators, modify production code, or make unilateral contract choices. Every recommendation is explicitly identified and accompanied by an approval gate.
+This revision applies three specific contract calibrations:
+1. **Site Policy TargetRef:** Standardizes `TargetRef = "site"` as the sole authoritative reference for site-level policy lookups in MVP without automatic origin fallback.
+2. **RuleResult Subject & Scope:** Aligns the proposed contract with actual supported Go domain types (`audit.SubjectSite` and `audit.AuditReportScope`), eliminating invented scope identifiers and distinguishing policy scopes from report scopes.
+3. **Evidence Quality for Redirect Claims:** Calibrates claims regarding search engine sitemap redirect behavior, distinguishing verified platform statements from engineering inferences and maintaining Option B as a design recommendation pending external approval.
 
 ---
 
@@ -120,11 +123,25 @@ A comprehensive code trace was performed across `internal/audit/policy.go`, `int
      - **Malformed:** Rejected at policy index instantiation by `ValidatePolicyKeyValue()`. It is impossible for an invalid string (e.g. `"yes"`, `"1"`) to exist inside a valid `PolicyIndex`.
    - **Crucial Rule:** Missing policy (`ok == false`) and explicit unspecified (`PolicyValue == "unspecified"`) are semantically equivalent: both mean policy intent is not specified, which triggers `MANUAL_REVIEW` when no sitemaps are found. Missing policy must **never** default to `false` or `true`.
 
-7. **Scoping and TargetRef Convention:**
-   - Policy is scoped to `PolicyScopeSite` and strictly bound to `AuditRunID`.
-   - In normalized evidence, the subject identifier for `SubjectSite` is `"site"` ([internal/audit/adapter/sitemap.go:270](../internal/audit/adapter/sitemap.go#L270)).
-   - However, in unit tests (`engine/policy_test.go`), `TargetRef` for site scope has variously used `"site"`, `"site:1"`, and the origin string `"https://example.com"`.
-   - Standardizing `TargetRef = "site"` for `PolicyScopeSite` lookups (with fallback to origin if provided) is a prerequisite for clean integration.
+7. **Site Policy TargetRef & Conflict Handling (MVP Convention):**
+   - In accordance with `PolicyIndex` architecture, assignments are indexed by the tuple `(PolicyScope, TargetRef, PolicyKey)`.
+   - In normalized evidence, the subject identifier for `SubjectSite` observations is uniformly `"site"` ([internal/audit/adapter/sitemap.go:270](../internal/audit/adapter/sitemap.go#L270)).
+   - For the MVP contract, we recommend that:
+     - `PolicyScope = PolicyScopeSite`
+     - `TargetRef = "site"`
+     - `PolicyKey = PolicyKeySitemapExpected`
+   - **No automatic root-origin fallback is permitted within the evaluator.** An evaluator must query `policies.Get(audit.PolicyScopeSite, "site", audit.PolicyKeySitemapExpected)`.
+   - Policy states and conflict handling are strictly governed by the following table:
+
+| Policy State in `PolicyIndex` | Evaluator Behavior for `AR-DISC-001` | Rationale |
+|---|---|---|
+| `"site"` assignment exists | Use its validated `PolicyValue` (`"true"`, `"false"`, or `"unspecified"`) | Authoritative MVP site assignment found. |
+| `"site"` assignment missing | Treat policy as unspecified (`hasPolicy = false`) | No canonical site policy provided; missing does not imply `false`. |
+| Origin-based assignment exists (e.g. `targetRef="https://example.com"`), `"site"` missing | Treat policy as unspecified (`hasPolicy = false`) | Evaluator does not silently adopt uncanonicalized origin assignments. |
+| Both `"site"` and origin assignments exist with conflicting values | Evaluator queries `"site"`, ignores origin | `PolicyIndex` indexes distinct `TargetRef` values independently. Evaluator only reads authoritative `"site"`. |
+| Multiple assignments for identical `(PolicyScopeSite, "site", PolicyKeySitemapExpected)` with conflicting values | Rejected at index build time (`ErrConflictingPolicy`) | Existing `PolicyIndex` invariant preserved; conflicting identical keys are forbidden. |
+
+Converting external, legacy, or origin-based policy inputs into the canonical `"site"` target reference is an **upstream input normalization concern** (e.g. in CLI flag parsing or project configuration loading), not an evaluator runtime concern. The engine evaluator must not implement ad-hoc fallback logic that could mask configuration contradictions.
 
 8. **Traceability through EvidenceRefs:**
    - Provenance is fully traceable:
@@ -178,22 +195,19 @@ Current normalized evidence can deterministically distinguish all operational st
 3. **Lookup API:**
    ```go
    policyAssignment, hasPolicy := policies.Get(audit.PolicyScopeSite, "site", audit.PolicyKeySitemapExpected)
-   if !hasPolicy && snapshot.AuditRunID != "" {
-       // Optional fallback to origin targetRef if supplied by external callers
-       policyAssignment, hasPolicy = policies.Get(audit.PolicyScopeSite, snapshotOrigin, audit.PolicyKeySitemapExpected)
-   }
    ```
 4. **Missing-Policy Behavior:** If `!hasPolicy` or `policyAssignment.PolicyValue == audit.PolicyValueUnspecified`:
    - If `sitemaps_found_count > 0` -> `PASS`.
    - If `sitemaps_found_count == 0` -> `MANUAL_REVIEW`.
    - Never default missing policy to `false` (which would trigger `NOT_APPLICABLE`) or `true` (which would trigger `WARNING`).
-5. **Result Subject and Scope:**
-   - `SubjectType`: `audit.SubjectSite`
-   - `SubjectRef`: `"site"`
-   - `Scope`: `audit.ScopeSite`
-   - Unit of evaluation: The website's overall sitemap discovery state.
+5. **Result Subject and Scope Validation:**
+   - **`SubjectType`:** `audit.SubjectSite` (defined constant `"SITE"` in [internal/audit/status.go:308](../internal/audit/status.go#L308), validated by `ValidateEvaluationSubjectType`).
+   - **`SubjectRef`:** `"site"` (matches normalized evidence emitted by adapter).
+   - **`Scope`:** `audit.ScopeSitewide` (defined constant `"SITEWIDE"` in [internal/audit/status.go:338](../internal/audit/status.go#L338), validated by `ValidateAuditReportScope`).
+   - **Type Distinction:** `audit.PolicyScopeSite` (`"SITE"`) is a policy targeting scope; `audit.AuditReportScope` (`"SITEWIDE"`) is a report findings scope. They are distinct types in the domain model and must not be conflated.
+   - **Why Site Level:** Sitemap presence evaluates whether the entire website publishes an XML sitemap. If zero sitemaps are found on the site, no `SubjectSitemap` entity exists. Creating a result on a non-existent document subject would require synthesizing a phantom subject, which violates data model invariants ([knowledge/09-data-model.md](../knowledge/09-data-model.md)). Thus, evaluation must occur on `SubjectSite`.
 6. **Classification:** **`NEEDS_POLICY_WIRING`**
-   - *Rationale:* All evidence is present and normalized; schema and validation exist in `internal/audit/policy.go`. The evaluator implementation `internal/audit/engine/disc001.go` is not yet written, and the `TargetRef = "site"` lookup convention needs formal integration and unit test coverage.
+   - *Rationale:* All evidence is present and normalized; schema and validation exist in `internal/audit/policy.go`. The evaluator implementation `internal/audit/engine/disc001.go` is not yet written, and the canonical `TargetRef = "site"` wiring and unit tests must be implemented.
 
 ---
 
@@ -244,7 +258,7 @@ EvidenceSnapshot & EvidenceIndex
 
 1. `initial_http_status`:
    - *Source:* `SiteCrawl.fetchSitemapWithTelemetry` via `http.Client.CheckRedirect` inspecting `via[0].Response.StatusCode` ([internal/sitecrawl/sitemap.go:374-382](../internal/sitecrawl/sitemap.go#L374-L382)). If no redirect occurs (`hops == 0`), set to `res.StatusCode`.
-   - *Meaning:* The HTTP status code returned by the server on the very first request to `sitemap_url`.
+   - *Meaning:* The HTTP status code returned by the server on the initial request to `sitemap_url`.
 2. `final_http_status`:
    - *Source:* `res.StatusCode` from terminal HTTP response after following up to 10 redirects ([internal/sitecrawl/sitemap.go:407](../internal/sitecrawl/sitemap.go#L407)).
    - *Meaning:* The HTTP status code of the terminal document payload that was retrieved.
@@ -289,33 +303,29 @@ The frozen manifest defines required input `sitemap_fetch_status`, PASS conditio
 Under Option A, `sitemap_fetch_status := initial_http_status`.
 A sitemap URL returning `301 Moved Permanently` followed by `200 OK` evaluates as **`FAIL`**.
 
-- **What this measures:** Strict transport hygiene of the discovered or declared sitemap URL. Measures whether the URL declared in `robots.txt` or probed at common paths serves the sitemap directly without redirect overhead.
+- **What this measures:** Direct endpoint response and strict transport cleanliness. Measures whether the URL declared in `robots.txt` or discovered at common paths serves the sitemap directly without redirect overhead.
 - **Evidence required:** `initial_http_status`, `sitemap_url`.
 - **Advantages:**
-  1. Enforces infrastructure hygiene: flags obsolete declarations in `robots.txt`.
-  2. Syntactically aligns with the literal phrase "response is 200" on the requested URL.
+  1. Enforces strict infrastructure hygiene: flags obsolete declarations in `robots.txt` that force crawlers through redirect hops.
+  2. Syntactically literal: evaluates the direct response code received for the requested sitemap URL.
   3. Conceptually mirrors `AR-DISC-004` (which fails 3xx on sitemap-listed URLs).
-- **Limitations & Severe Flaws:**
-  1. **Generates false positives on functioning sites:** Google, Bing, and all major search engines seamlessly follow sitemap redirects. Sites that redirect HTTP to HTTPS, non-www to www, or `/sitemap.xml` to a versioned sitemap index are functioning normally. Flagging this as a **P1 Critical Failure** directly violates:
-     - **Product Principle 1:** Evidence before conclusion (generic best practice is not enough for FAIL).
-     - **Product Principle 3:** Avoid false positives (an unusual implementation is not automatically an error).
-  2. **Severe architectural contradiction with `AR-DISC-003`:** In this scenario, `AR-DISC-002` would evaluate the document as `FAIL` (non-200), but `AR-DISC-003` (which evaluated the retrieved XML body) evaluates the exact same document as **`PASS`** (parseable XML), and `AR-DISC-004..006` evaluate its listed URLs as `PASS`. Generating a report where a document is marked as failing its HTTP fetch while simultaneously passing parseability and URL extraction creates user confusion and degrades audit credibility.
-  3. Disregards redirect destination identity: If `/sitemap.xml` redirects to `/sitemaps/index.xml`, does the destination URL get evaluated separately? Currently, the crawler does not re-register redirected sitemaps as independent root subjects.
+- **Limitations & Trade-offs:**
+  1. Flags functioning sitemaps: If a website redirects `/sitemap.xml` to `/sitemap_index.xml` or HTTP to HTTPS, search engine crawlers follow the redirect and ingest the document. Option A labels this condition as a **P1 Critical Failure**, which may alarm users when search engines are successfully indexing the site.
+  2. Contrast with `AR-DISC-003`: `AR-DISC-003` evaluates the retrieved XML body as `PASS` (parseable). Under Option A, an audit report would indicate that a sitemap failed its HTTP status check but passed XML parseability and URL extraction.
 
 #### Option B — Terminal Response Authoritative
 
 Under Option B, `sitemap_fetch_status := final_http_status`.
-A sitemap URL returning `301 Moved Permanently` followed by `200 OK` evaluates as **`PASS`**, with redirect hops recorded as context evidence.
+A sitemap URL returning `301 Moved Permanently` followed by `200 OK` evaluates as **`PASS`**, citing initial status, redirect hops, and destination URL as diagnostic context evidence.
 
-- **What this measures:** Document accessibility and deliverability. Measures whether the sitemap document can be successfully retrieved and ingested by a search engine bot.
+- **What this measures:** Document retrievability and ingestibility. Measures whether the sitemap document can ultimately be reached and ingested by a bot following standard HTTP redirects.
 - **Evidence required:** `final_http_status`, `sitemap_url`, with `initial_http_status`, `sitemap_redirect_hops`, and `sitemap_final_url` as diagnostic context.
 - **Advantages:**
-  1. **Aligns with search engine reality:** Accurately models Googlebot and Bingbot behavior, which follow redirects and ingest the final sitemap document.
-  2. **Eliminates false P1 failures:** Harmless protocol upgrades (HTTP -> HTTPS) or CMS-level redirects do not trigger false alarm alerts.
-  3. **Complete coherence with `AR-DISC-003`:** `AR-DISC-003` has a precondition that the sitemap returned 200 and body was retrieved. Under Option B, both rules agree that the document was successfully fetched.
-  4. Preserves redirect awareness: `sitemap_redirect_hops` and `sitemap_final_url` remain visible in `EvidenceRefs` and `ObservedSummary`, preserving transparency without forcing a false FAIL.
+  1. Reflects bot ingestion reality: Avoids classifying a retrievable, fully functioning sitemap as a critical failure.
+  2. Architectural alignment with `AR-DISC-003`: `AR-DISC-003` preconditions on sitemap returning 200 and body being retrieved. Under Option B, both rules agree that the document was successfully fetched.
+  3. Preserves redirect awareness: `sitemap_redirect_hops`, `initial_http_status`, and `sitemap_final_url` remain visible in `EvidenceRefs` and `ObservedSummary`, maintaining full transparency.
 - **Limitations:**
-  - Does not emit a dedicated failure for redirect chains on sitemap files. (Note: Under the frozen manifest, `WARNING` is "not used" for `AR-DISC-002`, so Option B cannot downgrade a redirect to WARNING without a manifest amendment).
+  - Does not emit a failure or warning for redirect latency within `AR-DISC-002` (since `WARNING` is "not used" in the frozen contract for `AR-DISC-002`).
 
 ---
 
@@ -323,30 +333,31 @@ A sitemap URL returning `301 Moved Permanently` followed by `200 OK` evaluates a
 
 Authoritative sources from `knowledge/06-research-sources.md` and primary webmaster documentation were consulted:
 
-### 4.1 Primary Platform Evidence
+### 4.1 Primary Platform Evidence & Qualification
 
-1. **Google Search Central — Sitemaps Overview & Build (`SRC-GOOGLE-SITEMAP-001`):**
+1. **Google Search Central — Sitemaps Overview (`SRC-GOOGLE-SITEMAP-001`):**
    - *Source URL:* `https://developers.google.com/search/docs/crawling-indexing/sitemaps/overview`
-   - *Official Policy on Redirects:* Google explicitly documents that it follows redirects on sitemaps.
-   - *Cross-domain constraint:* If a sitemap redirects to a different host (e.g. `example.com/sitemap.xml` -> `cdn.example.com/sitemap.xml`), Google requires ownership verification of both hosts in Google Search Console. For same-origin redirects, Google ingests the target transparently.
-   - *Best practice vs. Requirement:* Google documentation recommends linking directly to the final sitemap location to conserve crawl resources. However, Google does **not** reject or invalidate redirected sitemaps.
+   - *Explicit Requirement:* The sitemap must be available to crawlers and return a valid HTTP response with supported XML structure.
+   - *Redirect Recommendation:* Google documentation recommends linking directly to the canonical sitemap URL in `robots.txt` to minimize latency and conserve crawl efficiency.
+   - *Citing Redirects:* Googlebot adheres to standard HTTP redirect handling and follows redirects for discovered URLs, including sitemap URLs. Google does not specify HTTP 3xx redirection of a sitemap document as a fatal parsing error.
+   - *Cross-Domain Qualification:* Google Search Central provides specific documentation for multi-site sitemaps ("Managing sitemaps for multiple sites"), requiring Search Console ownership verification when a sitemap on Domain A references target URLs on Domain B. However, applying this cross-domain multi-site rule to HTTP redirect hops of sitemap files is an **engineering inference**, not an explicit statement in primary sitemap documentation. We explicitly qualify this distinction.
 
 2. **Google Search Central — Canonicalization & 301 Redirects (`SRC-GOOGLE-CANONICAL-001`):**
    - *Source URL:* `https://developers.google.com/search/docs/crawling-indexing/canonicalization`
-   - A 301 redirect signals permanent relocation. Crawlers update their target pointer to the new URL.
+   - Confirms that permanent 301 redirects are followed by Googlebot and transfer canonical signals.
 
 3. **Sitemaps.org Protocol:**
    - *Source URL:* `https://www.sitemaps.org/protocol.html`
-   - Governs XML schemas (`<urlset>`, `<sitemapindex>`), size limits (50MB, 50,000 URLs), and encoding (UTF-8).
-   - Does not define HTTP status codes or prohibit HTTP redirection.
+   - Governs XML schemas (`<urlset>`, `<sitemapindex>`), size limits (50MB, 50,000 URLs), and UTF-8 encoding.
+   - Does not govern HTTP status codes or prohibit HTTP redirection.
 
-### 4.2 Distinguishing Fact from SEO Lore
+### 4.2 Distinguishing Fact from Engineering Choices
 
-| Topic | Explicit Official Requirement | Recommended Practice | SEO Lore / Common Myth | Audit Engine Stance |
+| Topic | Explicit Official Requirement | Recommended Practice | Engineering / Product Contract Choice | Audit Engine Stance |
 |---|---|---|---|---|
-| **Sitemap Redirects** | Terminal response must return HTTP 200 and valid XML. | Declare the final 200 URL in `robots.txt` to avoid redirect latency. | "Sitemaps must never redirect; any redirect is an SEO error." | **False.** Google follows redirects. A redirected sitemap is delivered and ingested. |
-| **Sitemap-listed URLs** | Listed URLs must be canonical, 200 OK, and indexable. | Sitemaps should only contain clean target URLs. | N/A (Confirmed requirement). | **True.** Handled by `AR-DISC-004` (fails 3xx) and `AR-DISC-005`/`006`. |
-| **Absence of Sitemap** | Not required for small (<500 URLs), well-linked sites. | Useful for large, complex, or media-rich sites. | "Missing sitemap is always a P0/P1 failure." | **False.** Handled by `AR-DISC-001` (yields `MANUAL_REVIEW`, not FAIL). |
+| **Sitemap Document Redirects** | Document must be retrievable and parseable. | Declare the direct, final 200 URL in `robots.txt`. | Whether `AR-DISC-002` evaluates initial vs. terminal HTTP response. | **Contract Decision `DEC-V1.8E-001`:** Option B recommended pending external review; Option A retained as valid alternative. |
+| **Sitemap-listed URLs** | Listed URLs must be canonical 200 OK and indexable. | Sitemaps should contain only canonical targets. | N/A (Confirmed requirement). | **Enforced.** Handled by `AR-DISC-004` (fails 3xx) and `AR-DISC-005`/`006`. |
+| **Absence of Sitemap** | Sitemaps are optional for small (<500 URLs), well-linked sites. | Useful for large, complex, or rapidly updating sites. | How missing sitemap is classified when policy is unspecified. | **Enforced.** Handled by `AR-DISC-001` (yields `MANUAL_REVIEW`, never FAIL). |
 
 ---
 
@@ -355,7 +366,7 @@ Authoritative sources from `knowledge/06-research-sources.md` and primary webmas
 Compatibility between all six sitemap rules was verified:
 
 ```
-[SubjectSite]
+[SubjectSite / Scope: SITEWIDE]
     AR-DISC-001: Sitemap presence matches project policy (Assisted)
         ├── Complete + Found >= 1    ──> PASS
         ├── Complete + 0 + Policy T  ──> WARNING
@@ -363,7 +374,7 @@ Compatibility between all six sitemap rules was verified:
         ├── Complete + 0 + Policy F  ──> NOT_APPLICABLE
         └── Incomplete / Disabled    ──> UNKNOWN
 
-[SubjectSitemap]
+[SubjectSitemap / Scope: SITE_CONFIGURATION]
     AR-DISC-002: Sitemap document returns 200 (Deterministic)
         ├── Direct 200 / Final 200   ──> PASS (under Option B)
         ├── Non-200 (4xx/5xx/Final)  ──> FAIL
@@ -375,7 +386,7 @@ Compatibility between all six sitemap rules was verified:
         ├── Non-200 / Body not recv  ──> NOT_APPLICABLE
         └── Parser unavailable       ──> UNKNOWN
 
-[SubjectSitemapEntry]
+[SubjectSitemapEntry / Scope: URL]
     AR-DISC-004: Listed URL returns final 200 (Deterministic, LOCKED)
         ├── Direct 200 OK            ──> PASS
         ├── 3xx / 4xx / 5xx          ──> FAIL
@@ -430,7 +441,7 @@ automation: assisted
 default_severity: P1
 subject_type: SITE
 subject_ref: "site"
-scope: site
+scope: SITEWIDE
 
 required_inputs:
   - sitemaps_found_count
@@ -479,7 +490,7 @@ automation: deterministic
 default_severity: P1
 subject_type: SITEMAP
 subject_ref: sm:<audit_run_id>:<sitemap_id>
-scope: resource
+scope: SITE_CONFIGURATION
 
 required_inputs:
   - sitemap_url
@@ -516,13 +527,13 @@ evidence_refs:
 
 The following formal decision register details all policy and contract choices:
 
-| Decision ID | Rule | Question | Options | Recommendation | Evidence / Rationale | Approval Required |
+| Decision ID | Rule | Question | Options | Recommendation | Evidence / Rationale | Status & Approval Required |
 |---|---|---|---|---|---|---|
-| **`DEC-V1.8E-001`** | `AR-DISC-002` | What is the authoritative HTTP response status for sitemap documents? | **Option A:** Initial status (301 -> FAIL).<br>**Option B:** Terminal status (301 -> 200 -> PASS). | **Option B (Terminal status authoritative)** with initial status and redirect hops cited as context EvidenceRefs. | Google Search Central documents that Google follows sitemap redirects. Failing working sitemaps creates false P1 defects and contradicts `AR-DISC-003` XML parse success. | **YES (External Review Required)** |
-| **`DEC-V1.8E-002`** | `AR-DISC-001` | What `TargetRef` convention should be used for `PolicyScopeSite` lookups? | **Option 1:** Fixed `"site"`.<br>**Option 2:** Root URL origin.<br>**Option 3:** Standardized `"site"` with fallback to origin. | **Option 3 (Standardized `"site"` with origin fallback)**. | Normalized observations on `SubjectSite` use `SubjectRef = "site"`. Fallback ensures resilience if external caller supplies root URL. | **YES (Contract Alignment)** |
-| **`DEC-V1.8E-003`** | `AR-DISC-001` | What is the SubjectType and Scope for `AR-DISC-001` RuleResult? | **Option 1:** `SubjectSite` / `ScopeSite`.<br>**Option 2:** `SubjectSitemap` / `ScopeResource`. | **Option 1 (`SubjectSite` / `ScopeSite`)**. | Sitemap presence is an attribute of the entire site, not an individual document. If 0 sitemaps exist, no `SubjectSitemap` exists to attach a result to. | **YES (Contract Alignment)** |
-| **`DEC-V1.8E-004`** | `AR-DISC-002` | Does the manifest or rule registry require text clarification? | **Option 1:** Retain existing wording.<br>**Option 2:** Clarify `pass_condition` to specify terminal 200. | **Option 1** (Retain frozen manifest, document terminal interpretation in evaluator docstrings and implementation design). | Manifest is frozen. If Option B is approved, manifest clarification is optional, but documentation clarity is mandatory. | **NO (Documentation Only)** |
-| **`DEC-V1.8E-005`** | `AR-DISC-002` | Is a `NormalizationVersion` bump required? | **Option 1:** Retain `v1.9.0`.<br>**Option 2:** Bump to `v1.10.0`. | **Option 1 (Retain `v1.9.0`)**. | V1.8c already normalized `initial_http_status`, `final_http_status`, `redirect_hops`, and `fetch_complete`. Evaluator directly consumes existing fields with zero adapter diff. | **NO (Zero Adapter Diff)** |
+| **`DEC-V1.8E-001`** | `AR-DISC-002` | What is the authoritative HTTP response status for sitemap documents? | **Option A:** Initial status (301 → FAIL).<br>**Option B:** Terminal status (301 → 200 → PASS). | **Option B (Terminal status authoritative)** with initial status and redirect hops cited as context EvidenceRefs. | Crawlers follow redirects; Option B evaluates document retrievability and aligns with `AR-DISC-003` XML parse success. Option A remains a valid alternative if strict endpoint hygiene is desired. | **PENDING EXTERNAL APPROVAL** |
+| **`DEC-V1.8E-002`** | `AR-DISC-001` | What `TargetRef` convention should be used for `PolicyScopeSite` lookups? | **Option 1:** Fixed `"site"`.<br>**Option 2:** Root URL origin.<br>**Option 3:** Standardized `"site"` with fallback to origin. | **Option 1 (Canonical `TargetRef = "site"` only for MVP)**. No automatic origin fallback. | `PolicyIndex` indexes by `(Scope, TargetRef, Key)`. Eliminates ambiguity and conflict risks when both exist. Upstream normalization must map inputs to `"site"`. | **PENDING EXTERNAL APPROVAL** |
+| **`DEC-V1.8E-003`** | `AR-DISC-001` | What is the supported `SubjectType` and `AuditReportScope` for `AR-DISC-001` RuleResult? | **Option 1:** `SubjectSite` (`"SITE"`) / `ScopeSitewide` (`"SITEWIDE"`).<br>**Option 2:** `SubjectSite` / `ScopeSiteConfiguration` (`"SITE_CONFIGURATION"`). | **Option 1 (`SubjectSite` / `ScopeSitewide`)**. | Uses exact supported constants from `internal/audit/status.go`. Preserves `"site"` subjectRef. Evaluates sitewide sitemap availability without phantom entities. | **PENDING EXTERNAL APPROVAL** |
+| **`DEC-V1.8E-004`** | `AR-DISC-002` | Does the manifest or rule registry require text clarification? | **Option 1:** Retain existing wording.<br>**Option 2:** Clarify `pass_condition` to specify terminal 200. | **Option 1** (Retain frozen manifest and registry unchanged). | Manifest is frozen. If Option B is approved, manifest clarification is optional, but documentation clarity in evaluator docstring is mandatory. | **APPROVED CONTRACT PRESERVATION** |
+| **`DEC-V1.8E-005`** | `AR-DISC-002` | Is a `NormalizationVersion` bump required? | **Option 1:** Retain `v1.9.0`.<br>**Option 2:** Bump to `v1.10.0`. | **Option 1 (Retain `v1.9.0`)**. | V1.8c already normalized `initial_http_status`, `final_http_status`, `redirect_hops`, and `fetch_complete`. Evaluator directly consumes existing fields with zero adapter diff. | **APPROVED CONTRACT PRESERVATION** |
 
 ---
 
@@ -534,9 +545,9 @@ The following formal decision register details all policy and contract choices:
 - **Exact Blockers:**
   1. No Go evaluator file (`internal/audit/engine/disc001.go`) exists.
   2. Engine registry does not have `AR-DISC-001` registered.
-  3. Site-level policy lookup helper (`lookupSitemapExpectedPolicy`) needs to be defined.
+  3. Site-level policy lookup must be wired to canonical `TargetRef = "site"`.
 - **Required Code Changes (when unblocked):**
-  - Implement `internal/audit/engine/disc001.go`.
+  - Implement `internal/audit/engine/disc001.go` consuming `SubjectSite` and `policies.Get(PolicyScopeSite, "site", PolicyKeySitemapExpected)`.
   - Register `ruleIDDISC001` in `internal/audit/engine/engine.go`.
   - Add unit tests in `internal/audit/engine/disc001_test.go` covering all 7 operational states.
 - **Dependencies:** `SubjectSite` observations (already available in `v1.9.0`).
@@ -565,8 +576,9 @@ This milestone explicitly does **not**:
 3. Modify SQLite database tables, crawler fetch routines, or adapter normalization logic.
 4. Bump `NormalizationVersion` (remains `v1.9.0`).
 5. Alter any of the four locked sitemap evaluators (`AR-DISC-003`, `AR-DISC-004`, `AR-DISC-005`, `AR-DISC-006`).
-6. Unilaterally declare `DEC-V1.8E-001` locked without external review.
-7. Implement Finding grouping, issue aggregation, UI reporting, or score calculation.
+6. Unilaterally declare `DEC-V1.8E-001`, `DEC-V1.8E-002`, or `DEC-V1.8E-003` locked without external review.
+7. Introduce new values to `EvaluationSubjectType` or `AuditReportScope` enums.
+8. Implement Finding grouping, issue aggregation, UI reporting, or score calculation.
 
 ---
 
@@ -575,8 +587,8 @@ This milestone explicitly does **not**:
 Before implementing the remaining sitemap rules in subsequent milestones, the following approvals are required:
 
 - [ ] **Approval of `DEC-V1.8E-001`:** Confirm Option B (terminal HTTP response authoritative for `AR-DISC-002`, with initial status and redirect hops preserved as diagnostic context).
-- [ ] **Approval of `DEC-V1.8E-002`:** Confirm site-level policy lookup convention (`TargetRef = "site"` with origin fallback).
-- [ ] **Approval of `DEC-V1.8E-003`:** Confirm `AR-DISC-001` SubjectType as `SubjectSite` and Scope as `ScopeSite`.
+- [ ] **Approval of `DEC-V1.8E-002`:** Confirm canonical site policy lookup convention (`TargetRef = "site"` only for MVP; no automatic origin fallback).
+- [ ] **Approval of `DEC-V1.8E-003`:** Confirm `AR-DISC-001` SubjectType as `SubjectSite` (`"SITE"`) and Scope as `ScopeSitewide` (`"SITEWIDE"`).
 - [ ] **Approval of Implementation Sequencing:** Confirm proceeding with `AR-DISC-001` in V1.8f and `AR-DISC-002` in V1.8g upon resolution of `DEC-V1.8E-001`.
 
 ---
