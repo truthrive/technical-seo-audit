@@ -132,10 +132,11 @@ func evaluateDISC001(
 				parsed, err := strconv.Atoi(firstVal)
 				if err != nil {
 					countMalformed = true
-				} else if parsed < 0 {
-					countNegative = true
 				} else {
 					sitemapsFound = parsed
+					if parsed < 0 {
+						countNegative = true
+					}
 				}
 			}
 		}
@@ -180,15 +181,32 @@ func evaluateDISC001(
 		}
 
 		var (
-			statusConflict bool
-			statusVal      string
+			statusMissing      bool
+			statusEmpty        bool
+			statusConflict     bool
+			statusUnrecognized bool
+			statusVal          string
 		)
-		if len(statusObs) > 0 {
-			statusVal = strings.TrimSpace(statusObs[0].Value)
+		if len(statusObs) == 0 {
+			statusMissing = true
+		} else {
+			firstVal := strings.TrimSpace(statusObs[0].Value)
+			statusVal = firstVal
+			if firstVal == "" {
+				statusEmpty = true
+			}
 			for _, so := range statusObs[1:] {
-				if strings.TrimSpace(so.Value) != statusVal {
+				if strings.TrimSpace(so.Value) != firstVal {
 					statusConflict = true
 					break
+				}
+			}
+			if !statusConflict && !statusEmpty {
+				switch statusVal {
+				case "COMPLETED", "NOT_ATTEMPTED", "ATTEMPTED_INCOMPLETE", "DISABLED":
+					// Recognized status values
+				default:
+					statusUnrecognized = true
 				}
 			}
 		}
@@ -220,16 +238,6 @@ func evaluateDISC001(
 
 		// 6. Contradiction checks
 		snapshotContradiction := (!compMissing && !compConflict && !compMalformed && (obsDiscoveryComplete != snapshot.SitemapDiscoveryComplete))
-
-		statusContradiction := false
-		if !compMissing && !compConflict && !compMalformed && obsDiscoveryComplete {
-			if discoveryCapped {
-				statusContradiction = true
-			}
-			if statusVal == "NOT_ATTEMPTED" || statusVal == "ATTEMPTED_INCOMPLETE" || (statusVal != "" && statusVal != "COMPLETED") {
-				statusContradiction = true
-			}
-		}
 
 		// 7. Resolve explicit policy
 		var (
@@ -294,25 +302,53 @@ func evaluateDISC001(
 			evalStatus = audit.StatusUnknown
 			observedSummary = fmt.Sprintf("Contradictory discovery completion evidence: observation sitemap_discovery_complete=%v conflicts with snapshot.SitemapDiscoveryComplete=%v.", obsDiscoveryComplete, snapshot.SitemapDiscoveryComplete)
 			addPolicyRef(audit.EvidenceRoleContext)
+		} else if statusMissing {
+			evalStatus = audit.StatusUnknown
+			observedSummary = "Sitemap discovery status observation is missing (sitemap_discovery_status unavailable)."
+			addPolicyRef(audit.EvidenceRoleContext)
 		} else if statusConflict {
 			evalStatus = audit.StatusUnknown
 			observedSummary = "Conflicting sitemap discovery status observations observed on SubjectSite."
 			addPolicyRef(audit.EvidenceRoleContext)
-		} else if statusContradiction {
+		} else if statusEmpty {
 			evalStatus = audit.StatusUnknown
-			observedSummary = "Contradictory discovery status evidence: sitemap_discovery_complete is true but discovery was capped or status is not COMPLETED."
+			observedSummary = "Sitemap discovery status observation is empty; discovery state cannot be determined."
 			addPolicyRef(audit.EvidenceRoleContext)
-		} else if !obsDiscoveryComplete || statusVal == "NOT_ATTEMPTED" || statusVal == "ATTEMPTED_INCOMPLETE" || statusVal == "DISABLED" {
+		} else if statusUnrecognized {
 			evalStatus = audit.StatusUnknown
-			if statusVal == "NOT_ATTEMPTED" {
-				observedSummary = "Sitemap discovery was not attempted (status=NOT_ATTEMPTED); sitemap presence cannot be determined."
-			} else if statusVal == "DISABLED" {
-				observedSummary = "Sitemap discovery was disabled (status=DISABLED); sitemap presence cannot be determined."
-			} else if statusVal == "ATTEMPTED_INCOMPLETE" || discoveryCapped {
-				observedSummary = "Sitemap discovery could not complete (status=ATTEMPTED_INCOMPLETE or limit capped); sitemap presence cannot be determined."
-			} else {
-				observedSummary = "Sitemap discovery could not complete (sitemap_discovery_complete=false); sitemap presence cannot be determined."
-			}
+			observedSummary = fmt.Sprintf("Unrecognized sitemap discovery status %q; discovery state cannot be determined.", statusVal)
+			addPolicyRef(audit.EvidenceRoleContext)
+		} else if obsDiscoveryComplete && statusVal != "COMPLETED" {
+			evalStatus = audit.StatusUnknown
+			observedSummary = fmt.Sprintf("Contradictory discovery status evidence: sitemap_discovery_complete is true but sitemap_discovery_status is %q (expected COMPLETED).", statusVal)
+			addPolicyRef(audit.EvidenceRoleContext)
+		} else if statusVal == "COMPLETED" && !obsDiscoveryComplete {
+			evalStatus = audit.StatusUnknown
+			observedSummary = "Contradictory discovery status evidence: sitemap_discovery_status is COMPLETED but sitemap_discovery_complete is false."
+			addPolicyRef(audit.EvidenceRoleContext)
+		} else if statusVal == "COMPLETED" && discoveryCapped {
+			evalStatus = audit.StatusUnknown
+			observedSummary = "Contradictory discovery status evidence: sitemap_discovery_status is COMPLETED but discovery was limit capped."
+			addPolicyRef(audit.EvidenceRoleContext)
+		} else if statusVal == "NOT_ATTEMPTED" {
+			evalStatus = audit.StatusUnknown
+			observedSummary = "Sitemap discovery was not attempted (status=NOT_ATTEMPTED); sitemap presence cannot be determined."
+			addPolicyRef(audit.EvidenceRoleContext)
+		} else if statusVal == "DISABLED" {
+			evalStatus = audit.StatusUnknown
+			observedSummary = "Sitemap discovery was disabled (status=DISABLED); sitemap presence cannot be determined."
+			addPolicyRef(audit.EvidenceRoleContext)
+		} else if statusVal == "ATTEMPTED_INCOMPLETE" || discoveryCapped {
+			evalStatus = audit.StatusUnknown
+			observedSummary = "Sitemap discovery could not complete (status=ATTEMPTED_INCOMPLETE or limit capped); sitemap presence cannot be determined."
+			addPolicyRef(audit.EvidenceRoleContext)
+		} else if !obsDiscoveryComplete {
+			evalStatus = audit.StatusUnknown
+			observedSummary = "Sitemap discovery could not complete (sitemap_discovery_complete=false); sitemap presence cannot be determined."
+			addPolicyRef(audit.EvidenceRoleContext)
+		} else if statusVal != "COMPLETED" {
+			evalStatus = audit.StatusUnknown
+			observedSummary = fmt.Sprintf("Sitemap discovery status is not COMPLETED (status=%q); sitemap presence cannot be determined.", statusVal)
 			addPolicyRef(audit.EvidenceRoleContext)
 		} else {
 			// Step B: Discovery completed cleanly without caps or contradictions

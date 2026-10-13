@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1192,6 +1193,450 @@ func TestAdapter_Engine_AR_DISC_001_Integration(t *testing.T) {
 					t.Errorf("expected non-empty results for %s", rID)
 				}
 			}
+		}
+	})
+}
+
+// ============================================================================
+// Audit V1.8f Targeted Correction Regression Tests (Section 6)
+// ============================================================================
+
+func TestEngine_AR_DISC_001_TargetedCorrection(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	runID := "run:disc001:corr"
+	snapID := "snap:disc001:corr"
+	ctx := context.Background()
+	snapTrue := true
+	snapFalse := false
+
+	// 1. Missing discovery status + completion=true + snapshot=true + count=1 -> UNKNOWN
+	t.Run("1. missing discovery status + completion=true + snapshot=true + count=1 -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "1",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			omitFields:         []string{"sitemap_discovery_status"},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 2. Missing discovery status + completion=true + snapshot=true + count=0 + policy=true -> UNKNOWN
+	t.Run("2. missing discovery status + completion=true + snapshot=true + count=0 + policy=true -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "0",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			omitFields:         []string{"sitemap_discovery_status"},
+		}, runID, snapID)
+		polIdx, _ := engine.NewPolicyIndexForRun(audit.AuditRunID(runID), []audit.ProjectPolicyAssignment{
+			makeSitePolicy(audit.AuditRunID(runID), "pol:sm_exp_true", "site", "true"),
+		})
+		res, err := eng.EvaluateRuleWithContext(ctx, engine.EvaluationContext{Snapshot: snap, Policies: polIdx}, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 3. Missing discovery status + completion=true + snapshot=true + count=0 + policy=false -> UNKNOWN
+	t.Run("3. missing discovery status + completion=true + snapshot=true + count=0 + policy=false -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "0",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			omitFields:         []string{"sitemap_discovery_status"},
+		}, runID, snapID)
+		polIdx, _ := engine.NewPolicyIndexForRun(audit.AuditRunID(runID), []audit.ProjectPolicyAssignment{
+			makeSitePolicy(audit.AuditRunID(runID), "pol:sm_exp_false", "site", "false"),
+		})
+		res, err := eng.EvaluateRuleWithContext(ctx, engine.EvaluationContext{Snapshot: snap, Policies: polIdx}, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 4. Missing discovery status + completion=true + snapshot=true + count=0 + policy missing -> UNKNOWN
+	t.Run("4. missing discovery status + completion=true + snapshot=true + count=0 + policy missing -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "0",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			omitFields:         []string{"sitemap_discovery_status"},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 5. Empty discovery status -> UNKNOWN
+	t.Run("5. empty discovery status -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "1",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			omitFields:         []string{"sitemap_discovery_status"},
+			customObs: []audit.NormalizedObservation{
+				{
+					ObservationID:      "obs:corr:empty_status",
+					AuditRunID:         audit.AuditRunID(runID),
+					SnapshotID:         audit.SnapshotID(snapID),
+					SubjectType:        audit.SubjectSite,
+					SubjectRef:         "site",
+					Field:              "sitemap_discovery_status",
+					Value:              "",
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{"sitecrawl_sitemap_discovery:test"},
+					ObservedAt:         time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
+				},
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 6. Whitespace-only discovery status -> UNKNOWN
+	t.Run("6. whitespace-only discovery status -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "1",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			omitFields:         []string{"sitemap_discovery_status"},
+			customObs: []audit.NormalizedObservation{
+				{
+					ObservationID:      "obs:corr:ws_status",
+					AuditRunID:         audit.AuditRunID(runID),
+					SnapshotID:         audit.SnapshotID(snapID),
+					SubjectType:        audit.SubjectSite,
+					SubjectRef:         "site",
+					Field:              "sitemap_discovery_status",
+					Value:              "   \t  ",
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{"sitecrawl_sitemap_discovery:test"},
+					ObservedAt:         time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
+				},
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 7. Unrecognized discovery status -> UNKNOWN
+	t.Run("7. unrecognized discovery status -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "1",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			discoveryStatus:    "PENDING_INSPECTION",
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 8. Conflicting status observations -> UNKNOWN
+	t.Run("8. conflicting status observations -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "1",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			discoveryStatus:    "COMPLETED",
+			customObs: []audit.NormalizedObservation{
+				{
+					ObservationID:      "obs:corr:status_conflict",
+					AuditRunID:         audit.AuditRunID(runID),
+					SnapshotID:         audit.SnapshotID(snapID),
+					SubjectType:        audit.SubjectSite,
+					SubjectRef:         "site",
+					Field:              "sitemap_discovery_status",
+					Value:              "NOT_ATTEMPTED",
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{"sitecrawl_sitemap_discovery:test"},
+					ObservedAt:         time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
+				},
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 9. NOT_ATTEMPTED + complete=true -> UNKNOWN
+	t.Run("9. NOT_ATTEMPTED + complete=true -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "0",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			discoveryStatus:    "NOT_ATTEMPTED",
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 10. DISABLED + complete=true -> UNKNOWN
+	t.Run("10. DISABLED + complete=true -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "0",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			discoveryStatus:    "DISABLED",
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 11. ATTEMPTED_INCOMPLETE + complete=true -> UNKNOWN
+	t.Run("11. ATTEMPTED_INCOMPLETE + complete=true -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "0",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			discoveryStatus:    "ATTEMPTED_INCOMPLETE",
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 12. COMPLETED + complete=false -> UNKNOWN
+	t.Run("12. COMPLETED + complete=false -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "1",
+			discoveryComplete:  "false",
+			snapshotComplete:   &snapFalse,
+			discoveryStatus:    "COMPLETED",
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 13. COMPLETED + snapshot completion=false -> UNKNOWN
+	t.Run("13. COMPLETED + snapshot completion=false -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "1",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapFalse,
+			discoveryStatus:    "COMPLETED",
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN, got %v", res)
+		}
+	})
+
+	// 14. COMPLETED + capped discovery -> UNKNOWN
+	t.Run("14. COMPLETED + capped discovery -> UNKNOWN", func(t *testing.T) {
+		for _, capType := range []string{"depth", "urls", "byte"} {
+			fix := disc001SiteFixture{
+				sitemapsFoundCount: "1",
+				discoveryComplete:  "true",
+				snapshotComplete:   &snapTrue,
+				discoveryStatus:    "COMPLETED",
+			}
+			switch capType {
+			case "depth":
+				fix.depthCapped = "true"
+			case "urls":
+				fix.urlsCapped = "true"
+			case "byte":
+				fix.byteCapped = "true"
+			}
+			snap := newDISC001Snapshot(fix, runID, snapID)
+			res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+			if err != nil {
+				t.Fatalf("cap %s eval failed: %v", capType, err)
+			}
+			if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+				t.Errorf("cap %s: expected UNKNOWN, got %v", capType, res)
+			}
+		}
+	})
+
+	// 15. Valid COMPLETED + count=1 -> PASS
+	t.Run("15. valid COMPLETED + count=1 -> PASS", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "1",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			discoveryStatus:    "COMPLETED",
+			depthCapped:        "false",
+			urlsCapped:         "false",
+			byteCapped:         "false",
+			sitemapDocs:        []string{"sm:1"},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusPass {
+			t.Errorf("expected PASS, got %v", res)
+		}
+	})
+
+	// 16. Valid COMPLETED + count=0 + policy=true -> WARNING
+	t.Run("16. valid COMPLETED + count=0 + policy=true -> WARNING", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "0",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			discoveryStatus:    "COMPLETED",
+			depthCapped:        "false",
+			urlsCapped:         "false",
+			byteCapped:         "false",
+		}, runID, snapID)
+		polIdx, _ := engine.NewPolicyIndexForRun(audit.AuditRunID(runID), []audit.ProjectPolicyAssignment{
+			makeSitePolicy(audit.AuditRunID(runID), "pol:sm_exp_true", "site", "true"),
+		})
+		res, err := eng.EvaluateRuleWithContext(ctx, engine.EvaluationContext{Snapshot: snap, Policies: polIdx}, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusWarning {
+			t.Errorf("expected WARNING, got %v", res)
+		}
+	})
+
+	// 17. Valid COMPLETED + count=0 + policy=false -> NOT_APPLICABLE
+	t.Run("17. valid COMPLETED + count=0 + policy=false -> NOT_APPLICABLE", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "0",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			discoveryStatus:    "COMPLETED",
+			depthCapped:        "false",
+			urlsCapped:         "false",
+			byteCapped:         "false",
+		}, runID, snapID)
+		polIdx, _ := engine.NewPolicyIndexForRun(audit.AuditRunID(runID), []audit.ProjectPolicyAssignment{
+			makeSitePolicy(audit.AuditRunID(runID), "pol:sm_exp_false", "site", "false"),
+		})
+		res, err := eng.EvaluateRuleWithContext(ctx, engine.EvaluationContext{Snapshot: snap, Policies: polIdx}, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusNotApplicable {
+			t.Errorf("expected NOT_APPLICABLE, got %v", res)
+		}
+	})
+
+	// 18. Valid COMPLETED + count=0 + policy unspecified -> MANUAL_REVIEW
+	t.Run("18. valid COMPLETED + count=0 + policy unspecified -> MANUAL_REVIEW", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "0",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			discoveryStatus:    "COMPLETED",
+			depthCapped:        "false",
+			urlsCapped:         "false",
+			byteCapped:         "false",
+		}, runID, snapID)
+		polIdx, _ := engine.NewPolicyIndexForRun(audit.AuditRunID(runID), []audit.ProjectPolicyAssignment{
+			makeSitePolicy(audit.AuditRunID(runID), "pol:sm_exp_unspec", "site", "unspecified"),
+		})
+		res, err := eng.EvaluateRuleWithContext(ctx, engine.EvaluationContext{Snapshot: snap, Policies: polIdx}, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusManualReview {
+			t.Errorf("expected MANUAL_REVIEW, got %v", res)
+		}
+	})
+
+	// 19. Negative count -1 -> UNKNOWN, summary contains -1
+	t.Run("19. negative count -1 -> UNKNOWN, summary contains -1", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "-1",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			discoveryStatus:    "COMPLETED",
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		if !strings.Contains(res[0].ObservedSummary, "-1") {
+			t.Errorf("expected ObservedSummary to contain '-1', got %q", res[0].ObservedSummary)
+		}
+	})
+
+	// 20. Negative count -5 -> UNKNOWN, summary contains -5
+	t.Run("20. negative count -5 -> UNKNOWN, summary contains -5", func(t *testing.T) {
+		snap := newDISC001Snapshot(disc001SiteFixture{
+			sitemapsFoundCount: "-5",
+			discoveryComplete:  "true",
+			snapshotComplete:   &snapTrue,
+			discoveryStatus:    "COMPLETED",
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-001")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		if !strings.Contains(res[0].ObservedSummary, "-5") {
+			t.Errorf("expected ObservedSummary to contain '-5', got %q", res[0].ObservedSummary)
 		}
 	})
 }
