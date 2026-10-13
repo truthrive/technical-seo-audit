@@ -861,10 +861,10 @@ func TestEngine_AR_DISC_001_Unit(t *testing.T) {
 			}
 		}
 
-		// 40. Other seventeen evaluators remain unaffected
+		// 40. Other eighteen evaluators remain unaffected
 		allIDs := eng.ImplementedRuleIDs()
-		if len(allIDs) != 18 {
-			t.Fatalf("40. expected 18 implemented rules, got %d", len(allIDs))
+		if len(allIDs) != 19 {
+			t.Fatalf("40. expected 19 implemented rules, got %d", len(allIDs))
 		}
 		for _, id := range allIDs {
 			if id == "AR-DISC-001" {
@@ -1179,8 +1179,8 @@ func TestAdapter_Engine_AR_DISC_001_Integration(t *testing.T) {
 		runID := "int:disc001:13_all"
 		_, snap := setupIntegrationRun(t, runID, "COMPLETED", 1, true)
 		allIDs := eng.ImplementedRuleIDs()
-		if len(allIDs) != 18 {
-			t.Fatalf("expected 18 rules, got %d", len(allIDs))
+		if len(allIDs) != 19 {
+			t.Fatalf("expected 19 rules, got %d", len(allIDs))
 		}
 		for _, rID := range allIDs {
 			results, err := eng.EvaluateRule(ctx, snap, rID)
@@ -1188,7 +1188,7 @@ func TestAdapter_Engine_AR_DISC_001_Integration(t *testing.T) {
 				t.Fatalf("rule %s failed: %v", rID, err)
 			}
 			// When run with valid pages, links, and sitemaps, sitemap rules evaluate non-empty
-			if rID == "AR-DISC-001" || rID == "AR-DISC-003" || rID == "AR-DISC-004" || rID == "AR-DISC-005" {
+			if rID == "AR-DISC-001" || rID == "AR-DISC-002" || rID == "AR-DISC-003" || rID == "AR-DISC-004" || rID == "AR-DISC-005" {
 				if len(results) == 0 {
 					t.Errorf("expected non-empty results for %s", rID)
 				}
