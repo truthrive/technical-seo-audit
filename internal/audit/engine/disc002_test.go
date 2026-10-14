@@ -1353,4 +1353,737 @@ func TestAdapter_Engine_AR_DISC_002_Integration(t *testing.T) {
 			}
 		}
 	})
+
+	// 14. Sitemap HTTP 404 with contradictory fetch error -> UNKNOWN
+	t.Run("14. sitemap HTTP 404 with contradictory fetch error -> UNKNOWN", func(t *testing.T) {
+		runID := "int:disc002:14_404_fetcherr"
+		_, snap := setupIntegrationRun(t, runID, "COMPLETED", []sitemapRow{
+			{id: 1, url: "https://example.com/sitemap.xml", initStatus: 404, finalStatus: 404, redirectHops: 0, fetchError: "connection reset", fetchComp: 1},
+		})
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		expectedSummary := `Contradictory evidence: sitemap returned HTTP 404 but reported fetch error "connection reset".`
+		if res[0].ObservedSummary != expectedSummary {
+			t.Errorf("summary mismatch: want %q, got %q", expectedSummary, res[0].ObservedSummary)
+		}
+	})
+
+	// 15. Sitemap HTTP 500 with contradictory fetch error -> UNKNOWN
+	t.Run("15. sitemap HTTP 500 with contradictory fetch error -> UNKNOWN", func(t *testing.T) {
+		runID := "int:disc002:15_500_fetcherr"
+		_, snap := setupIntegrationRun(t, runID, "COMPLETED", []sitemapRow{
+			{id: 1, url: "https://example.com/sitemap.xml", initStatus: 500, finalStatus: 500, redirectHops: 0, fetchError: "connection reset", fetchComp: 1},
+		})
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		expectedSummary := `Contradictory evidence: sitemap returned HTTP 500 but reported fetch error "connection reset".`
+		if res[0].ObservedSummary != expectedSummary {
+			t.Errorf("summary mismatch: want %q, got %q", expectedSummary, res[0].ObservedSummary)
+		}
+	})
+}
+
+// ============================================================================
+// Section 12: V1.8g Mandatory Regression Tests (Items 1 - 18)
+// ============================================================================
+
+func TestEngine_AR_DISC_002_V1_8g_Regressions(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+	fixedTime := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	eng.SetClock(func() time.Time { return fixedTime })
+
+	runID := "run:disc002:v18g"
+	snapID := "snap:disc002:v18g"
+	smRef := fmt.Sprintf("sm:%s:1", runID)
+	ctx := context.Background()
+
+	// 1. Terminal 200 + fetchComplete=true + no fetch error -> PASS
+	t.Run("1. terminal 200 + fetchComplete=true + no fetch error -> PASS", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				redirectHops:  "0",
+				fetchComplete: "true",
+				fetchError:    "",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusPass {
+			t.Fatalf("expected PASS, got %v", res)
+		}
+		if res[0].ObservedSummary != "Sitemap document returned terminal HTTP 200 without redirects." {
+			t.Errorf("unexpected summary: %s", res[0].ObservedSummary)
+		}
+	})
+
+	// 2. Terminal 404 + fetchComplete=true + no fetch error -> FAIL
+	t.Run("2. terminal 404 + fetchComplete=true + no fetch error -> FAIL", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "404",
+				initialStatus: "404",
+				redirectHops:  "0",
+				fetchComplete: "true",
+				fetchError:    "",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusFail {
+			t.Fatalf("expected FAIL, got %v", res)
+		}
+		if res[0].ObservedSummary != "Sitemap document returned terminal HTTP 404." {
+			t.Errorf("unexpected summary: %s", res[0].ObservedSummary)
+		}
+	})
+
+	// 3. Terminal 500 + fetchComplete=true + no fetch error -> FAIL
+	t.Run("3. terminal 500 + fetchComplete=true + no fetch error -> FAIL", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "500",
+				initialStatus: "500",
+				redirectHops:  "0",
+				fetchComplete: "true",
+				fetchError:    "",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusFail {
+			t.Fatalf("expected FAIL, got %v", res)
+		}
+		if res[0].ObservedSummary != "Sitemap document returned terminal HTTP 500." {
+			t.Errorf("unexpected summary: %s", res[0].ObservedSummary)
+		}
+	})
+
+	// 4. Terminal 301 -> final 200 + valid evidence -> PASS
+	t.Run("4. terminal 301 -> final 200 + valid evidence -> PASS", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "http://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "301",
+				redirectHops:  "1",
+				finalURL:      "https://example.com/sitemap.xml",
+				fetchComplete: "true",
+				fetchError:    "",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusPass {
+			t.Fatalf("expected PASS, got %v", res)
+		}
+		if res[0].ObservedSummary != "Sitemap document returned terminal HTTP 200 after redirecting from initial HTTP 301." {
+			t.Errorf("unexpected summary: %s", res[0].ObservedSummary)
+		}
+	})
+
+	// 5. Terminal 301 -> final 404 + valid evidence -> FAIL
+	t.Run("5. terminal 301 -> final 404 + valid evidence -> FAIL", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "http://example.com/sitemap.xml",
+				finalStatus:   "404",
+				initialStatus: "301",
+				redirectHops:  "1",
+				finalURL:      "https://example.com/missing.xml",
+				fetchComplete: "true",
+				fetchError:    "",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusFail {
+			t.Fatalf("expected FAIL, got %v", res)
+		}
+		if res[0].ObservedSummary != "Sitemap document returned terminal HTTP 404 after redirecting from initial HTTP 301." {
+			t.Errorf("unexpected summary: %s", res[0].ObservedSummary)
+		}
+	})
+
+	// 6. Terminal 200 + fetchComplete=true + acquisition failure error -> UNKNOWN (contradiction)
+	t.Run("6. terminal 200 + fetchComplete=true + acquisition failure error -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				redirectHops:  "0",
+				fetchComplete: "true",
+				fetchError:    "dial tcp: connection refused",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		expectedSummary := `Contradictory evidence: sitemap returned HTTP 200 but reported fetch error "dial tcp: connection refused".`
+		if res[0].ObservedSummary != expectedSummary {
+			t.Errorf("summary mismatch: want %q, got %q", expectedSummary, res[0].ObservedSummary)
+		}
+		var hasFinalStatusPrimary, hasFetchErrorContext bool
+		for _, ref := range res[0].EvidenceRefs {
+			if ref.Field == "final_http_status" && ref.Role == audit.EvidenceRolePrimary && ref.ObservedValue == "200" {
+				hasFinalStatusPrimary = true
+			}
+			if ref.Field == "sitemap_fetch_error" && ref.Role == audit.EvidenceRoleContext && ref.ObservedValue == "dial tcp: connection refused" {
+				hasFetchErrorContext = true
+			}
+		}
+		if !hasFinalStatusPrimary || !hasFetchErrorContext {
+			t.Errorf("missing evidence refs: finalStatus=%t, fetchError=%t", hasFinalStatusPrimary, hasFetchErrorContext)
+		}
+	})
+
+	// 7. Terminal 404 + fetchComplete=true + acquisition failure error -> UNKNOWN (contradiction)
+	t.Run("7. terminal 404 + fetchComplete=true + acquisition failure error -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "404",
+				initialStatus: "404",
+				redirectHops:  "0",
+				fetchComplete: "true",
+				fetchError:    "connection reset",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		expectedSummary := `Contradictory evidence: sitemap returned HTTP 404 but reported fetch error "connection reset".`
+		if res[0].ObservedSummary != expectedSummary {
+			t.Errorf("summary mismatch: want %q, got %q", expectedSummary, res[0].ObservedSummary)
+		}
+		var hasFinalStatusPrimary, hasFetchErrorContext bool
+		for _, ref := range res[0].EvidenceRefs {
+			if ref.Field == "final_http_status" && ref.Role == audit.EvidenceRolePrimary && ref.ObservedValue == "404" {
+				hasFinalStatusPrimary = true
+			}
+			if ref.Field == "sitemap_fetch_error" && ref.Role == audit.EvidenceRoleContext && ref.ObservedValue == "connection reset" {
+				hasFetchErrorContext = true
+			}
+		}
+		if !hasFinalStatusPrimary || !hasFetchErrorContext {
+			t.Errorf("missing evidence refs: finalStatus=%t, fetchError=%t", hasFinalStatusPrimary, hasFetchErrorContext)
+		}
+	})
+
+	// 8. Terminal 500 + fetchComplete=true + acquisition failure error -> UNKNOWN (contradiction)
+	t.Run("8. terminal 500 + fetchComplete=true + acquisition failure error -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "500",
+				initialStatus: "500",
+				redirectHops:  "0",
+				fetchComplete: "true",
+				fetchError:    "connection reset",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		expectedSummary := `Contradictory evidence: sitemap returned HTTP 500 but reported fetch error "connection reset".`
+		if res[0].ObservedSummary != expectedSummary {
+			t.Errorf("summary mismatch: want %q, got %q", expectedSummary, res[0].ObservedSummary)
+		}
+		var hasFinalStatusPrimary, hasFetchErrorContext bool
+		for _, ref := range res[0].EvidenceRefs {
+			if ref.Field == "final_http_status" && ref.Role == audit.EvidenceRolePrimary && ref.ObservedValue == "500" {
+				hasFinalStatusPrimary = true
+			}
+			if ref.Field == "sitemap_fetch_error" && ref.Role == audit.EvidenceRoleContext && ref.ObservedValue == "connection reset" {
+				hasFetchErrorContext = true
+			}
+		}
+		if !hasFinalStatusPrimary || !hasFetchErrorContext {
+			t.Errorf("missing evidence refs: finalStatus=%t, fetchError=%t", hasFinalStatusPrimary, hasFetchErrorContext)
+		}
+	})
+
+	// 9. Terminal 201/204 + fetch error -> consistent contradiction behavior
+	t.Run("9. terminal 201/204 + fetch error -> consistent contradiction behavior", func(t *testing.T) {
+		// 201 with fetch error -> UNKNOWN
+		snap201 := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "201",
+				fetchComplete: "true",
+				fetchError:    "connection reset",
+			},
+		}, runID, snapID)
+		res201, err := eng.EvaluateRule(ctx, snap201, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval 201 failed: %v", err)
+		}
+		if len(res201) != 1 || res201[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN for 201+error, got %v", res201)
+		}
+		expectedSummary201 := `Contradictory evidence: sitemap returned HTTP 201 but reported fetch error "connection reset".`
+		if res201[0].ObservedSummary != expectedSummary201 {
+			t.Errorf("summary mismatch: want %q, got %q", expectedSummary201, res201[0].ObservedSummary)
+		}
+
+		// 204 with fetch error -> UNKNOWN
+		snap204 := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "204",
+				fetchComplete: "true",
+				fetchError:    "connection reset",
+			},
+		}, runID, snapID)
+		res204, err := eng.EvaluateRule(ctx, snap204, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval 204 failed: %v", err)
+		}
+		if len(res204) != 1 || res204[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN for 204+error, got %v", res204)
+		}
+		expectedSummary204 := `Contradictory evidence: sitemap returned HTTP 204 but reported fetch error "connection reset".`
+		if res204[0].ObservedSummary != expectedSummary204 {
+			t.Errorf("summary mismatch: want %q, got %q", expectedSummary204, res204[0].ObservedSummary)
+		}
+
+		// 304 with fetch error -> UNKNOWN
+		snap304 := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "304",
+				fetchComplete: "true",
+				fetchError:    "connection reset",
+			},
+		}, runID, snapID)
+		res304, err := eng.EvaluateRule(ctx, snap304, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval 304 failed: %v", err)
+		}
+		if len(res304) != 1 || res304[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN for 304+error, got %v", res304)
+		}
+		expectedSummary304 := `Contradictory evidence: sitemap returned HTTP 304 but reported fetch error "connection reset".`
+		if res304[0].ObservedSummary != expectedSummary304 {
+			t.Errorf("summary mismatch: want %q, got %q", expectedSummary304, res304[0].ObservedSummary)
+		}
+
+		// 201 without fetch error -> FAIL
+		snap201Valid := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "201",
+				fetchComplete: "true",
+			},
+		}, runID, snapID)
+		res201Valid, err := eng.EvaluateRule(ctx, snap201Valid, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval 201 valid failed: %v", err)
+		}
+		if len(res201Valid) != 1 || res201Valid[0].Status != audit.StatusFail {
+			t.Fatalf("expected FAIL for 201 valid, got %v", res201Valid)
+		}
+
+		// 204 without fetch error -> FAIL
+		snap204Valid := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "204",
+				fetchComplete: "true",
+			},
+		}, runID, snapID)
+		res204Valid, err := eng.EvaluateRule(ctx, snap204Valid, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval 204 valid failed: %v", err)
+		}
+		if len(res204Valid) != 1 || res204Valid[0].Status != audit.StatusFail {
+			t.Fatalf("expected FAIL for 204 valid, got %v", res204Valid)
+		}
+	})
+
+	// 10. Terminal status 0 + non-empty fetch error -> UNKNOWN
+	t.Run("10. terminal status 0 + non-empty fetch error -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "0",
+				initialStatus: "0",
+				fetchComplete: "false",
+				fetchError:    "dial tcp: connection refused",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		expectedSummary := "Sitemap document fetch failed before receiving an HTTP response (dial tcp: connection refused)."
+		if res[0].ObservedSummary != expectedSummary {
+			t.Errorf("summary mismatch: want %q, got %q", expectedSummary, res[0].ObservedSummary)
+		}
+	})
+
+	// 11. Missing terminal status + fetch error -> UNKNOWN
+	t.Run("11. missing terminal status + fetch error -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				omitFields:    []string{"final_http_status"},
+				fetchComplete: "false",
+				fetchError:    "dial tcp: lookup failed",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		expectedSummary := "Required terminal HTTP status evidence is unavailable."
+		if res[0].ObservedSummary != expectedSummary {
+			t.Errorf("summary mismatch: want %q, got %q", expectedSummary, res[0].ObservedSummary)
+		}
+	})
+
+	// 12. FetchComplete=false + positive terminal status -> UNKNOWN under existing guard
+	t.Run("12. fetchComplete=false + positive terminal status -> UNKNOWN under existing guard", func(t *testing.T) {
+		// 200 with fetchComplete=false
+		snap200 := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				fetchComplete: "false",
+			},
+		}, runID, snapID)
+		res200, err := eng.EvaluateRule(ctx, snap200, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval 200 failed: %v", err)
+		}
+		if len(res200) != 1 || res200[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res200)
+		}
+		if res200[0].ObservedSummary != "Contradictory evidence: sitemap returned HTTP status 200 but sitemap_fetch_complete is false." {
+			t.Errorf("summary mismatch: %s", res200[0].ObservedSummary)
+		}
+
+		// 404 with fetchComplete=false
+		snap404 := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "404",
+				fetchComplete: "false",
+			},
+		}, runID, snapID)
+		res404, err := eng.EvaluateRule(ctx, snap404, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval 404 failed: %v", err)
+		}
+		if len(res404) != 1 || res404[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res404)
+		}
+		if res404[0].ObservedSummary != "Contradictory evidence: sitemap returned HTTP status 404 but sitemap_fetch_complete is false." {
+			t.Errorf("summary mismatch: %s", res404[0].ObservedSummary)
+		}
+	})
+
+	// 13. FetchComplete=false + no terminal status -> UNKNOWN
+	t.Run("13. fetchComplete=false + no terminal status -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "0",
+				fetchComplete: "false",
+				fetchError:    "",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		if res[0].ObservedSummary != "Sitemap document fetch did not produce a trustworthy terminal HTTP response." {
+			t.Errorf("summary mismatch: %s", res[0].ObservedSummary)
+		}
+	})
+
+	// 14. Conflicting fetch-error observations -> UNKNOWN
+	t.Run("14. conflicting fetch-error observations -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "0",
+				fetchComplete: "false",
+				fetchError:    "dial tcp: timeout",
+				customObs: []audit.NormalizedObservation{
+					{
+						ObservationID:      "obs:conf:fetch_error",
+						AuditRunID:         audit.AuditRunID(runID),
+						SnapshotID:         audit.SnapshotID(snapID),
+						SubjectType:        audit.SubjectSitemap,
+						SubjectRef:         smRef,
+						Field:              "sitemap_fetch_error",
+						Value:              "connection reset",
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{"test"},
+						ObservedAt:         time.Now().UTC(),
+					},
+				},
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		if res[0].ObservedSummary != "Conflicting observations observed for sitemap." {
+			t.Errorf("summary mismatch: %s", res[0].ObservedSummary)
+		}
+	})
+
+	// 15. Redirect exhaustion -> UNKNOWN
+	t.Run("15. redirect exhaustion -> UNKNOWN", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "0",
+				initialStatus: "301",
+				redirectHops:  "10",
+				finalURL:      "https://example.com/loop.xml",
+				fetchError:    "stopped after 10 redirects",
+				fetchComplete: "false",
+			},
+		}, runID, snapID)
+		res, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval failed: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != audit.StatusUnknown {
+			t.Fatalf("expected UNKNOWN, got %v", res)
+		}
+		if !strings.Contains(res[0].ObservedSummary, "stopped after 10 redirects") {
+			t.Errorf("summary mismatch: %s", res[0].ObservedSummary)
+		}
+	})
+
+	// 16. Repeated evaluation produces identical RuleResults
+	t.Run("16. repeated evaluation produces identical RuleResults", func(t *testing.T) {
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "404",
+				initialStatus: "301",
+				redirectHops:  "1",
+				finalURL:      "https://example.com/missing.xml",
+				fetchComplete: "true",
+				fetchError:    "connection reset",
+			},
+		}, runID, snapID)
+		res1, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval 1 failed: %v", err)
+		}
+		res2, err := eng.EvaluateRule(ctx, snap, "AR-DISC-002")
+		if err != nil {
+			t.Fatalf("eval 2 failed: %v", err)
+		}
+		if !reflect.DeepEqual(res1, res2) {
+			t.Errorf("results not identical: res1=%+v, res2=%+v", res1, res2)
+		}
+	})
+
+	// 17. All six Sitemap rules execute without regression
+	t.Run("17. all six Sitemap rules execute without regression", func(t *testing.T) {
+		sitemapRules := []string{
+			"AR-DISC-001",
+			"AR-DISC-002",
+			"AR-DISC-003",
+			"AR-DISC-004",
+			"AR-DISC-005",
+			"AR-DISC-006",
+		}
+		snap := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				redirectHops:  "0",
+				fetchComplete: "true",
+			},
+		}, runID, snapID)
+		for _, rID := range sitemapRules {
+			results, err := eng.EvaluateRule(ctx, snap, rID)
+			if err != nil {
+				t.Errorf("sitemap rule %s evaluation failed on base snap: %v", rID, err)
+			}
+			if rID == "AR-DISC-002" || rID == "AR-DISC-003" {
+				if len(results) == 0 {
+					t.Errorf("expected non-empty results for %s", rID)
+				}
+			}
+		}
+
+		// Also verify with site, sitemap entry and page observations so all six Sitemap rules evaluate non-empty
+		smeRef := fmt.Sprintf("sme:%s:1:0", runID)
+		urlRef := fmt.Sprintf("url:%s:1", runID)
+		now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+		snapWithEntries := newDISC002Snapshot([]disc002DocFixture{
+			{
+				subjectRef:    smRef,
+				url:           "https://example.com/sitemap.xml",
+				finalStatus:   "200",
+				initialStatus: "200",
+				redirectHops:  "0",
+				fetchComplete: "true",
+				customObs: []audit.NormalizedObservation{
+					{
+						ObservationID: "obs:test:site:sitemaps_found", AuditRunID: audit.AuditRunID(runID),
+						SnapshotID: audit.SnapshotID(snapID), SubjectType: audit.SubjectSite,
+						SubjectRef: "site", Field: "sitemaps_found_count", Value: "1",
+						DerivationType: audit.DerivationDirect, ObservedAt: now,
+					},
+					{
+						ObservationID: "obs:test:site:discovery_complete", AuditRunID: audit.AuditRunID(runID),
+						SnapshotID: audit.SnapshotID(snapID), SubjectType: audit.SubjectSite,
+						SubjectRef: "site", Field: "sitemap_discovery_complete", Value: "true",
+						DerivationType: audit.DerivationDirect, ObservedAt: now,
+					},
+					{
+						ObservationID: "obs:test:site:discovery_status", AuditRunID: audit.AuditRunID(runID),
+						SnapshotID: audit.SnapshotID(snapID), SubjectType: audit.SubjectSite,
+						SubjectRef: "site", Field: "sitemap_discovery_status", Value: "COMPLETED",
+						DerivationType: audit.DerivationDirect, ObservedAt: now,
+					},
+					{
+						ObservationID: "obs:test:entry:loc", AuditRunID: audit.AuditRunID(runID),
+						SnapshotID: audit.SnapshotID(snapID), SubjectType: audit.SubjectSitemapEntry,
+						SubjectRef: smeRef, Field: "loc", Value: "https://example.com/page1",
+						DerivationType: audit.DerivationDirect, ObservedAt: now,
+					},
+					{
+						ObservationID: "obs:test:entry:parent", AuditRunID: audit.AuditRunID(runID),
+						SnapshotID: audit.SnapshotID(snapID), SubjectType: audit.SubjectSitemapEntry,
+						SubjectRef: smeRef, Field: "parent_sitemap_ref", Value: smRef,
+						DerivationType: audit.DerivationDirect, ObservedAt: now,
+					},
+					{
+						ObservationID: "obs:test:entry:status", AuditRunID: audit.AuditRunID(runID),
+						SnapshotID: audit.SnapshotID(snapID), SubjectType: audit.SubjectSitemapEntry,
+						SubjectRef: smeRef, Field: "http_status", Value: "200",
+						DerivationType: audit.DerivationDirect, ObservedAt: now,
+					},
+					{
+						ObservationID: "obs:test:entry:canon", AuditRunID: audit.AuditRunID(runID),
+						SnapshotID: audit.SnapshotID(snapID), SubjectType: audit.SubjectSitemapEntry,
+						SubjectRef: smeRef, Field: "canonical_url", Value: "https://example.com/page1",
+						DerivationType: audit.DerivationDirect, ObservedAt: now,
+					},
+					{
+						ObservationID: "obs:test:entry:noindex", AuditRunID: audit.AuditRunID(runID),
+						SnapshotID: audit.SnapshotID(snapID), SubjectType: audit.SubjectSitemapEntry,
+						SubjectRef: smeRef, Field: "meta_robots_noindex", Value: "false",
+						DerivationType: audit.DerivationDirect, ObservedAt: now,
+					},
+					{
+						ObservationID: "obs:test:url:url", AuditRunID: audit.AuditRunID(runID),
+						SnapshotID: audit.SnapshotID(snapID), SubjectType: audit.SubjectURL,
+						SubjectRef: urlRef, Field: "url", Value: "https://example.com/page1",
+						DerivationType: audit.DerivationDirect, ObservedAt: now,
+					},
+				},
+			},
+		}, runID, snapID)
+		for _, rID := range sitemapRules {
+			results, err := eng.EvaluateRule(ctx, snapWithEntries, rID)
+			if err != nil {
+				t.Errorf("sitemap rule %s evaluation failed on snapWithEntries: %v", rID, err)
+			}
+			if len(results) == 0 {
+				t.Errorf("expected non-empty results on snapWithEntries for %s", rID)
+			}
+		}
+	})
+
+	// 18. Executable rule count remains 19/47
+	t.Run("18. executable rule count remains 19/47", func(t *testing.T) {
+		allIDs := eng.ImplementedRuleIDs()
+		if len(allIDs) != 19 {
+			t.Fatalf("expected exactly 19 implemented rules, got %d: %v", len(allIDs), allIDs)
+		}
+		reg, err := audit.LoadV1Registry()
+		if err != nil {
+			t.Fatalf("LoadV1Registry failed: %v", err)
+		}
+		if len(reg.All()) != 47 {
+			t.Fatalf("expected 47 catalog rules, got %d", len(reg.All()))
+		}
+	})
 }

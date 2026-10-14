@@ -226,7 +226,8 @@ func evaluateDISC002(
 
 		statusContradiction := (hasFetchComplete && !fetchCompleteVal && finalStatusCode > 0) ||
 			(hasFetchComplete && fetchCompleteVal && (finalStatusZero || finalStatusCode == 0)) ||
-			(finalStatusCode == http.StatusOK && fetchErrVal != "")
+			(finalStatusCode > 0 && fetchErrVal != "") ||
+			(hasFetchComplete && fetchCompleteVal && fetchErrVal != "")
 
 		var (
 			evalStatus      audit.RuleResultStatus
@@ -254,8 +255,10 @@ func evaluateDISC002(
 				observedSummary = fmt.Sprintf("Contradictory evidence: sitemap returned HTTP status %d but sitemap_fetch_complete is false.", finalStatusCode)
 			} else if hasFetchComplete && fetchCompleteVal && (finalStatusZero || finalStatusCode == 0) {
 				observedSummary = "Contradictory evidence: sitemap_fetch_complete is true but terminal HTTP status is 0."
+			} else if finalStatusCode > 0 && fetchErrVal != "" {
+				observedSummary = fmt.Sprintf("Contradictory evidence: sitemap returned HTTP %d but reported fetch error %q.", finalStatusCode, fetchErrVal)
 			} else {
-				observedSummary = fmt.Sprintf("Contradictory evidence: sitemap returned HTTP 200 but reported fetch error %q.", fetchErrVal)
+				observedSummary = fmt.Sprintf("Contradictory evidence: sitemap_fetch_complete is true but reported fetch error %q.", fetchErrVal)
 			}
 		} else if fetchCompleteMissing {
 			evalStatus = audit.StatusUnknown
@@ -424,7 +427,7 @@ func evaluateDISC002(
 			if !hasFinalStatusPrimary || !hasURLContext || !hasFetchCompleteContext ||
 				urlMissing || urlEmpty || urlConflict || finalStatusMissing || finalStatusMalformed ||
 				finalStatusZero || finalStatusConflict || !hasFetchComplete || !fetchCompleteVal ||
-				statusContradiction || hasConflict || runIdentityMismatch {
+				statusContradiction || hasConflict || runIdentityMismatch || fetchErrVal != "" {
 				evalStatus = audit.StatusUnknown
 				observedSummary = "Sitemap document fetch did not produce trustworthy terminal HTTP response evidence."
 			}
