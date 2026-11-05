@@ -26,12 +26,15 @@ const ruleIDCANON005 = "AR-CANON-005"
 //     canonical_syntax_status == "valid", canonical_normalization_complete == "true",
 //     and exactly one non-empty canonical_normalized_target.
 //   - FAIL: html_extraction_status == "complete", canonical_count == 1,
+//     canonical_normalization_complete == "false",
 //     canonical_syntax_status in {"parser_error", "resolution_error"}, and
 //     canonical_parse_error carries a proven parser_error:* or resolution_error:* code.
 //   - UNKNOWN: html_extraction_status != "complete" (missing_legacy, truncated_size_limit,
-//     read_error, or absent), rendered == "true", missing/conflicting/malformed observations,
+//     read_error, or absent), rendered == "true", missing/conflicting/malformed observations
+//     (including missing canonical_normalization_complete when canonical_count == 1),
 //     or canonical_syntax_status == "insufficient_evidence" / unproven normalization failure.
-//     Never infer FAIL solely from canonical_normalization_complete == "false".
+//     Never infer FAIL solely from canonical_normalization_complete == "false", and never
+//     treat a missing canonical_normalization_complete observation as "false" (MISSING != FALSE).
 //   - NOT_APPLICABLE: html_extraction_status == "complete" and (canonical_count == 0 or canonical_count > 1).
 //   - No WARNING or MANUAL_REVIEW.
 func evaluateCANON005(
@@ -611,9 +614,13 @@ func evaluateCANON005(
 				}
 			} else if syntaxStatus == "parser_error" || syntaxStatus == "resolution_error" {
 				expectedPrefix := syntaxStatus + ":"
-				if !parseErrUsable || !strings.HasPrefix(parseErrVal, expectedPrefix) || (completeUsable && completeVal) || normTargetUsable {
+				if !completeUsable || completeVal || !parseErrUsable || !strings.HasPrefix(parseErrVal, expectedPrefix) || normTargetUsable {
 					evalStatus = audit.StatusUnknown
-					observedSummary = "Canonical syntax error status lacks a consistent parse error code or conflicts with resolved target evidence."
+					if !completeUsable {
+						observedSummary = "Single canonical syntax error is present, but required canonical normalization completeness evidence is unavailable."
+					} else {
+						observedSummary = "Canonical syntax error status lacks a consistent parse error code or conflicts with normalization completeness or resolved target evidence."
+					}
 					evidenceRefs = append(evidenceRefs, buildExtractRefs(audit.EvidenceRoleContext)...)
 					evidenceRefs = append(evidenceRefs, buildCountRefs(audit.EvidenceRoleContext)...)
 					evidenceRefs = append(evidenceRefs, buildRawRefs(audit.EvidenceRoleContext)...)
@@ -629,7 +636,7 @@ func evaluateCANON005(
 					evidenceRefs = append(evidenceRefs, buildRawRefs(audit.EvidenceRolePrimary)...)
 					evidenceRefs = append(evidenceRefs, buildSyntaxRefs(audit.EvidenceRoleSupporting)...)
 					evidenceRefs = append(evidenceRefs, buildParseErrRefs(audit.EvidenceRolePrimary)...)
-					evidenceRefs = append(evidenceRefs, buildCompleteRefs(audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildCompleteRefs(audit.EvidenceRoleSupporting)...)
 				}
 			} else {
 				// syntaxStatus == "insufficient_evidence" (including Scenario 6a-ii, 6c, and 19)
