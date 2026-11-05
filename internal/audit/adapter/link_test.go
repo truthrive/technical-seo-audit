@@ -1015,6 +1015,7 @@ func TestAdapter_Link_Regression_ExecutableRules(t *testing.T) {
 		"AR-ACC-004",
 		"AR-CANON-003",
 		"AR-CANON-004",
+		"AR-CANON-005",
 		"AR-CANON-006",
 		"AR-CANON-007",
 		"AR-CANON-008",
@@ -1033,8 +1034,8 @@ func TestAdapter_Link_Regression_ExecutableRules(t *testing.T) {
 		"AR-LINK-004",
 	}
 
-	if len(implementedIDs) != 19 {
-		t.Fatalf("expected exactly 19 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
+	if len(implementedIDs) != 20 {
+		t.Fatalf("expected exactly 20 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
 	}
 	if !reflect.DeepEqual(implementedIDs, expectedIDs) {
 		t.Fatalf("expected implemented IDs %v, got %v", expectedIDs, implementedIDs)

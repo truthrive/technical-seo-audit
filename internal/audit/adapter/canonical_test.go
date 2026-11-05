@@ -1175,13 +1175,13 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 			t.Errorf("expected GapCanonicalSampleCapped for both u1 (%v) and u4 (%v)", foundSampleGapU1, foundSampleGapU4)
 		}
 
-		// Evaluate existing canonical rules (AR-CANON-003, AR-CANON-004, AR-CANON-006, AR-CANON-007)
+		// Evaluate canonical rules (AR-CANON-003, AR-CANON-004, AR-CANON-005, AR-CANON-006, AR-CANON-007)
 		eng, err := engine.New()
 		if err != nil {
 			t.Fatalf("engine.New failed: %v", err)
 		}
-		if gotImpl := len(eng.ImplementedRuleIDs()); gotImpl != 19 {
-			t.Fatalf("expected executable rule count to remain 19 in V1.9c, got %d", gotImpl)
+		if gotImpl := len(eng.ImplementedRuleIDs()); gotImpl != 20 {
+			t.Fatalf("expected executable rule count to be 20 in V1.9d, got %d", gotImpl)
 		}
 
 		evalStatusMap := func(ruleID string) map[string]audit.RuleResultStatus {
@@ -1194,6 +1194,21 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 				m[r.SubjectRef] = r.Status
 			}
 			return m
+		}
+
+		// AR-CANON-005: u1 (6 tags) -> NOT_APPLICABLE, u2 (1 empty href) -> FAIL, u3 (2 tags) -> NOT_APPLICABLE, u4 (6 tags) -> NOT_APPLICABLE
+		c005 := evalStatusMap("AR-CANON-005")
+		if c005["url:audit:v19c:gt5:1"] != audit.StatusNotApplicable {
+			t.Errorf("AR-CANON-005 u1 = %s, want NOT_APPLICABLE", c005["url:audit:v19c:gt5:1"])
+		}
+		if c005["url:audit:v19c:gt5:2"] != audit.StatusFail {
+			t.Errorf("AR-CANON-005 u2 (empty href) = %s, want FAIL", c005["url:audit:v19c:gt5:2"])
+		}
+		if c005["url:audit:v19c:gt5:3"] != audit.StatusNotApplicable {
+			t.Errorf("AR-CANON-005 u3 (2 tags) = %s, want NOT_APPLICABLE", c005["url:audit:v19c:gt5:3"])
+		}
+		if c005["url:audit:v19c:gt5:4"] != audit.StatusNotApplicable {
+			t.Errorf("AR-CANON-005 u4 (6 tags) = %s, want NOT_APPLICABLE", c005["url:audit:v19c:gt5:4"])
 		}
 
 		// AR-CANON-003: u1 -> PASS, u2 -> WARNING (empty href has no canonical_resolved), u3 -> PASS, u4 -> PASS

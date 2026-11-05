@@ -1241,10 +1241,10 @@ func TestAdapter_Sitemap_ExistingRuleRegression(t *testing.T) {
 		t.Fatalf("engine.New failed: %v", err)
 	}
 
-	// Verify exactly 19 evaluators implemented
+	// Verify exactly 20 evaluators implemented
 	implIDs := eng.ImplementedRuleIDs()
-	if len(implIDs) != 19 {
-		t.Errorf("expected exactly 19 implemented rules, got %d: %v", len(implIDs), implIDs)
+	if len(implIDs) != 20 {
+		t.Errorf("expected exactly 20 implemented rules, got %d: %v", len(implIDs), implIDs)
 	}
 
 	// Execute all 19 evaluators
