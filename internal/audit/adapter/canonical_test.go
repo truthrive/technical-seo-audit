@@ -1050,10 +1050,12 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 		u1 := "https://example.com/six-identical-in-sample"
 		u2 := "https://example.com/empty-canon-only"
 		u3 := "https://example.com/two-with-one-empty"
+		u4 := "https://example.com/six-with-two-distinct-in-sample"
 		setupTestRun(t, db, runID, u1)
 		insertURL(t, db, runID, 1, u1)
 		insertURL(t, db, runID, 2, u2)
 		insertURL(t, db, runID, 3, u3)
+		insertURL(t, db, runID, 4, u4)
 
 		// u1: 6 canonical tags, first 5 retained samples are identical
 		p1, _ := json.Marshal(sitecrawl.Page{
@@ -1097,6 +1099,20 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, status, content_type, crawled_at)
 			VALUES(?, 3, ?, ?, 'html', 200, 'text/html', '2026-10-01T00:00:12Z')`, runID, u3, string(p3))
 
+		// u4: 6 canonical tags, retained 5 samples contain 2 distinct valid targets (u1 and u2)
+		p4, _ := json.Marshal(sitecrawl.Page{
+			URL:                 u4,
+			Status:              200,
+			Kind:                sitecrawl.KindHTML,
+			ExtractionStatus:    sitecrawl.ExtractionStatusComplete,
+			CanonicalTotalCount: 6,
+			RawCanonicals:       []string{u1, u2, u1, u1, u1},
+			Canonicals:          []string{u1, u2, u1, u1, u1},
+			CrawledAt:           "2026-10-01T00:00:13Z",
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, status, content_type, crawled_at)
+			VALUES(?, 4, ?, ?, 'html', 200, 'text/html', '2026-10-01T00:00:13Z')`, runID, u4, string(p4))
+
 		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
 			CrawlRunID: runID,
 			AuditRunID: "audit:v19c:gt5",
@@ -1106,11 +1122,15 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 			t.Fatalf("build failed: %v", err)
 		}
 
-		// Check u1 observations and GapCanonicalSampleCapped
+		// Check u1 and u4 observations and GapCanonicalSampleCapped
 		u1Fields := make(map[string][]string)
+		u4Fields := make(map[string][]string)
 		for _, obs := range res.EvidenceSnapshot.NormalizedObservations {
 			if obs.SubjectRef == "url:audit:v19c:gt5:1" {
 				u1Fields[obs.Field] = append(u1Fields[obs.Field], obs.Value)
+			}
+			if obs.SubjectRef == "url:audit:v19c:gt5:4" {
+				u4Fields[obs.Field] = append(u4Fields[obs.Field], obs.Value)
 			}
 		}
 		if v := u1Fields["canonical_count"]; len(v) != 1 || v[0] != "6" {
@@ -1122,18 +1142,37 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 		if v := u1Fields["canonical_normalization_complete"]; len(v) != 1 || v[0] != "false" {
 			t.Errorf("u1 canonical_normalization_complete = %v, want [false] when sample is truncated", v)
 		}
+		if v := u4Fields["canonical_count"]; len(v) != 1 || v[0] != "6" {
+			t.Errorf("u4 canonical_count = %v, want [6]", v)
+		}
+		if v := u4Fields["canonical_sample_truncated"]; len(v) != 1 || v[0] != "true" {
+			t.Errorf("u4 canonical_sample_truncated = %v, want [true]", v)
+		}
+		if v := u4Fields["canonical_normalization_complete"]; len(v) != 1 || v[0] != "false" {
+			t.Errorf("u4 canonical_normalization_complete = %v, want [false] (must not fabricate completeness for unretained tag #6)", v)
+		}
+		if _, ok := u4Fields["canonical_distinct_normalized_count"]; ok {
+			t.Errorf("u4 canonical_distinct_normalized_count must not be emitted when sample is truncated")
+		}
+		if v := u4Fields["canonical_normalized_target"]; len(v) != 5 {
+			t.Errorf("u4 canonical_normalized_target count = %d, want 5", len(v))
+		}
 
-		foundSampleGap := false
+		foundSampleGapU1 := false
+		foundSampleGapU4 := false
 		for _, g := range res.EvidenceGaps {
 			if g.GapCode == adapter.GapCanonicalSampleCapped && g.SubjectRef == "url:audit:v19c:gt5:1" {
-				foundSampleGap = true
+				foundSampleGapU1 = true
+			}
+			if g.GapCode == adapter.GapCanonicalSampleCapped && g.SubjectRef == "url:audit:v19c:gt5:4" {
+				foundSampleGapU4 = true
 			}
 			if g.GapCode == adapter.GapRawCanonicalUnavailable {
 				t.Errorf("GapRawCanonicalUnavailable must not be emitted when all CanonicalObservations have RawValues")
 			}
 		}
-		if !foundSampleGap {
-			t.Errorf("expected GapCanonicalSampleCapped for u1 with 6 canonical tags")
+		if !foundSampleGapU1 || !foundSampleGapU4 {
+			t.Errorf("expected GapCanonicalSampleCapped for both u1 (%v) and u4 (%v)", foundSampleGapU1, foundSampleGapU4)
 		}
 
 		// Evaluate existing canonical rules (AR-CANON-003, AR-CANON-004, AR-CANON-006, AR-CANON-007)
@@ -1157,7 +1196,7 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 			return m
 		}
 
-		// AR-CANON-003: u1 -> PASS (has non-empty canonical_resolved), u2 -> WARNING (empty href has no canonical_resolved), u3 -> PASS
+		// AR-CANON-003: u1 -> PASS, u2 -> WARNING (empty href has no canonical_resolved), u3 -> PASS, u4 -> PASS
 		c003 := evalStatusMap("AR-CANON-003")
 		if c003["url:audit:v19c:gt5:1"] != audit.StatusPass {
 			t.Errorf("AR-CANON-003 u1 = %s, want PASS", c003["url:audit:v19c:gt5:1"])
@@ -1168,11 +1207,18 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 		if c003["url:audit:v19c:gt5:3"] != audit.StatusPass {
 			t.Errorf("AR-CANON-003 u3 = %s, want PASS", c003["url:audit:v19c:gt5:3"])
 		}
+		if c003["url:audit:v19c:gt5:4"] != audit.StatusPass {
+			t.Errorf("AR-CANON-003 u4 = %s, want PASS", c003["url:audit:v19c:gt5:4"])
+		}
 
-		// AR-CANON-004: u1 (6 tags, sample truncated) -> UNKNOWN; u2 (1 empty tag) -> PASS; u3 (2 tags, 1 empty) -> UNKNOWN
+		// AR-CANON-004:
+		// - u1 (6 tags, only 1 distinct target in sample) -> UNKNOWN
+		// - u2 (1 empty tag) -> PASS
+		// - u3 (2 tags, 1 empty) -> UNKNOWN
+		// - u4 (6 tags, 2 distinct targets in sample) -> FAIL
 		c004 := evalStatusMap("AR-CANON-004")
 		if c004["url:audit:v19c:gt5:1"] != audit.StatusUnknown {
-			t.Errorf("AR-CANON-004 u1 (6 tags, sample truncated) = %s, want UNKNOWN", c004["url:audit:v19c:gt5:1"])
+			t.Errorf("AR-CANON-004 u1 (6 tags, 1 distinct in sample) = %s, want UNKNOWN", c004["url:audit:v19c:gt5:1"])
 		}
 		if c004["url:audit:v19c:gt5:2"] != audit.StatusPass {
 			t.Errorf("AR-CANON-004 u2 (1 empty tag) = %s, want PASS", c004["url:audit:v19c:gt5:2"])
@@ -1180,19 +1226,22 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 		if c004["url:audit:v19c:gt5:3"] != audit.StatusUnknown {
 			t.Errorf("AR-CANON-004 u3 (2 tags, 1 empty) = %s, want UNKNOWN", c004["url:audit:v19c:gt5:3"])
 		}
+		if c004["url:audit:v19c:gt5:4"] != audit.StatusFail {
+			t.Errorf("AR-CANON-004 u4 (6 tags, 2 distinct in sample) = %s, want FAIL", c004["url:audit:v19c:gt5:4"])
+		}
 
-		// AR-CANON-006: u1, u2, u3 all have canonical_normalization_complete=false -> UNKNOWN
+		// AR-CANON-006: u1..u4 all have canonical_normalization_complete=false -> UNKNOWN
 		c006 := evalStatusMap("AR-CANON-006")
-		for i := 1; i <= 3; i++ {
+		for i := 1; i <= 4; i++ {
 			subj := "url:audit:v19c:gt5:" + string(rune('0'+i))
 			if c006[subj] != audit.StatusUnknown {
 				t.Errorf("AR-CANON-006 %s = %s, want UNKNOWN", subj, c006[subj])
 			}
 		}
 
-		// AR-CANON-007: u1, u2, u3 all have canonical_normalization_complete=false -> NOT_APPLICABLE
+		// AR-CANON-007: u1..u4 all have canonical_normalization_complete=false -> NOT_APPLICABLE
 		c007 := evalStatusMap("AR-CANON-007")
-		for i := 1; i <= 3; i++ {
+		for i := 1; i <= 4; i++ {
 			subj := "url:audit:v19c:gt5:" + string(rune('0'+i))
 			if c007[subj] != audit.StatusNotApplicable {
 				t.Errorf("AR-CANON-007 %s = %s, want NOT_APPLICABLE", subj, c007[subj])
@@ -1213,6 +1262,7 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 <a href="/valid-rel">Valid Rel</a>
 <a href="/empty-href">Empty Href</a>
 <a href="/six-tags">Six Tags</a>
+<a href="/six-tags-conflict">Six Tags Conflict</a>
 <a href="/ftp-base">FTP Base</a>
 <a href="/bad-base-abs-canon">Bad Base Abs Canon</a>
 </body></html>`)
@@ -1238,6 +1288,18 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 <link rel="canonical" href="/valid-rel">
 <link rel="canonical" href="/valid-rel">
 </head><body>Six</body></html>`)
+		})
+
+		mux.HandleFunc("/six-tags-conflict", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<!doctype html><html><head>
+<link rel="canonical" href="/valid-rel">
+<link rel="canonical" href="/empty-href">
+<link rel="canonical" href="/valid-rel">
+<link rel="canonical" href="/valid-rel">
+<link rel="canonical" href="/valid-rel">
+<link rel="canonical" href="/valid-rel">
+</head><body>Six Conflict</body></html>`)
 		})
 
 		mux.HandleFunc("/ftp-base", func(w http.ResponseWriter, r *http.Request) {
@@ -1336,6 +1398,40 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 		}
 		if v := sixObs["canonical_normalization_complete"]; len(v) != 1 || v[0] != "false" {
 			t.Errorf("/six-tags canonical_normalization_complete = %v, want [false]", v)
+		}
+
+		// Verify /six-tags-conflict
+		sixConflictObs := obsByURL[srv.URL+"/six-tags-conflict"]
+		if v := sixConflictObs["canonical_count"]; len(v) != 1 || v[0] != "6" {
+			t.Errorf("/six-tags-conflict canonical_count = %v, want [6]", v)
+		}
+		if v := sixConflictObs["canonical_sample_truncated"]; len(v) != 1 || v[0] != "true" {
+			t.Errorf("/six-tags-conflict canonical_sample_truncated = %v, want [true]", v)
+		}
+		if v := sixConflictObs["canonical_normalization_complete"]; len(v) != 1 || v[0] != "false" {
+			t.Errorf("/six-tags-conflict canonical_normalization_complete = %v, want [false]", v)
+		}
+
+		// Evaluate AR-CANON-004 across /six-tags (UNKNOWN) and /six-tags-conflict (FAIL)
+		eng, err := engine.New()
+		if err != nil {
+			t.Fatalf("engine.New: %v", err)
+		}
+		c004Results, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, "AR-CANON-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule(AR-CANON-004): %v", err)
+		}
+		c004ByURL := make(map[string]audit.RuleResultStatus)
+		for _, rr := range c004Results {
+			if u, ok := subjToURL[rr.SubjectRef]; ok {
+				c004ByURL[u] = rr.Status
+			}
+		}
+		if got := c004ByURL[srv.URL+"/six-tags"]; got != audit.StatusUnknown {
+			t.Errorf("AR-CANON-004(/six-tags) = %s, want UNKNOWN", got)
+		}
+		if got := c004ByURL[srv.URL+"/six-tags-conflict"]; got != audit.StatusFail {
+			t.Errorf("AR-CANON-004(/six-tags-conflict) = %s, want FAIL", got)
 		}
 
 		// Verify /ftp-base (Scenario 6a-i)

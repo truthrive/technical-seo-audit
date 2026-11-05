@@ -413,4 +413,100 @@ func TestAR_CANON_004_RequiredCases(t *testing.T) {
 			t.Errorf("expected deterministic identical results regardless of observation ordering")
 		}
 	})
+
+	// 10. >5 canonical declarations (sample truncated, complete=false) with >=2 distinct retained targets -> FAIL
+	t.Run("10. >5 canonical declarations with >=2 distinct retained targets -> FAIL", func(t *testing.T) {
+		snap := newCANON004Snapshot([]canon004TestFixture{
+			{
+				subjectRef:    "url:test:1",
+				urlValue:      "https://example.com/page1",
+				countValue:    "6",
+				completeValue: "false",
+				normTargetValues: []string{
+					"https://example.com/target1",
+					"https://example.com/target2",
+					"https://example.com/target1",
+					"https://example.com/target1",
+					"https://example.com/target1",
+				},
+			},
+		}, auditRunID, snapID)
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-CANON-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status != audit.StatusFail {
+			t.Errorf("expected FAIL when retained samples already contain >=2 distinct targets, got %s", results[0].Status)
+		}
+		primaryNormCount := 0
+		for _, ref := range results[0].EvidenceRefs {
+			if ref.Field == "canonical_normalized_target" && ref.Role == audit.EvidenceRolePrimary {
+				primaryNormCount++
+			}
+		}
+		if primaryNormCount != 5 {
+			t.Errorf("expected 5 primary canonical_normalized_target refs, got %d", primaryNormCount)
+		}
+	})
+
+	// 11. >5 canonical declarations (sample truncated, complete=false) with only 1 distinct retained target -> UNKNOWN
+	t.Run("11. >5 canonical declarations with only 1 distinct retained target -> UNKNOWN", func(t *testing.T) {
+		snap := newCANON004Snapshot([]canon004TestFixture{
+			{
+				subjectRef:    "url:test:1",
+				urlValue:      "https://example.com/page1",
+				countValue:    "6",
+				completeValue: "false",
+				normTargetValues: []string{
+					"https://example.com/target1",
+					"https://example.com/target1",
+					"https://example.com/target1",
+					"https://example.com/target1",
+					"https://example.com/target1",
+				},
+			},
+		}, auditRunID, snapID)
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-CANON-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN when only 1 distinct target in retained sample and unretained tags exist, got %s", results[0].Status)
+		}
+	})
+
+	// 12. >5 canonical declarations with conflicting completeness -> UNKNOWN even if >=2 distinct targets
+	t.Run("12. conflicting completeness or distinct count -> UNKNOWN", func(t *testing.T) {
+		snap := newCANON004Snapshot([]canon004TestFixture{
+			{
+				subjectRef:     "url:test:1",
+				urlValue:       "https://example.com/page1",
+				countValue:     "6",
+				completeValues: []string{"false", "true"},
+				normTargetValues: []string{
+					"https://example.com/target1",
+					"https://example.com/target2",
+				},
+			},
+		}, auditRunID, snapID)
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-CANON-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN on conflicting observations, got %s", results[0].Status)
+		}
+	})
 }

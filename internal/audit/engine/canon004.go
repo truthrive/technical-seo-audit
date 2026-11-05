@@ -25,8 +25,11 @@ const ruleIDCANON004 = "AR-CANON-004"
 //   (Do not require normalization to PASS when declaration count is exactly 1.
 //    Do not evaluate canonical syntax.)
 // - WARNING: canonical_count > 1, normalization complete=true, distinct count=1.
-// - FAIL: canonical_count > 1, normalization complete=true, distinct count > 1.
-// - UNKNOWN: canonical_count > 1, normalization incomplete/unavailable;
+// - FAIL: canonical_count > 1, and either (normalization complete=true and distinct count > 1)
+//         or retained canonical_normalized_target observations already prove >= 2 distinct
+//         valid normalized targets (including when canonical_count > 5 and sample is capped).
+// - UNKNOWN: canonical_count > 1, normalization incomplete/unavailable and retained targets
+//            do not prove >= 2 distinct valid normalized targets;
 //            or missing, malformed, or conflicting canonical_count;
 //            or malformed/conflicting completeness or distinct-count evidence;
 //            or missing/conflicting url_identity.
@@ -139,7 +142,19 @@ func evaluateCANON004(
 
 		// 3. Resolve canonical_normalized_target
 		normTargetObs := idx.GetObservations(audit.SubjectURL, subjectRef, "canonical_normalized_target")
-		buildNormTargetContextRefs := func() []audit.RuleEvidenceRef {
+		seenObservedTargets := make(map[string]struct{}, len(normTargetObs))
+		observedDistinctTargets := 0
+		for _, no := range normTargetObs {
+			val := strings.TrimSpace(no.Value)
+			if val == "" {
+				continue
+			}
+			if _, exists := seenObservedTargets[val]; !exists {
+				seenObservedTargets[val] = struct{}{}
+				observedDistinctTargets++
+			}
+		}
+		buildNormTargetRefs := func(role audit.EvidenceRole) []audit.RuleEvidenceRef {
 			var refs []audit.RuleEvidenceRef
 			for _, no := range normTargetObs {
 				refs = append(refs, audit.RuleEvidenceRef{
@@ -149,10 +164,13 @@ func evaluateCANON004(
 					EvidenceRef:       string(no.ObservationID),
 					Field:             "canonical_normalized_target",
 					ObservedValue:     no.Value,
-					Role:              audit.EvidenceRoleContext,
+					Role:              role,
 				})
 			}
 			return refs
+		}
+		buildNormTargetContextRefs := func() []audit.RuleEvidenceRef {
+			return buildNormTargetRefs(audit.EvidenceRoleContext)
 		}
 
 		// 4. Resolve canonical_normalization_complete
@@ -286,40 +304,73 @@ func evaluateCANON004(
 			evidenceRefs = append(evidenceRefs, buildNormTargetContextRefs()...)
 		} else {
 			// canonCount > 1
-			if !completeUsable {
+			if completeConflict || completeMalformed {
 				evalStatus = audit.StatusUnknown
-				if len(completeObs) == 0 {
-					observedSummary = "Multiple canonical declarations exist, but normalization completeness evidence is unavailable."
-				} else if completeConflict {
+				if completeConflict {
 					observedSummary = "Canonical normalization completeness evidence is conflicting."
-				} else if completeMalformed {
+				} else {
 					observedSummary = fmt.Sprintf("Canonical normalization completeness evidence is malformed: %q.", firstCompleteStr)
 				}
 				evidenceRefs = append(evidenceRefs, buildCountRefs(audit.EvidenceRoleContext)...)
 				evidenceRefs = append(evidenceRefs, buildCompleteRefs(audit.EvidenceRoleContext)...)
 				evidenceRefs = append(evidenceRefs, buildNormTargetContextRefs()...)
-			} else if !completeVal {
-				// complete = false -> UNKNOWN
+			} else if distinctConflict || distinctMalformed {
 				evalStatus = audit.StatusUnknown
-				observedSummary = "Multiple canonical declarations exist, but one or more declarations cannot be normalized to a valid HTTP(S) target."
+				if distinctConflict {
+					observedSummary = "Distinct canonical target count evidence is conflicting."
+				} else {
+					observedSummary = fmt.Sprintf("Distinct canonical target count evidence is malformed: %q.", firstDistinctStr)
+				}
 				evidenceRefs = append(evidenceRefs, buildCountRefs(audit.EvidenceRoleContext)...)
-				evidenceRefs = append(evidenceRefs, buildCompleteRefs(audit.EvidenceRolePrimary)...)
+				evidenceRefs = append(evidenceRefs, buildCompleteRefs(audit.EvidenceRoleContext)...)
+				evidenceRefs = append(evidenceRefs, buildDistinctRefs(audit.EvidenceRoleContext)...)
 				evidenceRefs = append(evidenceRefs, buildNormTargetContextRefs()...)
+			} else if !completeUsable {
+				if observedDistinctTargets >= 2 {
+					evalStatus = audit.StatusFail
+					observedSummary = fmt.Sprintf("Page has %d canonical declarations with at least %d distinct normalized targets observed in retained samples.", canonCount, observedDistinctTargets)
+					evidenceRefs = append(evidenceRefs, buildCountRefs(audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildNormTargetRefs(audit.EvidenceRolePrimary)...)
+				} else {
+					evalStatus = audit.StatusUnknown
+					observedSummary = "Multiple canonical declarations exist, but normalization completeness evidence is unavailable."
+					evidenceRefs = append(evidenceRefs, buildCountRefs(audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildCompleteRefs(audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildNormTargetContextRefs()...)
+				}
+			} else if !completeVal {
+				if observedDistinctTargets >= 2 {
+					// Retained samples already prove >= 2 distinct valid normalized targets -> FAIL
+					evalStatus = audit.StatusFail
+					observedSummary = fmt.Sprintf("Page has %d canonical declarations with at least %d distinct normalized targets observed in retained samples.", canonCount, observedDistinctTargets)
+					evidenceRefs = append(evidenceRefs, buildCountRefs(audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildCompleteRefs(audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildNormTargetRefs(audit.EvidenceRolePrimary)...)
+				} else {
+					// complete = false and retained samples have < 2 distinct targets -> UNKNOWN
+					evalStatus = audit.StatusUnknown
+					observedSummary = "Multiple canonical declarations exist, but one or more declarations cannot be normalized to a valid HTTP(S) target."
+					evidenceRefs = append(evidenceRefs, buildCountRefs(audit.EvidenceRoleContext)...)
+					evidenceRefs = append(evidenceRefs, buildCompleteRefs(audit.EvidenceRolePrimary)...)
+					evidenceRefs = append(evidenceRefs, buildNormTargetContextRefs()...)
+				}
 			} else {
 				// complete = true -> inspect distinct count
 				if !distinctUsable {
-					evalStatus = audit.StatusUnknown
-					if len(distinctObs) == 0 {
+					if observedDistinctTargets >= 2 {
+						evalStatus = audit.StatusFail
+						observedSummary = fmt.Sprintf("Page has %d canonical declarations with at least %d distinct normalized targets observed in retained samples.", canonCount, observedDistinctTargets)
+						evidenceRefs = append(evidenceRefs, buildCountRefs(audit.EvidenceRoleContext)...)
+						evidenceRefs = append(evidenceRefs, buildCompleteRefs(audit.EvidenceRoleContext)...)
+						evidenceRefs = append(evidenceRefs, buildNormTargetRefs(audit.EvidenceRolePrimary)...)
+					} else {
+						evalStatus = audit.StatusUnknown
 						observedSummary = "Multiple canonical declarations exist with normalization complete, but distinct target count evidence is unavailable."
-					} else if distinctConflict {
-						observedSummary = "Distinct canonical target count evidence is conflicting."
-					} else if distinctMalformed {
-						observedSummary = fmt.Sprintf("Distinct canonical target count evidence is malformed: %q.", firstDistinctStr)
+						evidenceRefs = append(evidenceRefs, buildCountRefs(audit.EvidenceRoleContext)...)
+						evidenceRefs = append(evidenceRefs, buildCompleteRefs(audit.EvidenceRoleContext)...)
+						evidenceRefs = append(evidenceRefs, buildDistinctRefs(audit.EvidenceRoleContext)...)
+						evidenceRefs = append(evidenceRefs, buildNormTargetContextRefs()...)
 					}
-					evidenceRefs = append(evidenceRefs, buildCountRefs(audit.EvidenceRoleContext)...)
-					evidenceRefs = append(evidenceRefs, buildCompleteRefs(audit.EvidenceRoleContext)...)
-					evidenceRefs = append(evidenceRefs, buildDistinctRefs(audit.EvidenceRoleContext)...)
-					evidenceRefs = append(evidenceRefs, buildNormTargetContextRefs()...)
 				} else if distinctCount == 1 {
 					// multiple declarations normalize to same target -> WARNING
 					evalStatus = audit.StatusWarning
