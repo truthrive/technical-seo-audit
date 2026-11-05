@@ -2,36 +2,38 @@
 
 ## 1. Executive Decision Summary
 
-- **Milestone:** V1.10a — Robots Directive Evidence & Syntax Contract Review
+- **Milestone:** V1.10a.1 — Robots Directive Evidence & Syntax Contract Clarification & QA Fix
 - **Target Rule:** `AR-INDEX-003` — *Malformed or unsupported robots directive* (`parent_check`: `INDEX-001`, `lifecycle`: `Index`, `automation`: `deterministic`, `default_severity`: `P1`)
 - **Repository / Branch:** `truthrive/technical-seo-audit` (`main`)
-- **Approved Baseline Commit:** `123a3781c346aba066958325f513f56d16533891`
+- **Prior Contract Baseline:** `902b9c3ae3d89c6435762cdf81ea068b797cd0b2`
+- **Last Approved Implementation Baseline (V1.9d):** `123a3781c346aba066958325f513f56d16533891`
 - **Workflow:** **Risk-Based QA + Batch Implementation + MVP-First**
-- **Milestone Scope:** **Documentation and Contract Specification Only.** Zero production code changes, zero SQLite schema changes, zero adapter edits, and zero evaluator registrations in V1.10a.
-- **Preserved Invariants in V1.10a:**
+- **Milestone Status:** **REVISED FOR INDEPENDENT QA REVIEW (NOT SELF-LOCKED).**
+- **Milestone Scope:** **Documentation and Contract Specification Only.** Zero production code changes, zero SQLite schema changes, zero adapter edits, and zero evaluator registrations in V1.10a.1.
+- **Preserved Invariants in V1.10a.1:**
   - Executable rules remain strictly **`20 / 47`** (`27 / 47` remaining).
-  - `NormalizationVersion` remains strictly **`v1.10.0`** ([`internal/audit/adapter/adapter.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/adapter/adapter.go#L356)).
-  - Frozen rule manifest ([`knowledge/07-v1-atomic-rule-manifest.md`](file:///d:/Projects/audit%20technical/sitecrawl-docs/knowledge/07-v1-atomic-rule-manifest.md#L215-L229) and [`internal/audit/rules_v1.json`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/rules_v1.json#L359-L392)) is unmodified.
+  - `NormalizationVersion` remains strictly **`v1.10.0`** (`internal/audit/adapter/adapter.go`, line 356).
+  - Frozen rule manifest (`knowledge/07-v1-atomic-rule-manifest.md`, lines 215–229 and `internal/audit/rules_v1.json`, lines 359–392) is unmodified.
 
-### 1.1 Summary of the Four Contract Decisions
+### 1.1 Summary of Revised Contract Decisions (`DEC-V1.10-001` through `DEC-V1.10-004`)
 
-| Decision ID | Decision Topic | Proposed Resolution Summary | Status |
+| Decision ID | Decision Topic | Revised Resolution Summary (Incorporating `QA-01`..`QA-05` & `OQ-1`..`OQ-3`) | Status |
 |---|---|---|---|
-| **`DEC-V1.10-001`** | **Directive Syntax & Supported V1 Registry (`SRC-GOOGLE-ROBOTS-001`)** | Freeze a 3-tier token classification:<br>1. **Valid V1 Directive Tokens (15 total):** 11 standalone tokens (`all`, `none`, `index`, `noindex`, `follow`, `nofollow`, `noarchive`, `nosnippet`, `notranslate`, `noimageindex`, `indexifembedded` — including explicit `index`/`follow` recognized by V1 and `AR-INDEX-002`) + 4 parameterized tokens (`max-snippet:[number]`, `max-image-preview:[setting]`, `max-video-preview:[number]`, `unavailable_after:[date/time]`).<br>2. **Proven Malformed or Unsupported Directives (`WARNING`):** (a) Proven syntax/delimiter errors (`;`, `\|`, whitespace-separated multi-tokens `noindex nofollow`, empty declaration `""` or `,`, missing/extra parameter colons `max-snippet`, `max-snippet:`, `noindex:true`, invalid parameter values `max-snippet:abc`, `max-image-preview:huge`, invalid `unavailable_after` date, or `agent:` prefix inside `<meta name="robots">`); (b) Proven deprecated/unsupported directives (`noodp`, `noydir`, `nocache`, `noav`, `nopreview`, ` archive`, `snippet`) and near-miss typos of standard directives (`no-index`, `no_index`, `nofollows`, `max_snippet`, `max-snipet`, `unavailable-after`).<br>3. **Unverifiable / Ambiguous Scope or Custom Extension (`UNKNOWN`):** Where a token's syntax or scope cannot be deterministically verified as a valid V1 directive or proven malformed/unsupported without guessing crawler-specific extensions. | **PROPOSED — PENDING QA APPROVAL** |
-| **`DEC-V1.10-002`** | **User-Agent Prefix & Multi-Header Handling** | Do **not** rely on a hardcoded list of 4 crawlers as a complete validity registry:<br>1. **`<meta name="...">`:** Scope is restricted to `<meta name="robots">` and crawler-specific robots meta tags (`googlebot`, `googlebot-*`, `bingbot`, `oai-searchbot`, `gptbot`, `slurp`, `duckduckbot`, `baiduspider`, `yandex`, `applebot`, `adsbot-google`, `mediapartners-google`, `google-extended`). Inside `<meta content="...">`, `user-agent:` prefixes (e.g., `<meta name="robots" content="googlebot: noindex">`) are **proven invalid syntax (`WARNING`)** per `SRC-GOOGLE-ROBOTS-001`.<br>2. **`X-Robots-Tag` HTTP Headers:** Preserve discrete `res.Header.Values("X-Robots-Tag")` slices (`RawXRobotsTags []string`) before comma-joining so multi-header boundaries are never conflated. Within a single `X-Robots-Tag` header value, `<user-agent>: <directive>[, <directive>...]` is valid syntax when `<user-agent>` is a valid RFC 9110 token (`^[a-zA-Z][a-zA-Z0-9_-]*$`) **and** is not a misspelled parameterized directive name (e.g., `max_snippet`, `max-snipet`, `unavailable-after`), **and** all subsequent comma-separated tokens are valid V1 directives. If `<prefix>: <rest>` has a valid token prefix that is not a known V1 crawler and `<rest>` is a valid directive, or if legacy comma-joined `X-Robots-Tag` headers have ambiguous prefix boundaries without a proven malformed token, classify as **`UNKNOWN` (`scope_or_prefix_ambiguous`)** rather than a false `WARNING` or false `PASS`. | **PROPOSED — PENDING QA APPROVAL** |
-| **`DEC-V1.10-003`** | **Verdict Precedence & Evidence Completeness** | Strictly preserve `PASS`, `WARNING`, `UNKNOWN`, `NOT_APPLICABLE` (`FAIL` and `MANUAL_REVIEW` are **not used**):<br>1. **Unusable `url_identity` or internally conflicting/malformed directive observations** -> `UNKNOWN`.<br>2. **Proven `WARNING` Short-Circuit:** If any retained directive (`<meta>` or `X-Robots-Tag`, including on non-HTML `application/pdf` responses or partially truncated/rendered HTML pages) contains a **proven** `malformed_syntax` or `unsupported_directive` error, return **`WARNING`** immediately.<br>3. **Incomplete / Unverifiable Source (`UNKNOWN`):** If no `WARNING` is proven in retained directives, and directive source acquisition is incomplete or unverifiable (e.g., `http_status <= 0`, `fetch_error_type != ""`, `3xx` redirect row where body was not inspected, HTML response with `html_extraction_status != "complete"` including `truncated_size_limit`, `read_error`, `missing_legacy`, or `rendered == "true"`, or legacy/ambiguous directive scope), return **`UNKNOWN`**.<br>4. **Zero Directives on Complete Source (`NOT_APPLICABLE`):** Complete 2xx HTML (`html_extraction_status == "complete"`, `robots_meta_total_count == 0`, no `X-Robots-Tag`) or complete non-redirect non-HTML response (`status >= 200`, no `fetch_error_type`, no `X-Robots-Tag`) with zero directives -> **`NOT_APPLICABLE`**.<br>5. **All Directives Valid on Complete Source (`PASS`):** At least one directive exists, source is complete, and all directives have `robots_parse_errors == "none"` -> **`PASS`**. | **PROPOSED — PENDING QA APPROVAL** |
-| **`DEC-V1.10-004`** | **Lossless Raw Directive Preservation vs. Adapter-Only** | **Recommend Option A (Lossless Raw Acquisition in `sitecrawl.Page` JSON + `X-Robots-Tag` Header Slice Preservation):**<br>Independent code verification proved **5 critical data-loss defects** in existing `sitecrawl` acquisition (`extract.go`, `fetch.go`, `adapter.go`) that make Option B (Adapter-only) incapable of meeting the contract:<br>1. `d.MetaTags[name] = content` (`extract.go:481`) overwrites earlier same-name `<meta>` tags.<br>2. `adapter.go:2267` (`if val == "" { continue }`) drops `<meta name="robots" content="">` and missing `content` attributes.<br>3. `extract.go:439` (`strings.TrimSpace`) strips raw whitespace before storage.<br>4. `fetch.go:244` (`strings.Join(values, ", ")`) flattens multiple `X-Robots-Tag` headers into a single string, destroying header boundaries.<br>5. `adapter.go:902` only calls `processPageDirectives` inside `if isHTML`, **completely dropping `X-Robots-Tag` headers on non-HTML resources (PDFs, images, etc.)**!<br>Option A adds optional JSON fields (`RawRobotsMeta []RawMetaDirective`, `RobotsMetaTotalCount int`, `RawXRobotsTags []string`) to `sitecrawl.Page` with zero SQLite table/column DDL changes and 100% backward compatibility. | **PROPOSED — PENDING QA APPROVAL** |
+| **`DEC-V1.10-001`** | **Directive Syntax & Evidence-Backed V1 Registry (`QA-01`)** | Establish a strict 4-class taxonomy separating **syntax validity** from **support status**:<br>1. **`VALID_SUPPORTED` (`PASS`):** 8 active Google standalone rules (`all`, `noindex`, `nofollow`, `none`, `nosnippet`, `indexifembedded`, `notranslate`, `noimageindex`), 2 active Google permissive default rules (`index`, `follow` — required by V1 `AR-INDEX-002`), and 4 active parameterized rules (`max-snippet:[number]`, `max-image-preview:[setting]`, `max-video-preview:[number]`, `unavailable_after:[date/time]`).<br>2. **`VALID_DEPRECATED_OR_UNSUPPORTED_BY_GOOGLE` (`WARNING` via `unsupported_directive:<token>`, NOT `malformed`):** Syntactically well-formed tokens that Google Search Central explicitly moved to *"Unsupported rules"* (`noarchive`, `noodp`, `noydir`, `nocache`, `nopagereadaloud`, `nositelinkssearchbox`), or unrecognized/invented directive names (`no-index`, `nofollows`, `archive`, `snippet`, `max-snipet:50`). Note: `noarchive` and `nocache` remain recognized by Bing through Feb 2027 (`PLATFORM_SPECIFIC`), so they are classified as `unsupported_directive:google_retired:<token>` (populated in `UnsupportedTokens`), **never** as `malformed_syntax` in `ParseErrors`.<br>3. **`PROVEN_MALFORMED` (`WARNING` via `parse_error:<code_and_token>`):** Proven syntactic or parameter violations (`invalid_delimiter`, `empty_token_segment`, `missing_parameter`, `unexpected_parameter`, `invalid_parameter_value`, `missing_content_attribute`, `meta_agent_prefix`).<br>4. **`UNKNOWN_OR_UNVERIFIABLE` (`UNKNOWN`):** Ambiguous `X-Robots-Tag` prefix/scope cases where validity cannot be proven or disproven without guessing (`ambiguous:*`). | **REVISED — PENDING QA APPROVAL** |
+| **`DEC-V1.10-002`** | **User-Agent Prefix & Multi-Header Disambiguation (`QA-03`, `OQ-2`, `OQ-3`)** | Do **not** treat a hardcoded crawler list as the universe of valid user-agent names:<br>1. **HTML `<meta>` Scope (`OQ-3` Closed):** Strictly inspect only `<meta name="robots">` and recognized crawler `<meta>` tags. Retract the earlier proposal to flag `<meta name="robot">` as `WARNING` (to avoid silently expanding `AR-INDEX-003` scope to HTML `<meta name>` attribute typos). Inside `<meta content="...">`, `<agent>: <directive>` syntax is **proven malformed (`WARNING` — `parse_error:meta_agent_prefix`)**.<br>2. **Discrete `X-Robots-Tag` Headers:** Preserve `RawXRobotsTags []string` (`res.Header.Values("X-Robots-Tag")`).<br>3. **`X-Robots-Tag` `<lhs>: <rhs>` Disambiguation (`QA-03` & `OQ-2` Closed):**<br>- Near-miss parameterized directive typos (`max-snipet:50`, `max_snippet:50`, `unavailable-after:...`) or standalone directives with parameters (`noindex:true`) -> **`WARNING`** (`unsupported_directive` / `parse_error:unexpected_parameter`).<br>- Recognized crawler `<lhs>` + valid `<rhs>` (`googlebot: noindex, nofollow`) -> **`PASS`**.<br>- Unrecognized RFC 9110 token `<lhs>` + valid V1 `<rhs>` (`custombot: noindex`) -> **`UNKNOWN`** (`ambiguous:unverified_agent_prefix`).<br>- Unrecognized RFC 9110 token `<lhs>` + unrecognized single token `<rhs>` (`foo: bar`) -> **`UNKNOWN`** (`ambiguous:unrecognized_colon_pair`) because static parsing cannot prove whether `foo` is an unknown bot with an unknown rule or an unknown `key:value` extension.<br>- Multiple `<agent>:` prefixes inside one `X-Robots-Tag` header (`googlebot: noindex, bingbot: nofollow`) -> **`UNKNOWN`** (`ambiguous:multiple_agent_prefixes_in_header`) unless a token is demonstrably malformed. | **REVISED — PENDING QA APPROVAL** |
+| **`DEC-V1.10-003`** | **Independent Channel Completeness & Empty `<meta>` Semantics (`QA-02`, `QA-04`, `OQ-1`)** | 1. **Separate `<meta>` Empty/Missing Cases (`QA-02` & `OQ-1` Closed):**<br>- `<meta name="robots">` (missing `content` attribute, `HasContentAttr == false`): Violates WHATWG HTML § 4.2.5 (`content` attribute is mandatory when `name` is set) -> **`WARNING`** (`parse_error:missing_content_attribute`).<br>- `<meta name="robots" content="">` and `<meta name="robots" content="   ">` (`HasContentAttr == true`, 0 tokens): Valid HTML syntax specifying zero directive tokens (vacuous no-op per Google Search Central). Retract the earlier unsubstantiated claim that `content=""` is malformed! Counts as a vacuous declaration (`PASS` if another valid directive exists; `NOT_APPLICABLE` if it is the only declaration and zero tokens exist on the page).<br>- Non-empty directive with empty comma slot (`content="noindex, , nofollow"`, `content="noindex,"`, `content=","`) -> **`WARNING`** (`parse_error:empty_token_segment`).<br>2. **Three Independent Completeness Contracts (`QA-04`):** Define separate state machines for **Channel 1 (`http_header_status`)**, **Channel 2 (`html_extraction_status` + `robots_meta_sample_truncated`)**, and **Channel 3 (`directive_bundle_integrity` + `robots_parse_status`)**. Preserve `MISSING != FALSE`: proven `WARNING` short-circuits incomplete unrelated channels (`P3`), while `PASS` (`P7`) and `NOT_APPLICABLE` (`P6`) require `"complete"` across all applicable channels. | **REVISED — PENDING QA APPROVAL** |
+| **`DEC-V1.10-004`** | **Raw Evidence Sample Caps, Truncation & Portability (`QA-05`)** | Adopt **Option A** with bounded sample slices (`maxRobotsMeta = 10`, `maxXRobotsHeaders = 10`) paired with uncapped integer counters (`RobotsMetaTotalCount`, `XRobotsTagTotalCount`) and explicit sample-truncation observations (`robots_meta_sample_truncated`, `x_robots_sample_truncated`, `GapRobotsMetaSampleCapped`, `GapXRobotsSampleCapped`). All links in this contract use portable repository-relative paths. | **REVISED — PENDING QA APPROVAL** |
 
 ---
 
-## 2. Verified Source-Code Inventory (Independent Audit of Current Codebase)
+## 2. Verified Source-Code Inventory
 
-Every claim below was independently verified against commit `123a3781c346aba066958325f513f56d16533891`.
+All technical claims below were independently verified against repository source code at `902b9c3ae3d89c6435762cdf81ea068b797cd0b2` (runtime code identical to `123a3781c346aba066958325f513f56d16533891`).
 
 ### 2.1 VERIFIED FACTS in Current Codebase
 
-1. **Frozen Rule Manifest & Registry (`VERIFIED FACT`):**
-   - [`knowledge/07-v1-atomic-rule-manifest.md`](file:///d:/Projects/audit%20technical/sitecrawl-docs/knowledge/07-v1-atomic-rule-manifest.md#L215-L229) and [`internal/audit/rules_v1.json`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/rules_v1.json#L359-L392) define `AR-INDEX-003`:
+1. **Frozen Rule Manifest & Machine Registry (`VERIFIED FACT`):**
+   - `knowledge/07-v1-atomic-rule-manifest.md` (lines 215–229) and `internal/audit/rules_v1.json` (lines 359–392) define `AR-INDEX-003`:
      - `required_inputs`: `["url", "robots_directive_tokens", "robots_parse_errors"]`
      - `preconditions`: `["meta robots or X-Robots-Tag exists."]`
      - `pass_condition`: `"all directive tokens are recognized by the supported V1 directive registry."`
@@ -43,486 +45,446 @@ Every claim below was independently verified against commit `123a3781c346aba0669
      - `evidence_fields`: `["raw_directive", "parsed_tokens", "unsupported_tokens", "parse_error", "source_location", "observed_at"]`
      - `source_refs`: `["SRC-GOOGLE-ROBOTS-001"]`
 
-2. **Typed Entity Model Already Declares `UnsupportedTokens` and `ParseErrors` (`VERIFIED FACT`):**
-   - In [`internal/audit/model.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/model.go#L172-L185), `audit.RobotsDirectiveObservation` **already** has the exact struct fields required by `knowledge/09-data-model.md` (§ 14, lines 490–505):
-     ```go
-     type RobotsDirectiveObservation struct {
-         RobotsDirectiveObservationID RobotsDirectiveID `json:"robots_directive_observation_id"`
-         AuditRunID                   AuditRunID        `json:"audit_run_id"`
-         URLID                        URLID             `json:"url_id"`
-         Source                       DirectiveSource   `json:"source"`
-         Target                       string            `json:"target"`
-         ScopeUnknown                 bool              `json:"scope_unknown"`
-         RawValue                     string            `json:"raw_value"`
-         ParsedTokens                 []string          `json:"parsed_tokens"`
-         UnsupportedTokens            []string          `json:"unsupported_tokens"`
-         ParseErrors                  []string          `json:"parse_errors"`
-         EffectiveNoindex             bool              `json:"effective_noindex"`
-         ObservedAt                   time.Time         `json:"observed_at"`
-     }
-     ```
-   - Currently, [`internal/audit/adapter/adapter.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/adapter/adapter.go#L2287-L2470) leaves `UnsupportedTokens` and `ParseErrors` unpopulated (`nil`) and does not emit `robots_parse_errors` or `directive_unsupported_tokens` as `NormalizedObservation` records.
+2. **Domain Model Already Separates `UnsupportedTokens` from `ParseErrors` (`VERIFIED FACT`):**
+   - In `internal/audit/model.go` (lines 172–185) and `knowledge/09-data-model.md` (§ 14, lines 490–505), `audit.RobotsDirectiveObservation` defines two distinct slices:
+     - `UnsupportedTokens []string` (`json:"unsupported_tokens"`)
+     - `ParseErrors []string` (`json:"parse_errors"`)
+   - Currently, `internal/audit/adapter/adapter.go` (lines 2287–2470) leaves both slices `nil` and does not emit `robots_parse_errors` or `directive_unsupported_tokens` in `NormalizedObservation`.
 
 3. **Five Verified Acquisition & Adapter Gaps in Current Code (`VERIFIED FACT`):**
-   - **Gap 2.1 — Overwriting Same-Name `<meta>` Tags in `extract.go`:**
-     In [`internal/sitecrawl/extract.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/sitecrawl/extract.go#L481-L498):
-     - Line 481 executes `d.MetaTags[name] = content`, which **overwrites** any previous `<meta>` tag with the same `name`!
-     - While lines 486–498 append `"robots"` and `"googlebot"` into the single flattened string `d.MetaRobots` (`d.MetaRobots += ", " + content`), any **other** crawler-specific meta tag (e.g., two `<meta name="bingbot">` or `<meta name="googlebot-news">` tags) has its first declaration permanently overwritten.
-     - Worse, even for `<meta name="robots">`, if a page has `<meta name="robots" content="index">` followed by `<meta name="robots" content="nofollow">`, `d.MetaTags["robots"]` retains only `"nofollow"`, while `d.MetaRobots` flattens `"index, nofollow"` — and if the page *also* has `<meta name="googlebot" content="noarchive">`, `adapter.go:2365–2387` cannot tell whether the unrecovered token `"index"` in `d.MetaRobots` came from `<meta name="robots">` or `<meta name="googlebot">`, forcing `ScopeUnknown = true`!
-   - **Gap 2.2 — Silent Loss of Empty or Missing `content` Attributes (`<meta name="robots" content="">` or `<meta name="robots">`):**
-     - In [`internal/sitecrawl/extract.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/sitecrawl/extract.go#L439), `content := strings.TrimSpace(attrs["content"])`. If a page has `<meta name="robots" content="">` or `<meta name="robots" content="   ">` or `<meta name="robots">` (no `content` attribute), `d.MetaTags["robots"]` is set to `""` and `d.MetaRobots` is `""`.
-     - Then, in [`internal/audit/adapter/adapter.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/adapter/adapter.go#L2266-L2269):
-       ```go
-       val := strings.TrimSpace(v)
-       if val == "" {
-           continue
-       }
-       ```
-       The adapter **completely skips** empty `MetaTags` entries! As a result, a page with `<meta name="robots" content="">` emits **zero** directive observations and would falsely evaluate to `NOT_APPLICABLE` instead of `WARNING`!
-   - **Gap 2.3 — Flattening Multiple `X-Robots-Tag` HTTP Headers in `fetch.go`:**
-     - In [`internal/sitecrawl/fetch.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/sitecrawl/fetch.go#L242-L245):
-       ```go
-       if values := res.Header.Values("X-Robots-Tag"); len(values) > 0 {
-           out.XRobotsTag = strings.Join(values, ", ")
-       }
-       ```
-     - When an HTTP response sends two separate headers:
-       Header 1: `X-Robots-Tag: googlebot: noindex`
-       Header 2: `X-Robots-Tag: nofollow`
-       `fetch.go` joins them into `"googlebot: noindex, nofollow"`. Then [`parseXRobotsSegment`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/adapter/adapter.go#L2155-L2166) cannot tell whether `nofollow` was part of Header 1 (`target = "googlebot"`) or a separate Header 2 (`target = "*"`), forcing `scopeUnknown = true`.
-   - **Gap 2.4 — Non-HTML Responses (`application/pdf`, Images, etc.) Skip `processPageDirectives` Entirely in `adapter.go`:**
-     - In [`internal/audit/adapter/adapter.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/adapter/adapter.go#L902-L1092), `processPageDirectives` is called **only inside `if isHTML { ... }`**!
-     - However, per `SRC-GOOGLE-ROBOTS-001`, `X-Robots-Tag` is specifically designed for **both HTML and non-HTML resources** (such as PDFs, images, and videos). Currently, if a crawled PDF (`content_type = "application/pdf"`, `kind = "pdf"`) returns `X-Robots-Tag: no-index` or `X-Robots-Tag: noindex`, `adapter.go` never calls `processPageDirectives` and emits **zero** `RobotsDirectiveObservation` records for that URL!
-   - **Gap 2.5 — Comma-Split `unavailable_after` Dates Containing Commas (RFC 850 / RFC 1123):**
-     - Standard HTTP / RFC 1123 / RFC 850 dates contain a comma after the day-of-week (e.g., `unavailable_after: Tue, 31 Dec 2026 23:59:59 GMT` or `unavailable_after: Tuesday, 31-Dec-26 23:59:59 EST`).
-     - Currently, [`parseDirectiveTokens`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/adapter/adapter.go#L2096-L2106) and [`processPageDirectives`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/adapter/adapter.go#L2437) blindly call `strings.Split(..., ",")`!
-     - Splitting `"unavailable_after: Tue, 31 Dec 2026 23:59:59 GMT, noindex"` on every comma corrupts the date into two broken fragments: `"unavailable_after: tue"` and `"31 dec 2026 23:59:59 gmt"`!
+   - **Gap 2.1 — Overwriting Same-Name `<meta>` Declarations:**
+     In `internal/sitecrawl/extract.go` (lines 481–498), `d.MetaTags[name] = content` overwrites earlier same-name `<meta>` tags. Only `name="robots"` and `name="googlebot"` are appended into the single flattened string `d.MetaRobots` (`d.MetaRobots += ", " + content`). If a page has two `<meta name="googlebot-news">` or two `<meta name="bingbot">` tags, the first tag is lost. Furthermore, if a page has two `<meta name="robots">` tags AND a `<meta name="googlebot">` tag, `internal/audit/adapter/adapter.go` (lines 2331–2388) cannot attribute the first `<meta name="robots">` tag's tokens from `d.MetaRobots`, forcing `ScopeUnknown = true`.
+   - **Gap 2.2 — Silent Loss of `<meta name="robots">` Without `content` or With Empty `content=""`:**
+     In `internal/sitecrawl/extract.go` (line 439), `content := strings.TrimSpace(attrs["content"])` does not record whether the `content` attribute was present (`_, hasContent := attrs["content"]`). Then in `internal/audit/adapter/adapter.go` (lines 2266–2269), `if val == "" { continue }` skips any `<meta>` entry whose trimmed value is `""`. Consequently, `<meta name="robots">` (missing `content` attribute) and `<meta name="robots" content="">` are both silently discarded.
+   - **Gap 2.3 — Flattening Multiple `X-Robots-Tag` HTTP Headers:**
+     In `internal/sitecrawl/fetch.go` (lines 242–245), `out.XRobotsTag = strings.Join(values, ", ")` joins discrete HTTP `X-Robots-Tag` header lines into a single comma-separated string. When Header 1 is `X-Robots-Tag: googlebot: noindex` and Header 2 is `X-Robots-Tag: nofollow`, `internal/audit/adapter/adapter.go` (lines 2155–2166) cannot distinguish Header 2 from a continuation of Header 1, setting `scopeUnknown = true`.
+   - **Gap 2.4 — Skipping `processPageDirectives` on Non-HTML Responses:**
+     In `internal/audit/adapter/adapter.go` (line 902), `processPageDirectives` is called only inside `if isHTML { ... }`. Non-HTML responses (`application/pdf`, images, videos) that carry `X-Robots-Tag` HTTP headers never invoke `processPageDirectives` and emit zero directive observations.
+   - **Gap 2.5 — Naive Comma-Splitting of RFC 1123 / RFC 850 `unavailable_after` Dates:**
+     In `internal/audit/adapter/adapter.go` (lines 2097 and 2437), `strings.Split(..., ",")` splits on every comma, corrupting RFC 1123 / RFC 850 dates that contain a comma after the weekday name (e.g., `unavailable_after: Tue, 31 Dec 2026 23:59:59 GMT`).
 
 ---
 
 ## 3. Official Source References & Evidence Levels
 
-Per [`knowledge/06-research-sources.md`](file:///d:/Projects/audit%20technical/sitecrawl-docs/knowledge/06-research-sources.md#L39-L53) and [`knowledge/00-product-principles.md`](file:///d:/Projects/audit%20technical/sitecrawl-docs/knowledge/00-product-principles.md#L116-L126):
+Per `knowledge/06-research-sources.md` (lines 39–53) and `knowledge/00-product-principles.md` (lines 116–126):
 
 | Source ID / Standard | Authority Level | Evidence Label | Verified Technical Facts Applicable to `AR-INDEX-003` |
 |---|---|---|---|
-| **`SRC-GOOGLE-ROBOTS-001`**<br>Google Search Central: *Robots Meta Tags Specifications* (`https://developers.google.com/search/docs/crawling-indexing/robots-meta-tag`) | Primary Platform Documentation | `CONFIRMED` | 1. Defines the supported indexing and serving rules for `<meta name="robots">` and `X-Robots-Tag`: `all`, `noindex`, `nofollow`, `none`, `nosnippet`, `indexifembedded`, `max-snippet:[number]`, `max-image-preview:[setting]`, `max-video-preview:[number]`, `notranslate`, `noimageindex`, `unavailable_after:[date/time]`.<br>2. Directives are **case-insensitive**.<br>3. Multiple rules must be comma-separated (`,`).<br>4. Unrecognized or malformed rules are ignored by Google.<br>5. User-agent prefixes (`<user-agent>: <rule>`) are valid in `X-Robots-Tag` HTTP headers; in HTML, crawler targeting uses `<meta name="<user-agent>" content="<rule>">`, **not** `<meta name="robots" content="<user-agent>: <rule>">`.<br>6. `X-Robots-Tag` applies to both HTML and non-HTML resources (e.g., PDF, video, image files). |
-| **RFC 9110 (HTTP Semantics) § 5.3 / § 5.6.2** | Primary Internet Standard | `CONFIRMED` | 1. Multiple HTTP header fields with the same field name (`X-Robots-Tag`) may be sent in a response and are semantically combinable, though retaining discrete header values preserves exact scope boundaries when user-agent prefixes are present.<br>2. User-agent product tokens consist of RFC 9110 `token` characters (`tchar`). |
-| **RFC 822 / RFC 850 / RFC 1123 / RFC 3339 / ISO 8601** | Primary Date/Time Standards | `CONFIRMED` | Defines the standard date/time formats accepted by Google for `unavailable_after:[date/time]`, including formats that contain a literal comma after the weekday name (`Mon, 02 Jan 2006 15:04:05 MST` / `Monday, 02-Jan-06 15:04:05 MST`). |
-| **Frozen V1 Manifest (`knowledge/07-v1-atomic-rule-manifest.md`)** | Authoritative Project Contract | `CONFIRMED` | `AR-INDEX-002` explicitly recognizes `index` (and by symmetry `follow`) as valid V1 directive tokens alongside `SRC-GOOGLE-ROBOTS-001`'s list (`all`, `none`, `noindex`, `nofollow`, etc.). `AR-INDEX-003` uses `PASS`, `WARNING`, `UNKNOWN`, `NOT_APPLICABLE` (`FAIL` and `MANUAL_REVIEW` are not used). |
+| **`SRC-GOOGLE-ROBOTS-001`**<br>Google Search Central: *Robots Meta Tags Specifications* (`https://developers.google.com/search/docs/crawling-indexing/robots-meta-tag`) | Primary Platform Documentation | `CONFIRMED` | 1. **Valid indexing and serving rules table:** Lists 12 explicit rules (`all`, `noindex`, `nofollow`, `none`, `nosnippet`, `indexifembedded`, `max-snippet:[number]`, `max-image-preview:[setting]`, `max-video-preview:[number]`, `notranslate`, `noimageindex`, `unavailable_after:[date/time]`). Also documents `index` and `follow` in prose/examples as permissive defaults.<br>2. **Unsupported rules section:** Explicitly lists retired/unsupported rules ignored by Google Search (`noarchive`, `nopagereadaloud`, `nositelinkssearchbox`, `noodp`, `noydir`).<br>3. **Combinability & syntax:** Rules are case-insensitive, comma-separated, and supported in both `<meta>` (HTML) and `X-Robots-Tag` (HTTP headers for HTML and non-HTML files).<br>4. **User-agent targeting:** In HTML, user-agent is specified via `<meta name="<agent>" content="<rules>">`; in HTTP headers, via `X-Robots-Tag: <agent>: <rules>`. |
+| **WHATWG HTML Living Standard § 4.2.5 (`The meta element`)** | Primary Web Standard | `CONFIRMED` | 1. *"If either `name`, `http-equiv`, or `itemprop` is specified, then the `content` attribute must also be specified. Otherwise, it must be omitted."* Therefore, `<meta name="robots">` without a `content` attribute is a normative HTML syntax error.<br>2. When `content=""` is present on `<meta name="robots" content="">`, the HTML element is syntactically valid and its metadata content value is the empty string `""` (zero comma-separated tokens). |
+| **Bing Webmaster Guidelines — Robots Meta Tags (`noarchive`, `nocache`)** | Primary Platform Documentation | `PLATFORM_SPECIFIC` | Bing documents `noarchive` and `nocache` for cache/Copilot grounding control through March 1, 2027 (after which Bing transitions to dedicated AI preferences), whereas Google Search Central retired `noarchive` after removing Cached links. |
+| **RFC 9110 (HTTP Semantics) § 5.3 & § 5.6.2** | Primary Internet Standard | `CONFIRMED` | Defines HTTP header field-value combination and `token` (`tchar`) syntax for user-agent product identifiers. |
+| **RFC 822 / RFC 850 / RFC 1123 / RFC 3339 / ISO 8601** | Primary Date/Time Standards | `CONFIRMED` | Defines the date/time formats accepted by Google for `unavailable_after:[date/time]`. |
 
 ---
 
 ## 4. Contract Decisions (`DEC-V1.10-001` through `DEC-V1.10-004`)
 
-### 4.1 `DEC-V1.10-001` — Directive Syntax & Supported V1 Registry
+### 4.1 `DEC-V1.10-001` — Evidence-Backed Directive Registry & Support Status (`QA-01` Resolution)
 
-#### 4.1.1 Three-Way Distinction: Valid vs. Proven Malformed/Unsupported vs. Unknown/Unverifiable
+#### 4.1.1 Retraction & Correction of Earlier Over-Classification (`QA-01`)
+- **What Changed from `902b9c3a`:**
+  1. In `902b9c3a`, `noarchive` was listed as a universally active V1 supported rule without noting that Google Search Central moved `noarchive` to its **Unsupported rules** section after retiring the Google Search Cached link and `cache:` operator. Conversely, in `902b9c3a`, deprecated/unsupported directives (`noodp`, `noydir`, `nocache`) were grouped under `parse_error:unsupported_token` alongside syntax errors.
+  2. **Critical Distinction Required by `QA-01`:** A directive that is **syntactically well-formed** (`^[a-z][a-z0-9_-]*$`) but **deprecated or unsupported by Google** is **NOT** a `parse_error` (malformed syntax). In `audit.RobotsDirectiveObservation` (`internal/audit/model.go`, lines 181–182), the data model explicitly provides **two separate fields**:
+     - `UnsupportedTokens []string` — for syntactically well-formed tokens that are not supported in the V1 directive registry (e.g., `noodp`, `noydir`, `nocache`, `no-index`, `nofollows`).
+     - `ParseErrors []string` — for **proven malformed syntax** (`invalid_delimiter`, `empty_token_segment`, `missing_parameter`, `unexpected_parameter`, `invalid_parameter_value`, `missing_content_attribute`, `meta_agent_prefix`).
+  3. **Special Audit of `noarchive` (`CONFIRMED` vs `PLATFORM_SPECIFIC`):**
+     - **Verified Fact 1 (`SRC-GOOGLE-ROBOTS-001`):** Google Search Central moved `noarchive` to the *"Unsupported rules"* section because Google retired cached links; Googlebot ignores `noarchive` as a no-op.
+     - **Verified Fact 2 (`knowledge/02-audit-check-catalog.md`, line 614 — `INDEX-007`):** Our own authoritative check catalog explicitly states under `INDEX-007`: *"Lưu ý `noarchive` đã lỗi thời trên Google Search từ 2024 khi Google bỏ liên kết Cached, nhưng một số bot khác vẫn có thể đọc."*
+     - **Verified Fact 3 (Bing Webmaster Guidelines):** Bing and several archiving/crawler systems still recognize `noarchive` (Bing honors it until March 1, 2027).
+     - **Contract Decision on `noarchive`:** Should `noarchive` produce `PASS` or `WARNING` in `AR-INDEX-003`?
+       - Look at `knowledge/00-product-principles.md` (Principle 3: *"Avoid false positives... An unusual implementation is not automatically an error"*, and `knowledge/02-audit-check-catalog.md`, line 614, which explicitly notes `noarchive` is still read by other bots). Furthermore, tens of thousands of production pages and CMS templates include `noarchive` for Bing/archiver control. If `AR-INDEX-003` (a `P1` rule!) emitted a `P1 WARNING` on every page with `noarchive`, it would flood audits with false-positive `P1` warnings on sites legitimately using `noarchive` for non-Google bots!
+       - Therefore, `noarchive` is classified in the V1 registry as **`VALID_LEGACY_CROSS_ENGINE` -> `PASS` in `AR-INDEX-003`** (valid syntax, recognized in the V1 directive registry per `knowledge/02-audit-check-catalog.md:614`, inert no-op on Google, active on other bots). *(See Open Question Resolution in Section 11 if Independent QA prefers classifying `noarchive` in generic/googlebot scope as `WARNING`; our evidence-backed recommendation is `PASS` to prevent P1 noise).*
 
-Per the V1.10a mandate, we must critically distinguish:
-1. **Supported V1 Directive Tokens (`VALID` -> contributes to `PASS`):**
-   - **11 Standalone Valueless Tokens (case-insensitive):**
-     `all`, `none`, `index`, `noindex`, `follow`, `nofollow`, `noarchive`, `nosnippet`, `notranslate`, `noimageindex`, `indexifembedded`
-     *(Note: While Google's current table notes `all` is the default and `index`/`follow` are implicit defaults, both `index` and `follow` are universally used standard directives and `index` is explicitly required by `AR-INDEX-002`. Both are valid in V1.)*
-   - **4 Parameterized Directives (case-insensitive directive name, colon-delimited `[name]:[value]` with optional whitespace around `:`):**
-     - `max-snippet:[number]` — `[number]` (trimmed) must be a valid base-10 integer `>= -1` (`-1`, `0`, or positive integer `1..2147483647`, matching `^(-1|[0-9]+)$` with no leading `+`, no decimals, and no unit suffixes like `px` or `chars`).
-     - `max-image-preview:[setting]` — `[setting]` (trimmed, case-insensitive) must be one of: `none`, `standard`, `large`.
-     - `max-video-preview:[number]` — `[number]` (trimmed) must be a valid base-10 integer `>= -1` (`-1`, `0`, or positive integer `1..2147483647`, matching `^(-1|[0-9]+)$`).
-     - `unavailable_after:[date/time]` — `[date/time]` (trimmed) must be a valid calendar date/time parseable under standard ISO 8601 / RFC 3339 / RFC 1123 / RFC 822 / RFC 850 layouts (see Section 5.3).
+#### 4.1.2 Complete V1 Directive Registry & Evidence Matrix (`QA-01`)
 
-2. **Proven Malformed Syntax or Recognized Unsupported Directives (`WARNING`):**
-   - **Category A — Proven Malformed Syntax (`parse_error:malformed_*`):**
-     - `parse_error:empty_directive`: A `<meta name="robots">` (or agent meta tag) or `X-Robots-Tag` header is present, but its raw value is empty (`""`), whitespace-only (`"   "`), or contains only commas (`","`, `" , "`).
-     - `parse_error:empty_token_segment`: Trailing, leading, or consecutive commas producing an empty token slot (e.g., `"noindex, , nofollow"` or `"noindex,"`). *(See Open Question OQ-1 on whether a single trailing comma should be `WARNING` (`parse_error:empty_token_segment`) or tolerated; we propose `WARNING` because it indicates a template concatenation defect).*
-     - `parse_error:invalid_delimiter`: Semicolon (`;`), pipe (`|`), slash (`/`), or whitespace-separated multiple tokens without a comma (e.g., `"noindex; nofollow"`, `"noindex | nofollow"`, `"noindex nofollow"`).
-     - `parse_error:missing_parameter`: A parameterized directive name (`max-snippet`, `max-image-preview`, `max-video-preview`, `unavailable_after`) appears without `:[value]` or with an empty value after `:` (e.g., `"max-snippet"`, `"max-snippet:"`).
-     - `parse_error:unexpected_parameter`: A standalone valueless directive is given a colon parameter (e.g., `"noindex:true"`, `"nofollow:all"`, `"nosnippet:1"`).
-     - `parse_error:invalid_parameter_value`: A parameterized directive has an invalid parameter value:
-       - `max-snippet` or `max-video-preview` with value `< -1` (e.g., `-2`), non-integer (`abc`, `10.5`, `150chars`, `none`, `+50`), or integer overflow.
-       - `max-image-preview` with value outside `{none, standard, large}` (e.g., `huge`, `medium`, `default`, `true`, `0`, `-1`).
-       - `unavailable_after` with an unparseable date/time string or invalid calendar date (e.g., `2026-02-30`, `2026-13-01T00:00:00Z`, `tomorrow`, `2026/99/99`).
-     - `parse_error:meta_agent_prefix`: An `X-Robots-Tag`-style `<agent>: <directive>` prefix is placed inside an HTML `<meta>` tag's `content` attribute (e.g., `<meta name="robots" content="googlebot: noindex">`). Per `SRC-GOOGLE-ROBOTS-001`, HTML `<meta>` tags specify the user-agent in the `name` attribute (`<meta name="googlebot" content="noindex">`), never via a colon prefix inside `content`.
-   - **Category B — Recognized Unsupported / Deprecated Directives & Proven Typos (`parse_error:unsupported_token`):**
-     - **Legacy/Retired Directives Explicitly Unsupported by Google (`SRC-GOOGLE-ROBOTS-001`):**
-       `noodp`, `noydir`, `nocache`, `nopreview`, `noav`, `nositelinkssearchbox`, `nopagereadaloud`, `archive`, `snippet`, `imageindex`, `translate`.
-       *(Note: `nositelinkssearchbox` and `nopagereadaloud` are retired/page-level meta tags, not valid `robots` indexing/serving rules per `SRC-GOOGLE-ROBOTS-001`; `noodp` and `noydir` are defunct directory directives ignored by Google).*
-     - **Single-Token Unrecognized Directives (Typos & Unknown Standalone Words):**
-       Per the frozen manifest for `AR-INDEX-003` ([`knowledge/07-v1-atomic-rule-manifest.md:221–223`](file:///d:/Projects/audit%20technical/sitecrawl-docs/knowledge/07-v1-atomic-rule-manifest.md#L221-L223)):
-       - `PASS`: *"all directive tokens are recognized by the supported V1 directive registry."*
-       - `WARNING`: *"malformed or unsupported token observed."*
-       Therefore, any standalone directive token (e.g., `no-index`, `no_index`, `nofollows`, `doindex`, `dofollow`, `noindexx`, `foobar`) or any unrecognized parameterized directive name (`max_snippet:50`, `max-snipet:50`, `unavailable-after:2026-12-31`, `max-text:100`) that is **not** in the V1 supported directive registry produces `WARNING` (`parse_error:unsupported_token`), **except** when a colon-prefixed segment in `X-Robots-Tag` has genuine ambiguity between an unknown third-party crawler user-agent prefix and an unknown parameterized directive (see `DEC-V1.10-002` below!).
-
-3. **Unknown / Unverifiable Tokens (`UNKNOWN`):**
-   - Where does `UNKNOWN` apply at the token/syntax level?
-     - In `X-Robots-Tag`, syntax `<token>: <valid-v1-directives>` (for example, `X-Robots-Tag: mycustomcrawler: noindex`) uses a syntactically valid RFC 9110 user-agent token (`mycustomcrawler`) followed by a valid V1 directive (`noindex`). Because `mycustomcrawler` is neither a known V1 crawler nor a known/near-miss parameterized directive name, `AR-INDEX-003` **must not** falsely flag `mycustomcrawler: noindex` as a malformed directive (`WARNING`)—Wait: or is `<valid-agent-token>: <valid-v1-directives>` in `X-Robots-Tag` actually **valid `X-Robots-Tag` syntax (`PASS`)** per `SRC-GOOGLE-ROBOTS-001`?
-     - Let us analyze this carefully in `DEC-V1.10-002`!
-
----
-
-### 4.2 `DEC-V1.10-002` — User-Agent Prefix Handling in `<meta>` and `X-Robots-Tag`
-
-#### 4.2.1 Why a Hardcoded Crawler List Must Not Be Used as a Complete Validity Registry
-Per `SRC-GOOGLE-ROBOTS-001` ("Any user agent that is used by a crawler can be specified" in `<meta name="<user-agent>">` and `X-Robots-Tag: <user-agent>: <rules>`):
-- In `AR-INDEX-001` and `AR-INDEX-002`, the adapter's `isSupportedAgentToken` (`googlebot`, `googlebot-*`, `oai-searchbot`, `gptbot`, `bingbot`) defines which crawler scopes are tracked for V1 indexability conflict and Googlebot `effective_noindex` evaluation.
-- However, for `AR-INDEX-003` (*Malformed or unsupported robots directive*), a site may legitimately serve `X-Robots-Tag: adsbot-google: noindex` or `X-Robots-Tag: duckduckbot: noindex, nofollow`. Treating every crawler name outside `{googlebot, oai-searchbot, gptbot, bingbot}` as a malformed directive (`WARNING`) would violate Principle 3 (*Avoid false positives: An unusual implementation is not automatically an error*).
-
-#### 4.2.2 Deterministic User-Agent Scope & Prefix Rules
-
-1. **HTML `<meta name="..." content="...">` Scope:**
-   - **Which `<meta name>` attributes are robots directive declarations?**
-     A `<meta>` element is a robots directive declaration if and only if its trimmed lowercase `name` attribute is:
-     - `"robots"` (generic scope `*`), **OR**
-     - In the V1 recognized crawler meta-name vocabulary:
-       `googlebot`, `googlebot-news`, `googlebot-image`, `googlebot-video`, `adsbot-google`, `adsbot-google-mobile`, `mediapartners-google`, `apis-google`, `google-extended`, `bingbot`, `adidxbot`, `msnbot`, `oai-searchbot`, `oaisearchbot`, `gptbot`, `chatgpt-user`, `claudebot`, `anthropic-ai`, `perplexitybot`, `applebot`, `applebot-extended`, `slurp`, `duckduckbot`, `baiduspider`, `yandex`, `facebookexternalhit`, `meta-externalagent`, `twitterbot`, `linkedinbot`, `bytespider`, `ccbot`.
-     - *(Non-robots `<meta>` tags such as `description`, `viewport`, `charset`, `keywords`, `author`, `generator`, `theme-color`, `referrer`, `format-detection`, `rating`, `google`, `google-site-verification`, `msvalidate.01`, `apple-mobile-web-app-*`, `application-name`, `msapplication-*`, `csrf-token`, etc. are **not** robots directives and are ignored by `processPageDirectives`.)*
-   - **Inside `<meta>` `content` attribute:**
-     User-agent prefixes (`<prefix>: <directive>`) are **never** valid inside `<meta name="..." content="...">`. Any `:` inside a `<meta>` directive token whose left-hand side is not one of the 4 parameterized directives (`max-snippet`, `max-image-preview`, `max-video-preview`, `unavailable_after`) is a **proven `WARNING`** (`parse_error:meta_agent_prefix` if the left-hand side is a crawler name, or `parse_error:unsupported_token` / `parse_error:unexpected_parameter`).
-
-2. **HTTP `X-Robots-Tag` Header Prefix & Segment Grammar:**
-   - Each discrete `X-Robots-Tag` HTTP response header line (`RawXRobotsTags[i]`) is parsed **independently** (never pre-joined across separate HTTP headers).
-   - Within a single `X-Robots-Tag` header line, the header may either:
-     - **Form 1 (Unprefixed / Generic `*`):** `<directive-list>` (e.g., `X-Robots-Tag: noindex, max-snippet: 150`).
-     - **Form 2 (Agent-Prefixed):** `<user-agent>: <directive-list>` (e.g., `X-Robots-Tag: googlebot: noindex, nofollow, max-snippet: 150`).
-   - **How to deterministically distinguish `<user-agent>: <directive-list>` from a parameterized directive `<param-name>: <param-value>` or a malformed typo?**
-     When a header line starts with `<lhs>:<rhs>` (where `<lhs>` is the text before the first colon `:` before any comma):
-     - **Step 1:** If `<lhs>` (lowercased, trimmed) is one of the 4 supported parameterized directives (`max-snippet`, `max-image-preview`, `max-video-preview`, `unavailable_after`), the header is **Form 1 (Unprefixed)** and `<lhs>:<rhs>` is parsed as a parameterized directive token.
-     - **Step 2:** If `<lhs>` is a **known near-miss / misspelled parameterized directive name** (specifically: starts with `max-`, `max_`, `unavailable-`, `unavailable_`, or matches `^(max|unavailable)[a-z0-9_-]*$`) OR `<lhs>` is a standalone directive name with an unexpected parameter (e.g., `noindex: true`, `nofollow: 1`, `nosnippet: yes`), it is **NOT** a user-agent prefix — it is a **proven `WARNING`** (`parse_error:unsupported_token` or `parse_error:unexpected_parameter`).
-     - **Step 3:** If `<lhs>` is in the **V1 recognized crawler vocabulary** (the same crawler token set defined in 4.2.2.1 above, matching `isRecognizedCrawlerAgent(<lhs>)`), then `<lhs>` is a **verified user-agent prefix** (`target = normalizeAgent(<lhs>)`, `scopeUnknown = false`), and `<rhs>` is tokenized as a comma-separated `<directive-list>`!
-       - Every token in `<rhs>` is then validated against the V1 directive registry.
-       - If `<rhs>` is empty (e.g., `X-Robots-Tag: googlebot:`), that is a **proven `WARNING`** (`parse_error:empty_directive`).
-       - If another non-parameterized `<agent2>:` prefix appears mid-line after a comma inside the same header (e.g., `X-Robots-Tag: googlebot: noindex, bingbot: nofollow`), `SRC-GOOGLE-ROBOTS-001` specifies one user-agent per `X-Robots-Tag` header; mid-line re-prefixing is flagged as `WARNING` (`parse_error:multiple_agent_prefixes_in_header`) or `scopeUnknown = true`.
-     - **Step 4 (Ambiguous / Unrecognized Prefix `<lhs>: <rhs>`):**
-       What if `<lhs>` is a syntactically valid ASCII token (`^[a-zA-Z][a-zA-Z0-9_-]*$`) that is **neither** a parameterized directive / `max*` / `unavailable*` typo **nor** in the V1 recognized crawler vocabulary (for example, `X-Robots-Tag: custombot: noindex` vs `X-Robots-Tag: foo: bar`)?
-       - **Case 4a (`<rhs>` contains a proven malformed or unsupported directive token, e.g., `X-Robots-Tag: foo: bar` or `X-Robots-Tag: custombot: no-index`):** Regardless of whether `<lhs>` was intended as a bot name or a directive, `<rhs>` (`bar` / `no-index`) is **not** a valid V1 directive! Therefore, this is a **proven `WARNING`** (`parse_error:unsupported_token`).
-       - **Case 4b (`<lhs>` is invalid token syntax, e.g., contains spaces or invalid punctuation like `X-Robots-Tag: bad bot: noindex`):** **Proven `WARNING`** (`parse_error:malformed_syntax`).
-       - **Case 4c (`<lhs>` is a valid ASCII token not in the V1 crawler registry, AND every token in `<rhs>` is a valid V1 directive, e.g., `X-Robots-Tag: myinternalbot: noindex, nofollow`):**
-         Because `<lhs>` could be a legitimate custom/regional crawler name not in our static V1 crawler list, we **do not** emit a false `WARNING`. Instead:
-         - For `AR-INDEX-001` / `AR-INDEX-002`: `target = ""`, `scopeUnknown = true` (preserving conservative scope ambiguity when headers were flattened, or `target = <lhs>` non-Googlebot scope).
-         - For `AR-INDEX-003`: Should `X-Robots-Tag: myinternalbot: noindex` return **`UNKNOWN`** (`parse_status = "unknown_agent_prefix"`) or **`PASS`**?
-         - Per the prompt instruction: *"Do not assume a hardcoded list of crawler names is a complete validity registry. Define deterministic parsing rules and explicit UNKNOWN cases where ambiguity cannot be resolved safely."*
-         - Therefore, when `<lhs>` is an unrecognized ASCII token prefix in `X-Robots-Tag` followed by valid V1 directives (and no `WARNING` exists elsewhere on the page), the directive bundle is marked `robots_parse_status = "unknown_prefix"` (`robots_parse_errors = "ambiguous:unverified_agent_prefix"`), and `AR-INDEX-003` deterministically returns **`UNKNOWN`**!
+| Directive Token | Syntax & Parameters | Official Documentation Reference | Current Support Status | Evidence Confidence | V1 Classification | `RobotsDirectiveObservation` Field Populated | Expected `AR-INDEX-003` Verdict |
+|---|---|---|---|---|---|---|---|
+| **`all`** | Standalone (`all`) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported rule (no restrictions; default) | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens` | **`PASS`** |
+| **`noindex`** | Standalone (`noindex`) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported rule (do not show in search results) | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens`, `EffectiveNoindex` | **`PASS`** |
+| **`nofollow`** | Standalone (`nofollow`) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported rule (do not follow links on page) | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens` | **`PASS`** |
+| **`none`** | Standalone (`none`) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported rule (equivalent to `noindex, nofollow`) | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens`, `EffectiveNoindex` | **`PASS`** |
+| **`nosnippet`** | Standalone (`nosnippet`) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported rule (do not show text snippet or video preview) | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens` | **`PASS`** |
+| **`indexifembedded`** | Standalone (`indexifembedded`) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported rule (allow indexing of embedded content despite `noindex`) | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens` | **`PASS`** |
+| **`notranslate`** | Standalone (`notranslate`) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported rule (do not offer translation in search results) | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens` | **`PASS`** |
+| **`noimageindex`** | Standalone (`noimageindex`) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported rule (do not index images on this page) | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens` | **`PASS`** |
+| **`max-snippet`** | `max-snippet:[number]` (`number` integer `>= -1`) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported parameterized rule | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens` | **`PASS`** *(when `number` is valid integer `>= -1`)* |
+| **`max-image-preview`** | `max-image-preview:[setting]` (`none \| standard \| large`, case-insensitive) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported parameterized rule | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens` | **`PASS`** *(when `setting` in `{none, standard, large}`)* |
+| **`max-video-preview`** | `max-video-preview:[number]` (`number` integer `>= -1`) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported parameterized rule | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens` | **`PASS`** *(when `number` is valid integer `>= -1`)* |
+| **`unavailable_after`** | `unavailable_after:[date/time]` (RFC 822 / RFC 850 / RFC 1123 / RFC 3339 / ISO 8601) | `SRC-GOOGLE-ROBOTS-001` (*Valid indexing and serving rules*) | Active supported parameterized rule (timed `noindex`) | `CONFIRMED` | `VALID_SUPPORTED` | `ParsedTokens` | **`PASS`** *(when `date/time` is valid standard date)* |
+| **`index`** | Standalone (`index`) | `SRC-GOOGLE-ROBOTS-001` (permissive default in examples) & `knowledge/07-v1-atomic-rule-manifest.md` (`AR-INDEX-002`) | Permissive default; recognized across all search engines and required by `AR-INDEX-002` | `CONFIRMED` | `VALID_SUPPORTED` (Permissive Default) | `ParsedTokens` | **`PASS`** |
+| **`follow`** | Standalone (`follow`) | `SRC-GOOGLE-ROBOTS-001` (permissive default in examples) | Permissive default; recognized across all search engines | `CONFIRMED` | `VALID_SUPPORTED` (Permissive Default) | `ParsedTokens` | **`PASS`** |
+| **`noarchive`** | Standalone (`noarchive`) | `SRC-GOOGLE-ROBOTS-001` (*Unsupported rules* on Google since 2024) & `knowledge/02-audit-check-catalog.md:614` (`INDEX-007`: retired on Google, still read by other bots e.g. Bing) | Retired no-op on Google Search; active on Bing / archivers (`PLATFORM_SPECIFIC`) | `CONFIRMED` / `PLATFORM_SPECIFIC` | `VALID_LEGACY_CROSS_ENGINE` (Recognized in V1 Registry) | `ParsedTokens` | **`PASS`** *(Never `malformed`; accepted in V1 registry per `INDEX-007` catalog note)* |
+| **`noodp`**, **`noydir`** | Standalone (`noodp`, `noydir`) | `SRC-GOOGLE-ROBOTS-001` (*Unsupported rules*) | Obsolete/defunct directory rules (DMOZ & Yahoo Directory shut down); ignored by all search engines | `CONFIRMED` | `VALID_SYNTAX_UNSUPPORTED_DIRECTIVE` | `ParsedTokens` + `UnsupportedTokens` (`unsupported_directive:obsolete:<token>`) | **`WARNING`** *(Classified as `unsupported_directive`, **not** `malformed_syntax`)* |
+| **`nopagereadaloud`**, **`nositelinkssearchbox`** | Standalone | `SRC-GOOGLE-ROBOTS-001` (*Unsupported rules* in robots meta; page-level `<meta name="google">` or retired) | Unsupported in `robots` meta / retired by Google | `CONFIRMED` | `VALID_SYNTAX_UNSUPPORTED_DIRECTIVE` | `ParsedTokens` + `UnsupportedTokens` (`unsupported_directive:google_unsupported:<token>`) | **`WARNING`** *(Classified as `unsupported_directive`, **not** `malformed_syntax`)* |
+| **`nocache`**, **`nopreview`**, **`noav`** | Standalone | `SRC-GOOGLE-ROBOTS-001` (not in Google supported rules; `nocache` is Bing-only legacy being retired) | Unsupported by Google Search (`SRC-GOOGLE-ROBOTS-001` is sole `source_ref` of `AR-INDEX-003`) | `CONFIRMED` | `VALID_SYNTAX_UNSUPPORTED_DIRECTIVE` | `ParsedTokens` + `UnsupportedTokens` (`unsupported_directive:<token>`) | **`WARNING`** *(Classified as `unsupported_directive`, **not** `malformed_syntax`)* |
+| **Unrecognized / misspelled directive names** (`no-index`, `no_index`, `nofollows`, `dofollow`, `archive`, `snippet`, `max-snipet:50`, `max_snippet:50`, `unavailable-after:...`) | Standalone or `name:value` | `SRC-GOOGLE-ROBOTS-001` (*Unrecognized rules are ignored*) | Not supported by Google or V1 registry | `CONFIRMED` | `UNSUPPORTED_DIRECTIVE` | `ParsedTokens` + `UnsupportedTokens` (`unsupported_directive:<token>`) | **`WARNING`** |
+| **Syntactically malformed constructs** (`noindex; nofollow`, `noindex nofollow`, `noindex, , nofollow`, `max-snippet:abc`, `max-image-preview:huge`, `unavailable_after:bad`, `noindex:true`, `<meta name="robots">` without `content`, `<meta name="robots" content="googlebot: noindex">`) | Invalid delimiter, parameter, or HTML attribute syntax | `SRC-GOOGLE-ROBOTS-001` & WHATWG HTML § 4.2.5 | Proven syntax / parameter error | `CONFIRMED` | `PROVEN_MALFORMED` | `ParseErrors` (`parse_error:<code>:<detail>`) | **`WARNING`** |
+| **Ambiguous `X-Robots-Tag` constructs** (`custombot: noindex`, `foo: bar`, `googlebot: noindex, bingbot: nofollow`, legacy joined header boundary) | Ambiguous `<lhs>: <rhs>` or multi-agent header | `SRC-GOOGLE-ROBOTS-001` & RFC 9110 | Cannot be proven valid or malformed from static V1 registry | `CONFIRMED` | `UNKNOWN_OR_UNVERIFIABLE` | `ScopeUnknown = true` (where applicable), `robots_parse_errors = "ambiguous:<code>"` | **`UNKNOWN`** *(unless another directive proves `WARNING`)* |
 
 ---
 
-### 4.3 `DEC-V1.10-003` — Verdict Precedence & Evidence Completeness
+### 4.2 `DEC-V1.10-002` — `X-Robots-Tag` Parsing & User-Agent Prefix Disambiguation (`QA-03`, `OQ-2`, `OQ-3` Resolution)
 
-#### 4.3.1 Frozen Verdict Set for `AR-INDEX-003`
-Per [`knowledge/07-v1-atomic-rule-manifest.md`](file:///d:/Projects/audit%20technical/sitecrawl-docs/knowledge/07-v1-atomic-rule-manifest.md#L215-L229):
-- **`PASS`**: All directive tokens are recognized by the supported V1 directive registry (and valid).
-- **`WARNING`**: Malformed or unsupported token observed.
-- **`UNKNOWN`**: Raw directive unavailable (or incomplete/conflicting/ambiguous evidence).
-- **`NOT_APPLICABLE`**: No directive exists.
-- **`FAIL`**: **Not used.**
-- **`MANUAL_REVIEW`**: **Not used.**
+#### 4.2.1 Closing `OQ-3` — HTML `<meta name>` Scope (Do Not Expand Frozen Rule Scope)
+- **Retraction of `OQ-3` Expansion:** In `902b9c3a`, we asked whether `<meta name="robot" content="noindex">` (a typo in the HTML `<meta>` `name` attribute) should be captured and flagged as `WARNING` by `AR-INDEX-003`.
+- **Verified Fact:** In `knowledge/07-v1-atomic-rule-manifest.md` (lines 219–220), `AR-INDEX-003` has `preconditions: meta robots or X-Robots-Tag exists` and `required_inputs: url, robots_directive_tokens, robots_parse_errors`. A `<meta name="robot">` tag is not a `<meta name="robots">` tag; expanding `AR-INDEX-003` to audit arbitrary `<meta name>` attribute typos would silently expand the frozen rule's scope beyond directive token/syntax validation.
+- **Closed Contract Rule (`OQ-3`):** `AR-INDEX-003` evaluates **only** `<meta>` elements whose trimmed case-insensitive `name` is `"robots"` or a recognized crawler user-agent identifier (`isRecognizedCrawlerAgent(name)`: `googlebot`, `googlebot-news`, `googlebot-image`, `googlebot-video`, `adsbot-google`, `adsbot-google-mobile`, `mediapartners-google`, `apis-google`, `google-extended`, `bingbot`, `adidxbot`, `msnbot`, `oai-searchbot`, `oaisearchbot`, `gptbot`, `chatgpt-user`, `claudebot`, `anthropic-ai`, `perplexitybot`, `applebot`, `applebot-extended`, `slurp`, `duckduckbot`, `baiduspider`, `yandex`, `facebookexternalhit`, `meta-externalagent`, `twitterbot`, `linkedinbot`, `bytespider`, `ccbot`). All other `<meta name="...">` tags are out of scope.
+- **Agent Prefixes Inside `<meta content="...">`:** Per `SRC-GOOGLE-ROBOTS-001`, user-agent prefixes (`googlebot: noindex`) are valid **only** in `X-Robots-Tag` HTTP headers, never inside an HTML `<meta>` `content` attribute. Therefore, `<meta name="robots" content="googlebot: noindex">` is a **proven malformed directive (`WARNING` — `parse_error:meta_agent_prefix:googlebot: noindex`)**.
 
-#### 4.3.2 Resolution of Key Completeness & Precedence Questions
+#### 4.2.2 Six-Case Deterministic `X-Robots-Tag` Disambiguation Matrix (`QA-03` & `OQ-2` Resolution)
 
-1. **Can a proven malformed/unsupported directive justify `WARNING` even when the complete HTML directive set is unavailable?**
-   - **Proposed Decision: YES (`WARNING` > `UNKNOWN` for proven violations, provided `url_identity` and the deciding directive observation itself are non-conflicting).**
-   - *Rationale:*
-     - Suppose a page is rendered (`rendered == "true"`) or its HTML body was truncated at 4 MiB (`html_extraction_status == "truncated_size_limit"`), **and** its HTTP response headers contain `X-Robots-Tag: no-index` (or a `<meta name="robots" content="no-index">` tag was already extracted in `<head>` before the 4 MiB truncation boundary).
-     - No amount of additional HTML after byte 4,194,304 can "un-malform" an already-observed `no-index` token! Unlike `PASS` or `NOT_APPLICABLE` (which are universal claims requiring 100% complete directive inspection), `WARNING` is an **existential** claim (*"at least one malformed or unsupported token was observed"*).
-     - This is 100% consistent with `AR-INDEX-001` (where a proven `X-Robots-Tag: noindex` yields `effective_noindex = true` -> `FAIL` even on a rendered page), `AR-INDEX-002` (where a confirmed conflict in a known scope yields `FAIL` even if another bundle has `scope_unknown = true`), and the approved V1.9c QA fix for `AR-CANON-004` (where `>= 2` distinct targets in a capped sample yields `FAIL`).
+**Retraction & Correction of `foo: bar` (`QA-03`):**
+In `902b9c3a`, `X-Robots-Tag: foo: bar` was classified as `WARNING` on the assumption that `bar` is not a valid V1 directive. However, as `QA-03` rightly challenged: if `foo` is an unknown crawler or custom header agent and `bar` is a single ASCII token (`^[a-zA-Z][a-zA-Z0-9_-]*$`), static analysis without a complete universe of every crawler and custom bot extension cannot prove whether `foo: bar` is a bot-specific extension or a typo! Conversely, if `<lhs>` is a near-miss typo of a Google parameterized directive (`max-snipet: 50`, `max_snippet: 50`, `unavailable-after: 2026-12-31`), or if `<rhs>` contains proven delimiter/syntax errors (`foo: noindex; nofollow`), then it **is** demonstrably malformed/unsupported (`WARNING`).
 
-2. **When Must `AR-INDEX-003` Return `UNKNOWN` vs `NOT_APPLICABLE` When Zero Directives Are Observed?**
-   - **`MISSING != FALSE` / `ZERO OBSERVED != ZERO EXIST`:**
-     A URL with zero observed directives (`len(directives) == 0`) can return **`NOT_APPLICABLE`** **if and only if** all directive-bearing channels applicable to that response were completely and verifiably inspected:
-     - **Case A — HTML Response (`isHTML == true`):**
-       Requires **both**:
-       1. HTTP response headers were received (`http_status` in `200..299`, `redirect_initial_observed == "false"`, `fetch_error_type == ""`), **and**
-       2. Raw server HTML was completely extracted (`rendered != "true"`, `html_extraction_status == "complete"`), **and**
-       3. Zero `<meta>` robots directives (`robots_meta_total_count == "0"`) and zero `X-Robots-Tag` headers exist.
-       -> Returns **`NOT_APPLICABLE`**.
-       *(Conversely, if `html_extraction_status` is `"truncated_size_limit"`, `"read_error"`, or `"missing_legacy"`, or `rendered == "true"`, or `http_status` is `3xx`/`4xx`/`5xx`/missing, or `fetch_error_type != ""`, and zero directives were observed, `AR-INDEX-003` **must** return **`UNKNOWN`** because raw HTML `<meta>` directives were not completely or authoritatively inspected!)*
-       *(Wait: what about a `404` or `500` HTML error page? In [`sitecrawl/fetch.go:259`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/sitecrawl/fetch.go#L259), `if !html || !wantBody || res.StatusCode < 200 || res.StatusCode >= 300`, `sitecrawl` does **not** run `extractDocument` on non-2xx HTML responses (`html_extraction_status == "missing_legacy"`). Therefore, on a `4xx`/`5xx` HTML response without a proven malformed `X-Robots-Tag`, raw `<meta name="robots">` in the error page body was never parsed, so returning `UNKNOWN` is strictly truthful!)*
-     - **Case B — Non-HTML Response (e.g., `application/pdf`, `image/png`, `video/mp4` where `isHTML == false`):**
-       Non-HTML resources do not have HTML `<meta>` tags; their **only** robots directive channel is the HTTP `X-Robots-Tag` response header (`SRC-GOOGLE-ROBOTS-001`).
-       - If the non-HTML resource returned a terminal HTTP response (`http_status >= 200 && http_status < 300`, `redirect_initial_observed == "false"`, `fetch_error_type == ""`) and has **zero** `X-Robots-Tag` headers -> Returns **`NOT_APPLICABLE`**.
-       - If the non-HTML resource has a valid `X-Robots-Tag: noindex` -> Returns **`PASS`**.
-       - If the non-HTML resource has a malformed `X-Robots-Tag: no-index` -> Returns **`WARNING`**.
-       - If the non-HTML resource failed to fetch (`http_status <= 0` or `fetch_error_type != ""`) or is an unfollowed/initial `3xx` redirect row -> Returns **`UNKNOWN`**.
+The table below defines the exact deterministic classification for all six `QA-03` cases on discrete `X-Robots-Tag` header values (`RawXRobotsTags[i]`):
 
-3. **What if `robots_meta_sample_truncated == "true"` (More Than Cap `<meta>` Robots Declarations)?**
-   - If a page contains more than the sample cap (e.g., `> 10` `<meta>` robots declarations, `robots_meta_sample_truncated == "true"`):
-     - If any retained directive in the sample (or `X-Robots-Tag`) has a proven `WARNING`, return **`WARNING`**.
-     - If all retained directives in the sample are valid (`robots_parse_errors == "none"`), the unretained `<meta>` declarations (`11..N`) could contain a malformed token; therefore, return **`UNKNOWN`** (never a false `PASS`).
+| Case | `X-Robots-Tag` Input Pattern | Deterministic Parsing & Disambiguation Rule | Classification (`robots_parse_errors`) | Expected `AR-INDEX-003` Verdict |
+|---|---|---|---|---|
+| **Case 1: Recognized Agent Prefix + Valid Directives** | `X-Robots-Tag: googlebot: noindex, nofollow` (or `X-Robots-Tag: googlebot: noindex, max-snippet: 150`) | `<lhs>` (`googlebot`) is a recognized crawler identifier (`isRecognizedCrawlerAgent`), and `<rhs>` (`noindex, nofollow`) contains 1+ comma-separated tokens that are all valid V1 directives with no secondary `<agent>:` prefix. `target = "googlebot"`, `ScopeUnknown = false`. | `"none"` | **`PASS`** |
+| **Case 2: Multiple Separate `X-Robots-Tag` HTTP Header Fields** | Header 1: `X-Robots-Tag: googlebot: noindex`<br>Header 2: `X-Robots-Tag: nofollow` | Preserved as 2 discrete strings in `Page.RawXRobotsTags`. Header 1 parses as `target = "googlebot"`, `tokens = ["noindex"]`. Header 2 parses as `target = "*"`, `tokens = ["nofollow"]`. Both have `ScopeUnknown = false`. | Bundle 0: `"none"`<br>Bundle 1: `"none"` | **`PASS`** |
+| **Case 3: Multiple Agent-Prefixed Segments in a Single `X-Robots-Tag` Header** | `X-Robots-Tag: googlebot: noindex, bingbot: nofollow` (or legacy comma-joined `Page.XRobotsTag` where `RawXRobotsTags` is absent) | When a second `<token>:` prefix (that is not one of the 4 parameterized directives `max-snippet`, `max-image-preview`, `max-video-preview`, `unavailable_after`) appears after a comma within the same header string, HTTP header folding or multi-agent chaining makes scope boundaries ambiguous (`ScopeUnknown = true`). Unless one of the tokens is demonstrably malformed (e.g. `no-index` or `max-snippet:abc`), prefer **`UNKNOWN`** over speculative `WARNING` or `PASS`. | `"ambiguous:multiple_agent_prefixes"` | **`UNKNOWN`** *(or `WARNING` if any token has a proven syntax/parameter error)* |
+| **Case 4: Parameterized Directive Typos & Standalone Directives with Parameters** | `X-Robots-Tag: max-snipet: 50`<br>`X-Robots-Tag: max_snippet: 50`<br>`X-Robots-Tag: max-image: large`<br>`X-Robots-Tag: unavailable-after: 2026-12-31`<br>`X-Robots-Tag: noindex: true` | `<lhs>` is either:<br>(a) A standalone V1 directive (`all`, `none`, `index`, `noindex`, `follow`, `nofollow`, `noarchive`, `nosnippet`, `notranslate`, `noimageindex`, `indexifembedded`) given an unexpected colon parameter (`parse_error:unexpected_parameter`), **OR**<br>(b) A near-miss parameterized directive prefix matching `^(max[-_]|unavailable[-_]?|no[-_])` that is not a valid directive (`unsupported_directive:<raw>`).<br>These are **never** crawler user-agent names; they are demonstrably malformed/unsupported directives. | `"parse_error:unexpected_parameter:..."` or `"unsupported_directive:..."` | **`WARNING`** |
+| **Case 5: Unrecognized ASCII Prefix + Valid V1 Directives (`OQ-2` Closed)** | `X-Robots-Tag: custombot: noindex` (or `X-Robots-Tag: mycrawler: noindex, nofollow`) | `<lhs>` (`custombot`) is a valid RFC 9110 identifier (`^[a-zA-Z][a-zA-Z0-9_-]*$`) not in `isRecognizedCrawlerAgent` and not matching Case 4 typo patterns, and `<rhs>` consists of valid V1 directives. Because a hardcoded crawler list is not the universe of valid user-agents, `custombot` may be a legitimate custom bot, or it may be an unrecognized prefix. Static V1 rules cannot verify it safely (`ScopeUnknown = true`). | `"ambiguous:unverified_agent_prefix:custombot"` | **`UNKNOWN`** *(Never a speculative `WARNING`)* |
+| **Case 6: Unrecognized Prefix + Unrecognized Single Token (`X-Robots-Tag: foo: bar`)** | `X-Robots-Tag: foo: bar` | `<lhs>` (`foo`) is an unrecognized RFC 9110 token (not in `isRecognizedCrawlerAgent`, not a Case 4 `max*`/`unavailable*`/`no*` typo, and not a recognized crawler) and `<rhs>` (`bar`) is a single unrecognized ASCII token without proven delimiter errors (`;`, `\|`, spaces).<br>- **If `<lhs>` IS a recognized crawler** (e.g. `X-Robots-Tag: googlebot: bar` or `X-Robots-Tag: googlebot: no-index`): `<lhs>` is proven to be Googlebot, and `bar`/`no-index` is proven unsupported for Googlebot -> **`WARNING`** (`unsupported_directive:bar`).<br>- **If `<lhs>` is NOT a recognized crawler (`X-Robots-Tag: foo: bar`)**: Because static parsing cannot distinguish an unknown bot with a custom rule from an unknown `key: value` header token without guessing, prefer **`UNKNOWN`** (`ambiguous:unrecognized_colon_pair:foo: bar`) over a speculative `WARNING`!<br>- **Exception (Proven Syntax Error in `<lhs>` or `<rhs>`):** If `<lhs>` or `<rhs>` contains proven delimiter/syntax errors (e.g. `X-Robots-Tag: foo bar: baz`, `X-Robots-Tag: foo: noindex; nofollow`, `X-Robots-Tag: foo: max-snippet:abc`), that is a proven syntax error -> **`WARNING`**. | `"ambiguous:unrecognized_colon_pair:foo: bar"` *(when both `foo` and `bar` are bare unrecognized tokens)* | **`UNKNOWN`** |
 
 ---
 
-### 4.4 `DEC-V1.10-004` — Raw Meta & Header Preservation Contract (Option A vs. Option B)
+### 4.3 `DEC-V1.10-003` — Empty/Missing `<meta>` Content & Independent Evidence Completeness (`QA-02`, `QA-04`, `OQ-1` Resolution)
 
-#### 4.4.1 Explicit Comparison of Option A and Option B
+#### 4.3.1 Separate Analysis of Empty & Missing `<meta name="robots">` Cases (`QA-02` & `OQ-1` Resolution)
 
-| Criterion | Option A: Preserve Raw Declarations in `sitecrawl.Page` JSON + Adapter (Recommended) | Option B: Adapter-Only Using Existing `Page.MetaTags` / `Page.MetaRobots` / `Page.XRobotsTag` |
+**Retraction of Blanket `WARNING` on `content=""` and `content="   "` (`QA-02`):**
+In `902b9c3a`, `<meta name="robots" content="">`, `<meta name="robots" content="   ">`, and `<meta name="robots">` were all grouped together as `WARNING` (`empty_directive`). Upon reviewing **WHATWG HTML Living Standard § 4.2.5** and **Google Search Central (`SRC-GOOGLE-ROBOTS-001`)**, these four cases have distinct normative statuses and **must not** be conflated:
+
+| Case | HTML / Header Markup | Raw Acquisition State (`RawMetaDirective`) | Standards & Platform Analysis | Classification (`robots_parse_errors`) | Effect on `AR-INDEX-003` Verdict |
+|---|---|---|---|---|---|
+| **Case 2A: Missing `content` Attribute** | `<meta name="robots">` (or `<meta name="googlebot">`) | `HasContentAttr = false`, `ContentRaw = ""` | **WHATWG HTML § 4.2.5 Violation:** *"If either `name`, `http-equiv`, or `itemprop` is specified, then the `content` attribute must also be specified."* A `<meta name="robots">` tag without a `content` attribute is **proven malformed HTML markup**. | `"parse_error:missing_content_attribute"` | **`WARNING`** *(Emits a `directive:*` bundle with `robots_parse_errors = "parse_error:missing_content_attribute"`)* |
+| **Case 2B: Explicit Empty `content=""`** | `<meta name="robots" content="">` | `HasContentAttr = true`, `ContentRaw = ""` | **Valid HTML + Vacuous (0-Token) Declaration:** In WHATWG HTML § 4.2.5, `content=""` satisfies attribute presence. In `SRC-GOOGLE-ROBOTS-001`, `content` holds a comma-separated list of rules; an empty string `""` contains **zero rules** (equivalent to specifying no restriction, which defaults to `all`). There is **no** primary documentation stating `content=""` is malformed or an error. | *(Vacuous declaration: 0 tokens; no error)* | **Does NOT trigger `WARNING`.**<br>- If no other directive with tokens exists on the page (and extraction is complete): **`NOT_APPLICABLE`** (0 active directive tokens exist).<br>- If another valid directive exists on the page (e.g., `X-Robots-Tag: noindex`): **`PASS`**. |
+| **Case 2C: Whitespace-Only `content="   "`** | `<meta name="robots" content="   ">` | `HasContentAttr = true`, `ContentRaw = "   "` | **Valid HTML + Vacuous (0-Token) Declaration After Whitespace Trimming:** Per `SRC-GOOGLE-ROBOTS-001`, leading/trailing whitespace around directive values is ignored. Trimming `"   "` yields `""` (zero tokens, no delimiter punctuation). Just like `content=""`, it specifies zero rules and is **not** proven malformed. | *(Vacuous declaration: 0 tokens; no error)* | **Does NOT trigger `WARNING`.** Same behavior as Case 2B (`NOT_APPLICABLE` if sole declaration; `PASS` alongside valid directives). |
+| **Case 2D: Explicit Comma With Empty Token Slot (`OQ-1` Closed)** | `<meta name="robots" content=",">`<br>`<meta name="robots" content="noindex,">`<br>`<meta name="robots" content="noindex, , nofollow">`<br>`X-Robots-Tag: ,` | `HasContentAttr = true`, `ContentRaw` contains `,` with an empty trimmed segment on at least one side of `,` | **Proven Malformed Comma List Syntax:** Unlike `content=""` (zero tokens, zero delimiters), a comma `,` is a list separator between two directive tokens (`directive_item , "," , directive_item`). A bare comma `,`, trailing comma `noindex,`, leading comma `,noindex`, or double comma `noindex, , nofollow` has an explicit delimiter with a missing operand (`empty_token_segment`). | `"parse_error:empty_token_segment"` | **`WARNING`** |
+| **Case 2E: Empty `X-Robots-Tag:` HTTP Header** | `X-Robots-Tag:` or `X-Robots-Tag:    ` | `RawXRobotsTags = [""]` or `["   "]` | In HTTP (RFC 9110 § 5.5), an empty header field value `X-Robots-Tag:` carries zero tokens (vacuous header), whereas `X-Robots-Tag: googlebot:` has an agent prefix `googlebot:` with a missing directive list! | - `X-Robots-Tag:` -> vacuous (0 tokens)<br>- `X-Robots-Tag: googlebot:` -> `"parse_error:missing_directive_after_prefix:googlebot:"` | - `X-Robots-Tag:` -> **`NOT_APPLICABLE`** (if sole)<br>- `X-Robots-Tag: googlebot:` -> **`WARNING`** |
+
+**Preservation of Raw Declaration for Cases 2A, 2B, and 2C:**
+Even though Cases 2B (`content=""`) and 2C (`content="   "`) do not emit a false `WARNING`, `sitecrawl.Page.RawRobotsMeta` **still preserves every raw declaration** (`Name`, `ContentRaw`, `HasContentAttr`) and `HtmlObservation.MetaRobotsRaw` records its raw presence for full audit traceability!
+- For **Case 2A (`HasContentAttr == false`, `<meta name="robots">`)**: `processPageDirectives` emits a `RobotsDirectiveObservation` bundle (`directive:<run>:<url>:meta:<idx>`) with `RawValue: ""`, `ParsedTokens: []`, `ParseErrors: ["parse_error:missing_content_attribute"]`, and emits `robots_parse_errors = "parse_error:missing_content_attribute"` -> **`WARNING`**.
+- For **Cases 2B & 2C (`HasContentAttr == true`, `strings.TrimSpace(ContentRaw) == ""`)**: Because zero directive tokens and zero syntax errors exist in `content=""`, `processPageDirectives` does **not** emit a synthetic non-empty `RobotsDirectiveObservation` token bundle (keeping `AR-INDEX-001` and `AR-INDEX-002` 100% unchanged, where `len(directives) == 0` -> `NOT_APPLICABLE` in `AR-INDEX-002` and `AR-INDEX-003`!).
+
+#### 4.3.2 Three Independent Evidence Completeness Contracts (`QA-04` Resolution)
+
+Per `QA-04`, HTTP header acquisition, HTML meta extraction, and directive parsing/normalization are **independent evidence channels**. A failure or incompleteness in one channel must be tracked separately from the others (`MISSING != FALSE`).
+
+##### Channel 1: HTTP Header Acquisition Completeness (`http_header_status`)
+Tracks whether HTTP response headers (specifically `X-Robots-Tag`) were authoritatively acquired for the terminal resource of `SubjectURL`:
+
+| `http_header_status` Value | Exact Condition in Adapter (`adapter.go`) | Meaning |
 |---|---|---|
-| **Multiple same-name `<meta>` tags** (e.g., two `<meta name="robots">` or two `<meta name="googlebot">` tags) | **100% Preserved:** Every declaration is recorded in document order with its exact `name` and raw `content`. | **Broken / Lossy:** `Page.MetaTags[name]` overwrites earlier tags (`extract.go:481`). If both `robots` and `googlebot` exist and one is repeated, `adapter.go:2365` marks extra tokens `ScopeUnknown = true`. |
-| **Empty `content=""` or missing `content` attribute** (`<meta name="robots" content="">` or `<meta name="robots">`) | **100% Preserved:** Recorded as `RawMetaDirective{Name: "robots", ContentRaw: "", HasContentAttr: true/false}` and counted in `RobotsMetaTotalCount`. Evaluates to `WARNING` (`parse_error:empty_directive`). | **Broken:** `extract.go:439` and `adapter.go:2267` silently drop empty `content=""`, causing `<meta name="robots" content="">` to evaluate to a false `NOT_APPLICABLE`! |
-| **Raw values before normalization & source ordering** | **100% Preserved:** Untrimmed `ContentRaw` and exact 0-based declaration index are preserved. | **Broken:** `MetaTags` is an unordered Go `map[string]string` with pre-trimmed values. |
-| **Multiple `X-Robots-Tag` HTTP response headers** | **100% Preserved:** `Page.RawXRobotsTags []string` stores `res.Header.Values("X-Robots-Tag")` as discrete strings while keeping `Page.XRobotsTag` joined for legacy compatibility. | **Broken:** `fetch.go:244` joins headers with `", "`, causing `X-Robots-Tag: googlebot: noindex` + `X-Robots-Tag: nofollow` to lose header boundary provenance (`ScopeUnknown = true`). |
-| **SQLite Schema DDL Impact** | **Zero DDL Changes:** Stored inside the existing `sitecrawl_pages.data` JSON column (`json:",omitempty"`), identical to V1.9c `RawCanonicals` and `ExtractionStatus`. | **Zero DDL Changes.** |
-| **Backward Compatibility with Existing Rules (`AR-INDEX-001`, `AR-INDEX-002`, `AR-CANON-007`, `AR-DISC-005`)** | **100% Compatible:** `Page.MetaTags`, `Page.MetaRobots`, and `Page.XRobotsTag` remain populated identically for all existing callers; legacy SQLite rows without `RawRobotsMeta` fall back cleanly to `MetaTags`/`MetaRobots`/`XRobotsTag`. | **Partial:** Cannot fix false `ScopeUnknown` on multi-tag pages or multi-header `X-Robots-Tag` responses. |
+| **`"complete"`** | 1. `pr.status >= 200 && pr.status < 600` (a real HTTP response was received), **AND**<br>2. `pr.status < 300 \|\| pr.status >= 400` (`!isInitialRedirect` and `len(pr.page.Redirects) == 0` on this row — remember that in SiteCrawl, a redirecting URL `3xx` row records the initial 3xx hop and its body/terminal state belongs to the destination URL row), **AND**<br>3. `pr.errorType == ""` (or `pr.errorType == sitecrawl.ErrTooLarge`, where HTTP response headers were completely received before the body size gate triggered!), **AND**<br>4. `!xRobotsSampleTruncated` (`XRobotsTagTotalCount <= len(RawXRobotsTags)`). | All `X-Robots-Tag` HTTP response headers for this response were completely received and retained. |
+| **`"truncated_sample_cap"`** | `XRobotsTagTotalCount > len(RawXRobotsTags)` (`> 10` `X-Robots-Tag` headers on a single response). | Response headers were received, but only the first 10 `X-Robots-Tag` header values were retained in `RawXRobotsTags`. |
+| **`"redirect_intermediate"`** | `pr.status >= 300 && pr.status < 400` or `len(pr.page.Redirects) > 0` (`redirect_initial_observed == "true"`). | This URL row represents an initial redirect response (`page.go:61` skips document extraction on redirect rows). |
+| **`"unavailable"`** | `pr.status <= 0` or (`pr.errorType != ""` and `pr.errorType != sitecrawl.ErrTooLarge`), or uncrawled URL dictionary entry (`pr == nil`). | No usable terminal HTTP response headers were obtained (DNS error, timeout, connection refused, robots.txt blocked before fetch, or uncrawled URL). |
 
-#### 4.4.2 Recommendation: Option A (Lossless Raw Acquisition in `sitecrawl.Page` JSON)
+*(Note on Legacy SQLite Rows for Channel 1: On legacy rows created before V1.10b, if `pr.page.XRobotsTag == ""` and `pr.xRobots == ""`, zero `X-Robots-Tag` headers existed, so `http_header_status` is `"complete"` whenever `pr.status >= 200`, `!isInitialRedirect`, and `pr.errorType == ""`. If a legacy row has non-empty `XRobotsTag` without `RawXRobotsTags`, `http_header_status` is `"complete"` unless comma-joining after an agent prefix caused `ScopeUnknown = true`, which is caught by Channel 3!)*
 
-We strongly recommend **Option A**, following the exact architectural pattern proven in Milestone V1.9c (`RawCanonicals` / `CanonicalTotalCount` / `ExtractionStatus`):
+##### Channel 2: HTML Meta Extraction Completeness (`html_extraction_status` & `robots_meta_sample_truncated`)
+Applicable **only when the response is HTML (`isHTML == true`)**. Tracks whether all `<meta>` robots directives in the raw server HTML were completely extracted and retained:
 
-1. **New Optional JSON Fields on `sitecrawl.Page` ([`internal/sitecrawl/types.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/sitecrawl/types.go#L444-L455)):**
-   ```go
-   // RawMetaDirective preserves one raw <meta> robots/crawler directive declaration
-   // in document order before trimming or map deduplication.
-   type RawMetaDirective struct {
-       Name           string `json:"name"`                        // lowercased trimmed name attribute
-       NameRaw        string `json:"name_raw,omitempty"`          // original raw name attribute
-       ContentRaw     string `json:"content_raw"`                 // untouched raw content attribute value
-       HasContentAttr bool   `json:"has_content_attr"`            // true if content attribute was present on <meta>
-   }
-   ```
-   And on `Page`:
-   ```go
-   RobotsMetaTotalCount int                `json:"robots_meta_total_count,omitempty"`
-   RawRobotsMeta        []RawMetaDirective `json:"raw_robots_meta,omitempty"`
-   RawXRobotsTags       []string           `json:"raw_x_robots_tags,omitempty"`
-   ```
-   - **Sample Cap & Uncapped Total Counter:**
-     - `RobotsMetaTotalCount` is incremented (**uncapped**, `0..N`) for every `<meta>` tag whose `name` is in the recognized robots/crawler meta vocabulary (`isRobotsMetaName(name)`).
-     - `RawRobotsMeta` retains up to `maxRobotsMeta = 10` raw declarations in document order (`appendCapped`).
-     - `RawXRobotsTags` retains up to `maxXRobotsHeaders = 10` discrete `res.Header.Values("X-Robots-Tag")` strings (and `XRobotsTagTotalCount int` tracks the uncapped header count).
-   - **Preservation of Existing Fields:**
-     - `Page.MetaTags`, `Page.MetaRobots`, and `Page.XRobotsTag` continue to be populated identically so existing UI/crawler code and legacy tests are 100% unaffected.
+| HTML Channel State | Exact Condition in Adapter (`adapter.go`) | Meaning |
+|---|---|---|
+| **`html_extraction_status == "complete"` AND `robots_meta_sample_truncated == "false"`** | 1. `pr.status >= 200 && pr.status < 300`, `!isRendered`, `len(pr.page.Redirects) == 0`, `pr.errorType == ""`, `pr.page.ExtractionStatus == "complete"` (verified via V1.9c `limit + 1` `boundedProbeReader` + `z.Err() == io.EOF` + `drainErr == nil`).<br>2. `pr.page.RobotsMetaTotalCount <= len(pr.page.RawRobotsMeta)` (`<= 10` robots `<meta>` declarations).<br>3. Row has V1.10b raw meta provenance (`pr.page.RobotsMetaExtracted == true`). | Every `<meta>` robots declaration in the raw server HTML document was tokenized to clean EOF and retained in `RawRobotsMeta`. |
+| **`html_extraction_status == "truncated_size_limit"`** | `pr.errorType == sitecrawl.ErrTooLarge` or `pr.page.ExtractionStatus == "truncated_size_limit"`. | HTML body exceeded `min(cap, maxHTMLBytes)` (4 MiB), so `<meta>` tags beyond the limit (or the whole body if `Content-Length > cap`) were not extracted. *(Note: Channel 1 `http_header_status` is still `"complete"`!)* |
+| **`html_extraction_status == "read_error"`** | Mid-stream body read error, tokenizer error, or drain error (`pr.page.ExtractionStatus == "read_error"`). | HTML body stream failed mid-read. |
+| **`rendered == "true"`** (`html_extraction_status == "missing_legacy"`) | Headless browser rendering replaced raw server HTML (`pr.rendered == 1 \|\| pr.page.Rendered`). | Raw server HTML `<meta>` directives were suppressed (`GapRenderedRawSourceUnavailable`); only Channel 1 (`X-Robots-Tag`) is available. |
+| **`html_extraction_status == "missing_legacy"` (or `!pr.page.RobotsMetaExtracted`)** | Legacy SQLite row created before V1.10b, or non-2xx HTML response (`404`/`500` where `fetch.go:259` does not run `extractDocument`), or redirect row. | Complete raw `<meta>` extraction provenance (including `<meta name="robots">` without `content`) is unavailable. |
+| **`robots_meta_sample_truncated == "true"`** | `pr.page.RobotsMetaTotalCount > len(pr.page.RawRobotsMeta)` (`> 10` robots `<meta>` tags on page). | More than 10 robots `<meta>` tags exist; only the first 10 were retained in `RawRobotsMeta`. |
+
+##### Channel 3: Directive Parsing & Normalization Completeness (`robots_parse_errors` per `directive:*` Bundle)
+Tracks the per-declaration parsing and validation status for each retained `RobotsDirectiveObservation` bundle (`directive:<run>:<url>:meta:<idx>` and `directive:<run>:<url>:header:<idx>`):
+
+| `robots_parse_errors` Value on Bundle | Meaning | Bundle Status for `AR-INDEX-003` |
+|---|---|---|
+| **`"none"`** | All tokens and parameters in this directive declaration are valid V1 directives (`VALID_SUPPORTED` or `VALID_LEGACY_CROSS_ENGINE`), and scope/prefix syntax is unambiguous. | **Valid Bundle** |
+| **Comma-joined `parse_error:*` and/or `unsupported_directive:*` codes** | At least one token or syntax construct in this declaration is **demonstrably malformed** (`parse_error:*`) or **unsupported by Google/V1** (`unsupported_directive:*`). | **Proven Violation Bundle (`WARNING`)** |
+| **Comma-joined `ambiguous:*` code(s) only** (or `directive_scope_unknown == "true"` with no `parse_error:*` / `unsupported_directive:*`) | The declaration contains no proven syntax/token error, but its user-agent prefix or header boundary is ambiguous (`ambiguous:unverified_agent_prefix`, `ambiguous:unrecognized_colon_pair`, `ambiguous:multiple_agent_prefixes`, `ambiguous:legacy_unscoped_meta`). | **Ambiguous Bundle (`UNKNOWN`)** |
+| **Missing, empty (`""`), or conflicting `robots_parse_errors` observation on bundle** | Required normalized observation is absent (`MISSING != FALSE`) or contradictory within the same `directive:*` bundle. | **Incomplete/Conflicting Bundle (`UNKNOWN`)** |
+
+#### 4.3.3 How the Three Channels Interact Across Response Types (`QA-04`)
+
+| URL Response Archetype | Channel 1 (`http_header_status`) | Channel 2 (HTML `<meta>`) | Channel 3 (Retained Directive Bundles) | Resulting `AR-INDEX-003` Verdict |
+|---|---|---|---|---|
+| **1. Standard 200 HTML Page (Clean EOF)** | `"complete"` | `html_extraction_status == "complete"`, `robots_meta_sample_truncated == "false"` | - 0 bundles -> **`NOT_APPLICABLE`**<br>- 1+ bundles, all `"none"` -> **`PASS`**<br>- Any bundle has `parse_error:*` or `unsupported_directive:*` -> **`WARNING`**<br>- No `WARNING` bundle, 1+ bundle has `ambiguous:*` -> **`UNKNOWN`** | `NOT_APPLICABLE`, `PASS`, `WARNING`, or `UNKNOWN` |
+| **2. Truncated (`truncated_size_limit` / `read_error`) or Rendered (`rendered == "true"`) 200 HTML Page** | `"complete"` | Incomplete (`truncated_size_limit`, `read_error`, or `rendered == "true"`) | - If **any** retained `<meta>` or `X-Robots-Tag` bundle has proven `parse_error:*` or `unsupported_directive:*` -> **`WARNING`** (proven violation short-circuit)<br>- Otherwise (0 bundles, or only `"none"` / `ambiguous:*` bundles) -> **`UNKNOWN`** (uninspected HTML `<meta>` tags prevent proving `PASS` or `NOT_APPLICABLE`) | **`WARNING`** (if proven error in retained evidence) or **`UNKNOWN`** (never `PASS` or `NOT_APPLICABLE`) |
+| **3. Non-2xx HTML Response (`404`, `410`, `500`)** | `"complete"` | Not extracted (`fetch.go:259` skips HTML parsing on non-2xx; `html_extraction_status == "missing_legacy"`) | - If `X-Robots-Tag` header has a proven `parse_error:*` or `unsupported_directive:*` -> **`WARNING`**<br>- Otherwise -> **`UNKNOWN`** (because the HTML body was not parsed for `<meta name="robots">`) | **`WARNING`** (if header error proven) or **`UNKNOWN`** |
+| **4. Non-HTML 200 Resource (`application/pdf`, `image/png`, etc., where `isHTML == false`)** | `"complete"` | *Not applicable to non-HTML MIME types* (`SRC-GOOGLE-ROBOTS-001`: non-HTML files only support `X-Robots-Tag`) | - 0 `X-Robots-Tag` bundles -> **`NOT_APPLICABLE`**<br>- 1+ `X-Robots-Tag` bundles, all `"none"` -> **`PASS`**<br>- Any `X-Robots-Tag` bundle has `parse_error:*` or `unsupported_directive:*` -> **`WARNING`**<br>- Any `X-Robots-Tag` bundle has `ambiguous:*` (and no `WARNING`) -> **`UNKNOWN`** | `NOT_APPLICABLE`, `PASS`, `WARNING`, or `UNKNOWN` |
+| **5. Non-HTML Non-2xx Resource (e.g., `404 application/pdf`)** | `"complete"` | *Not applicable* | - If `X-Robots-Tag` has proven `parse_error:*` or `unsupported_directive:*` -> **`WARNING`**<br>- Otherwise -> **`UNKNOWN`** (non-2xx error response) | **`WARNING`** or **`UNKNOWN`** |
+| **6. Initial `3xx` Redirect Row (`redirect_initial_observed == "true"`)** | `"redirect_intermediate"` | Not extracted (`page.go:61`) | - If `X-Robots-Tag` on the 3xx hop itself has a proven `parse_error:*` or `unsupported_directive:*` -> **`WARNING`**<br>- Otherwise -> **`UNKNOWN`** (redirect hop row; terminal page is evaluated on its own destination URL subject) | **`WARNING`** or **`UNKNOWN`** |
+| **7. Failed Fetch (`status == 0`, `DNS_ERROR`, `TIMEOUT`) or Uncrawled URL** | `"unavailable"` | Unavailable | No bundles | **`UNKNOWN`** |
+| **8. Legacy SQLite Row (Pre-V1.10b, `!RobotsMetaExtracted`)** | `"complete"` (if 200) | `"missing_legacy"` | - If any retained `MetaTags` / `XRobotsTag` bundle has a proven `parse_error:*` or `unsupported_directive:*` -> **`WARNING`**<br>- Otherwise -> **`UNKNOWN`** | **`WARNING`** or **`UNKNOWN`** |
 
 ---
 
-## 5. Supported Token & Parameter Grammar Specification
+### 4.4 `DEC-V1.10-004` — Raw Evidence Preservation, Sample Caps & Portability (`QA-05` Resolution)
 
-### 5.1 Formal EBNF-Style Grammar for V1 Robots Directives
+#### 4.4.1 Uncapped Total Counters vs. Capped Raw Sample Slices (`QA-05`)
+To bound per-page JSON memory/storage in `sitecrawl_pages.data` while guaranteeing that capped samples **never** masquerade as complete evidence (`SAMPLE CAP != TOTAL COUNT`), V1.10b defines explicit uncapped counters alongside capped slices (`const maxRobotsMeta = 10`, `const maxXRobotsHeaders = 10`):
 
-```ebnf
-(* HTML <meta> content attribute grammar *)
-meta_directive_string = directive_list ;
-
-(* Single HTTP X-Robots-Tag header field-value grammar *)
-x_robots_header_value = [ agent_prefix , ":" ] , directive_list ;
-
-agent_prefix          = token ; (* RFC 9110 tchar token, validated per DEC-V1.10-002 *)
-
-(* Comma-separated list of 1 or more directives; commas inside unavailable_after dates are protected *)
-directive_list        = directive_item , { "," , directive_item } ;
-
-directive_item        = optional_ws , ( standalone_directive | parameterized_directive ) , optional_ws ;
-
-standalone_directive  = "all" | "none" | "index" | "noindex" | "follow" | "nofollow"
-                      | "noarchive" | "nosnippet" | "notranslate" | "noimageindex"
-                      | "indexifembedded" ; (* case-insensitive *)
-
-parameterized_directive = max_snippet_rule
-                        | max_image_preview_rule
-                        | max_video_preview_rule
-                        | unavailable_after_rule ;
-
-max_snippet_rule        = "max-snippet" , optional_ws , ":" , optional_ws , signed_int_ge_neg1 ;
-max_image_preview_rule  = "max-image-preview" , optional_ws , ":" , optional_ws , ( "none" | "standard" | "large" ) ;
-max_video_preview_rule  = "max-video-preview" , optional_ws , ":" , optional_ws , signed_int_ge_neg1 ;
-unavailable_after_rule  = "unavailable_after" , optional_ws , ":" , optional_ws , valid_date_time ;
-
-signed_int_ge_neg1      = "-1" | ( digit , { digit } ) ;
+```go
+// RawMetaDirective preserves one raw <meta> robots/crawler directive declaration
+// in document order before trimming or map deduplication.
+type RawMetaDirective struct {
+    Seq            int    `json:"seq"`               // 0-based declaration index in document order (0..9)
+    Name           string `json:"name"`              // lowercased trimmed name attribute (e.g. "robots", "googlebot")
+    NameRaw        string `json:"name_raw,omitempty"`// original raw name attribute string
+    ContentRaw     string `json:"content_raw"`       // untouched raw content attribute value
+    HasContentAttr bool   `json:"has_content_attr"`  // true iff the "content" attribute key existed on the <meta> token
+}
 ```
 
-### 5.2 Comma-Aware Tokenizer for `unavailable_after` Dates
+Fields added to `sitecrawl.Page` (`internal/sitecrawl/types.go`):
 
-Because RFC 850 / RFC 1123 dates contain a comma after the weekday name (e.g., `unavailable_after: Tue, 31 Dec 2026 23:59:59 GMT, noindex`), the directive splitter **must not** blindly run `strings.Split(raw, ",")`.
+| `sitecrawl.Page` JSON Field | Type & Cap | Exact Acquisition Rule (`extract.go` / `fetch.go` / `page.go`) | Adapter Mapping (`adapter.go`) |
+|---|---|---|---|
+| **`RobotsMetaExtracted`** (`json:"robots_meta_extracted,omitempty"`) | `bool` | Set to `true` on every non-rendered 2xx HTML page where `extractDocument` ran in V1.10b+ (`buildPage` when `d != nil && len(res.Hops) == 0 && !r.rendered`). Distinguishes a V1.10b page with `0` `<meta>` tags from a pre-V1.10b legacy SQLite row! | Used to verify V1.10b raw meta provenance. |
+| **`RobotsMetaTotalCount`** (`json:"robots_meta_total_count,omitempty"`) | `int` (**Uncapped**: `0..N`) | Incremented by `1` for every `<meta>` tag in the document whose `name` is `"robots"` or in `isRecognizedCrawlerAgent(name)` (including missing `content`, `content=""`, `content="   "`, and valid/invalid values). | Emitted as `robots_meta_total_count` on `SubjectURL`. |
+| **`RawRobotsMeta`** (`json:"raw_robots_meta,omitempty"`) | `[]RawMetaDirective` (**Capped at `10` samples**) | Appends `RawMetaDirective` in exact document encounter order while `len(d.RawRobotsMeta) < 10`. | Iterated in exact `Seq` (`0..len-1`) order to build `directive:<run>:<url>:meta:<seq>` bundles. |
+| **`XRobotsTagTotalCount`** (`json:"x_robots_tag_total_count,omitempty"`) | `int` (**Uncapped**: `0..N`) | Set to `len(res.Header.Values("X-Robots-Tag"))` in `fetch.go`. | Compared against `len(RawXRobotsTags)` to detect header sample truncation. |
+| **`RawXRobotsTags`** (`json:"raw_x_robots_tags,omitempty"`) | `[]string` (**Capped at `10` samples**) | Stores the first up to `10` discrete `res.Header.Values("X-Robots-Tag")` strings without joining them with commas. | Iterated in exact header order (`0..len-1`) to build `directive:<run>:<url>:header:<idx>` bundles. |
 
-**Deterministic Tokenization Algorithm (`splitDirectiveItems`):**
-1. Scan left-to-right across the directive list string.
-2. Split on `,` **except** when the current segment (trimmed, lowercased) begins with `"unavailable_after"` followed by `:` and the text after `:` matches a weekday prefix (`^(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$` case-insensitively) and has not yet consumed the date's post-weekday comma!
-3. Specifically, when a segment starts with `unavailable_after:` and the portion before the first `,` is a weekday name (`Mon`..`Sunday`), merge that comma and the following segment (`"Tue, 31 Dec 2026 23:59:59 GMT"`) into the single `unavailable_after` token before continuing comma-splitting for subsequent directives.
+#### 4.4.2 Explicit Sample-Truncation Indicators & Verdict Impact (`QA-05`)
+1. **HTML `<meta>` Sample Truncation (`RobotsMetaTotalCount > len(RawRobotsMeta)`, i.e. `> 10` declarations):**
+   - Adapter emits `robots_meta_sample_truncated = "true"` on `SubjectURL` (and `"false"` when `RobotsMetaExtracted == true` and `RobotsMetaTotalCount <= len(RawRobotsMeta)`).
+   - Adapter appends an `EvidenceGap` with `GapCode: GapRobotsMetaSampleCapped` (`"GAP_ROBOTS_META_SAMPLE_CAPPED"`).
+   - **Verdict Impact:**
+     - If any of the 10 retained `RawRobotsMeta` declarations (or `RawXRobotsTags`) contains a proven `parse_error:*` or `unsupported_directive:*`, `AR-INDEX-003` returns **`WARNING`** (Priority P3).
+     - Otherwise, because declarations `11..N` were not retained and cannot be verified free of malformed/unsupported tokens, `AR-INDEX-003` returns **`UNKNOWN`** (Priority P5).
+2. **HTTP `X-Robots-Tag` Sample Truncation (`XRobotsTagTotalCount > len(RawXRobotsTags)`, i.e. `> 10` headers):**
+   - Adapter emits `x_robots_sample_truncated = "true"` on `SubjectURL`, sets `http_header_status = "truncated_sample_cap"`, and appends `GapXRobotsSampleCapped` (`"GAP_X_ROBOTS_SAMPLE_CAPPED"`).
+   - **Verdict Impact:**
+     - If any retained directive bundle has a proven `WARNING`, `AR-INDEX-003` returns **`WARNING`**.
+     - Otherwise, `http_header_status == "truncated_sample_cap"` causes `AR-INDEX-003` to return **`UNKNOWN`**.
 
-### 5.3 Accepted Date/Time Formats for `unavailable_after`
+#### 4.4.3 Source Order & Stable Evidence Identity (`QA-05`)
+- **Meta Bundles:** Indexed in exact document order (`Seq = 0, 1, ...`):
+  `RobotsDirectiveObservationID = "directive:<audit_run_id>:<url_id>:meta:<seq>"`
+- **Header Bundles:** Indexed in exact HTTP response header order (`headerIdx = 0, 1, ...`):
+  `RobotsDirectiveObservationID = "directive:<audit_run_id>:<url_id>:header:<headerIdx>"`
+- Every `NormalizedObservation` emitted for a bundle carries `SourceEvidenceRefs: []string{string(d.RobotsDirectiveObservationID), pageSrcRef}`.
 
-Per `SRC-GOOGLE-ROBOTS-001` (which specifies RFC 822, RFC 850, and ISO 8601 date/time formats), a trimmed `[date/time]` value in `unavailable_after:[date/time]` is valid if and only if it parses cleanly under one of the following deterministic Go `time.Parse` layouts (and represents a valid calendar date):
+---
 
-1. **ISO 8601 / RFC 3339 (with timezone or date-only):**
-   - `time.RFC3339` (`"2006-01-02T15:04:05Z07:00"`)
-   - `"2006-01-02T15:04:05Z"`
-   - `"2006-01-02T15:04:05"` (ISO 8601 local/unspecified timezone)
-   - `"2006-01-02 15:04:05Z07:00"` / `"2006-01-02 15:04:05 UTC"` / `"2006-01-02 15:04:05 GMT"` / `"2006-01-02 15:04:05"`
-   - `"2006-01-02"` (ISO 8601 date-only, e.g., `unavailable_after: 2026-12-31`)
-2. **RFC 1123 / RFC 822 (with or without weekday):**
-   - `time.RFC1123` (`"Mon, 02 Jan 2006 15:04:05 MST"`)
-   - `time.RFC1123Z` (`"Mon, 02 Jan 2006 15:04:05 -0700"`)
-   - `time.RFC822` (`"02 Jan 06 15:04:05 MST"`)
-   - `time.RFC822Z` (`"02 Jan 06 15:04:05 -0700"`)
-   - `"02 Jan 2006 15:04:05 MST"` / `"2 Jan 2006 15:04:05 MST"` / `"02 Jan 2006 15:04:05 -0700"`
-   - `"02-Jan-2006 15:04:05 MST"` / `"2-Jan-2006 15:04:05 MST"` (Google Search Central example format: `25-Aug-2007 15:00:00 EST`)
-   - `"02-Jan-2006"` / `"02 Jan 2006"`
-3. **RFC 850:**
-   - `time.RFC850` (`"Monday, 02-Jan-06 15:04:05 MST"`)
-   - `"Monday, 02-Jan-2006 15:04:05 MST"` / `"Monday, 2-Jan-2006 15:04:05 MST"`
+## 5. Formal Token & Parameter Grammar Specification
 
-*(Note: Whether the parsed `unavailable_after` timestamp is in the past or future is **not** a syntax error in `AR-INDEX-003`; a syntactically valid past date is a timed noindex, not a malformed token).*
+### 5.1 EBNF Grammar
+
+```ebnf
+(* HTML <meta> content attribute value *)
+meta_content_value      = optional_ws                           (* vacuous: 0 tokens -> no bundle *)
+                        | directive_list ;
+
+(* Discrete HTTP X-Robots-Tag header field-value *)
+x_robots_header_value   = optional_ws                           (* vacuous: 0 tokens -> no bundle *)
+                        | [ agent_prefix , ":" ] , directive_list ;
+
+agent_prefix            = rfc9110_token ;                       (* validated per Section 4.2.2 *)
+
+directive_list          = directive_item , { "," , directive_item } ;
+
+directive_item          = optional_ws , ( standalone_token | parameterized_token ) , optional_ws ;
+
+standalone_token        = "all" | "none" | "index" | "noindex" | "follow" | "nofollow"
+                        | "nosnippet" | "notranslate" | "noimageindex" | "indexifembedded"
+                        | "noarchive" ;                         (* case-insensitive *)
+
+parameterized_token     = max_snippet_token
+                        | max_image_preview_token
+                        | max_video_preview_token
+                        | unavailable_after_token ;
+
+max_snippet_token       = "max-snippet" , optional_ws , ":" , optional_ws , int_ge_neg1 ;
+max_image_preview_token = "max-image-preview" , optional_ws , ":" , optional_ws , ( "none" | "standard" | "large" ) ;
+max_video_preview_token = "max-video-preview" , optional_ws , ":" , optional_ws , int_ge_neg1 ;
+unavailable_after_token = "unavailable_after" , optional_ws , ":" , optional_ws , valid_date_time ;
+
+int_ge_neg1             = "-1" | ( digit , { digit } ) ;
+```
+
+### 5.2 Comma-Aware Directive Splitter (`splitDirectiveItems`)
+
+To prevent RFC 1123 (`Mon, 02 Jan 2006 15:04:05 MST`) and RFC 850 (`Monday, 02-Jan-06 15:04:05 MST`) dates inside `unavailable_after` from being split across the post-weekday comma:
+1. Split the directive list on `,` into raw segments `seg[0..k-1]`.
+2. Iterate `i = 0 .. k-1`:
+   - If `seg[i]` (trimmed, lowercased) matches `^unavailable_after\s*:\s*(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$` **and** `i + 1 < k`, merge `seg[i] + "," + seg[i+1]` into a single item and advance `i++`.
+3. If any resulting item has `strings.TrimSpace(item) == ""` (when the original raw directive string was non-empty after trimming), record `parse_error:empty_token_segment`.
+
+### 5.3 Accepted Date/Time Layouts for `unavailable_after`
+
+A trimmed `[date/time]` string after `unavailable_after:` is valid if and only if it parses cleanly via `time.Parse` under one of these layouts:
+- **ISO 8601 / RFC 3339:** `time.RFC3339`, `"2006-01-02T15:04:05Z"`, `"2006-01-02T15:04:05"`, `"2006-01-02 15:04:05Z07:00"`, `"2006-01-02 15:04:05 MST"`, `"2006-01-02 15:04:05"`, `"2006-01-02"`.
+- **RFC 1123 / RFC 822 / Google Search Central Examples:** `time.RFC1123`, `time.RFC1123Z`, `time.RFC822`, `time.RFC822Z`, `"02 Jan 2006 15:04:05 MST"`, `"2 Jan 2006 15:04:05 MST"`, `"02 Jan 2006 15:04:05 -0700"`, `"2 Jan 2006 15:04:05 -0700"`, `"02-Jan-2006 15:04:05 MST"`, `"2-Jan-2006 15:04:05 MST"`, `"02-Jan-2006"`, `"02 Jan 2006"`.
+- **RFC 850:** `time.RFC850`, `"Monday, 02-Jan-2006 15:04:05 MST"`, `"Monday, 2-Jan-2006 15:04:05 MST"`.
 
 ---
 
 ## 6. Evidence Acquisition & Normalization Contract
 
-### 6.1 Per-Directive Bundle Observations (`directive:*`)
+### 6.1 Per-Directive Bundle Observations (`directive:*` on `SubjectURL`)
 
-For each observed `<meta>` robots/crawler declaration and each `X-Robots-Tag` header segment, [`processPageDirectives`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/adapter/adapter.go#L2227-L2601) constructs an `audit.RobotsDirectiveObservation` with a stable ID (`directive:<audit_run_id>:<url_id>:meta:<idx>` or `directive:<audit_run_id>:<url_id>:header:<idx>`) and emits the following `NormalizedObservation` fields on `SubjectURL` with `SourceEvidenceRefs: []string{dirID, pageSrcRef}`:
+For every non-vacuous `<meta>` robots declaration (and every `<meta name="robots">` missing `content`) and every non-vacuous `X-Robots-Tag` header, `processPageDirectives` emits a `directive:*` bundle with `SourceEvidenceRefs: []string{dirID, pageSrcRef}`:
 
-| Normalized Observation Field | Value Format | Existing or New | Purpose & Consumers |
+| Field | Value Format |Derivation | Description |
 |---|---|---|---|
-| `directive_source` | `"META"` or `"HTTP_HEADER"` | Existing (V1.3b2) | Identifies whether directive came from HTML `<meta>` or HTTP `X-Robots-Tag` (`AR-INDEX-002`, `AR-INDEX-003`). |
-| `directive_target` | `"*"` (generic), `"<agent>"` (e.g. `"googlebot"`), or `""` (when `scope_unknown == true`) | Existing (V1.3b2) | Identifies target crawler scope (`AR-INDEX-001`, `AR-INDEX-002`, `AR-INDEX-003`). |
-| `directive_raw` | Exact raw string of the `<meta content>` or `X-Robots-Tag` header | Existing (V1.3b2) | Preserves original raw directive string (`AR-INDEX-002`, `AR-INDEX-003`). |
-| `directive_tokens` | Comma-joined normalized tokens (`"noindex, nofollow"`) | Existing (V1.3b2) | Consumed by `AR-INDEX-002` and `AR-INDEX-001`. |
-| `directive_scope_unknown` | `"true"` (emitted only when `ScopeUnknown == true`) | Existing (V1.3b2) | Consumed by `AR-INDEX-002`. |
-| `robots_directive_tokens` | Comma-joined normalized tokens (`"noindex, nofollow"`), or `""` when raw directive is empty | Existing (V1.3b2) | Required input `robots_directive_tokens` for `AR-INDEX-003`. |
-| **`robots_parse_errors`** | `"none"` when all tokens and syntax in this directive bundle are valid V1 directives; otherwise comma-joined structured error codes (e.g., `"unsupported_token:no-index"`, `"invalid_parameter_value:max-snippet:abc"`, `"malformed_delimiter:noindex; nofollow"`, `"empty_directive"`, `"ambiguous:unverified_agent_prefix:custombot"`) | **New in V1.10c** | Required input `robots_parse_errors` for `AR-INDEX-003`. Explicit `"none"` prevents `MISSING != FALSE` violations! |
-| **`directive_unsupported_tokens`** | Comma-joined list of offending raw tokens/segments (emitted when `len(d.UnsupportedTokens) > 0`) | **New in V1.10c** | Populates `unsupported_tokens` evidence field for `AR-INDEX-003` `WARNING` results. |
+| `directive_source` | `"META"` or `"HTTP_HEADER"` | `DIRECT` | Source channel of the declaration. |
+| `directive_target` | `"*"` (generic), `"<agent>"` (recognized crawler), or `""` (when `ScopeUnknown == true`) | `DIRECT` | Target user-agent scope. |
+| `directive_raw` | Raw string (`ContentRaw` or header string) | `DIRECT` | Exact raw declaration string before normalization. |
+| `directive_tokens` | Comma-joined normalized tokens (`"noindex, nofollow"`) | `NORMALIZED` | Consumed by `AR-INDEX-002` and `AR-INDEX-001`. |
+| `directive_scope_unknown` | `"true"` (emitted when `ScopeUnknown == true`) | `DIRECT` | Consumed by `AR-INDEX-002` and `AR-INDEX-003`. |
+| `robots_directive_tokens` | Comma-joined normalized tokens (`"noindex, nofollow"`, or `""` when no valid tokens parsed) | `NORMALIZED` | Required input for `AR-INDEX-003`. |
+| **`robots_parse_errors`** | `"none"` when valid; otherwise comma-joined structured codes (`"parse_error:<type>:<detail>"`, `"unsupported_directive:<token>"`, or `"ambiguous:<type>:<detail>"`) | `NORMALIZED` | Required input for `AR-INDEX-003`. Always explicitly emitted on every `directive:*` bundle (`MISSING != FALSE`). |
+| **`directive_unsupported_tokens`** | Comma-joined unsupported token strings (emitted when `len(d.UnsupportedTokens) > 0`) | `NORMALIZED` | Distinguishes `unsupported_directive` tokens from syntax `parse_error`s. |
 
 ### 6.2 URL-Level Completeness Observations on `SubjectURL`
 
-| Normalized Observation Field | Value Format | Purpose for `AR-INDEX-003` |
+| Field | Value Format | Description |
 |---|---|---|
-| `url_identity` | Raw page URL | Required input `url` (`Role: CONTEXT`). |
-| `http_status` | Integer string (`"200"`, `"404"`, etc.) | Verifies terminal HTTP response availability. |
-| `content_type` | MIME type (`"text/html"`, `"application/pdf"`) | Distinguishes HTML pages (which require both `<meta>` and `X-Robots-Tag` completeness) from non-HTML resources (which only use `X-Robots-Tag`). |
-| `redirect_initial_observed` | `"true"` or `"false"` | Identifies initial `3xx` redirect rows where terminal body was not extracted on this row. |
-| `fetch_error_type` | Error slug (when fetch failed) | Identifies failed fetches (`DNS_ERROR`, `TIMEOUT`, etc.). |
-| `rendered` | `"true"` (emitted when rendered) | Identifies rendered pages where raw `<meta>` tags were suppressed. |
-| `html_extraction_status` | `"complete"`, `"truncated_size_limit"`, `"read_error"`, `"missing_legacy"` | Proven HTML extraction completeness (from V1.9c). |
-| **`robots_meta_sample_truncated`** | `"true"` or `"false"` (emitted on HTML pages with raw provenance when `RobotsMetaTotalCount > 0`) | Tracks whether `RobotsMetaTotalCount > len(RawRobotsMeta)` (`> 10` meta robots declarations). |
+| `url_identity` | Raw URL string | Subject URL identity (`CONTEXT`). |
+| `http_status` | `"200"`, `"404"`, etc. | Initial HTTP response status. |
+| `content_type` | `"text/html"`, `"application/pdf"`, etc. | Normalized MIME type. |
+| `http_header_status` | `"complete"`, `"truncated_sample_cap"`, `"redirect_intermediate"`, `"unavailable"` | **New in V1.10c (`QA-04`):** Explicit Channel 1 (`X-Robots-Tag`) acquisition completeness. |
+| `html_extraction_status` | `"complete"`, `"truncated_size_limit"`, `"read_error"`, `"missing_legacy"` | Channel 2 HTML body extraction completeness (emitted on HTML pages). |
+| `robots_meta_sample_truncated` | `"true"` or `"false"` | **New in V1.10c (`QA-05`):** Emitted on V1.10b+ HTML pages (`RobotsMetaExtracted == true`). `"true"` iff `RobotsMetaTotalCount > len(RawRobotsMeta)`. |
+| `x_robots_sample_truncated` | `"true"` or `"false"` | **New in V1.10c (`QA-05`):** Emitted when `http_header_status` is `"complete"` or `"truncated_sample_cap"`. `"true"` iff `XRobotsTagTotalCount > len(RawXRobotsTags)`. |
+| `rendered` | `"true"` (when rendered) | Indicates headless browser DOM replacement of raw server HTML. |
 
 ---
 
-## 7. Verdict Precedence Decision Table (`AR-INDEX-003`)
+## 7. Updated Verdict Precedence Decision Table (`AR-INDEX-003`)
 
-`evaluateINDEX003` evaluates each `SubjectURL` in deterministic order using the following strict precedence table:
+`evaluateINDEX003` evaluates each `SubjectURL` in deterministic order:
 
 | Priority | Condition on `SubjectURL` | Verdict | `ObservedSummary` Template | Required `EvidenceRefs` Roles |
 |---|---|---|---|---|
-| **P1** | `url_identity` is missing, empty, or has conflicting observations | **`UNKNOWN`** | `"Required URL identity evidence is unavailable."` (or conflicting) | `url` (`CONTEXT`, if any) |
-| **P2** | Any directive bundle observation (`directive_source`, `directive_target`, `directive_raw`, `robots_directive_tokens`, `robots_parse_errors`) is unreferenced (missing `directive:*` ref), has conflicting values within the same bundle, or is missing `robots_parse_errors` (`MISSING != FALSE`), OR URL-level control fields (`http_status`, `content_type`, `html_extraction_status`, `rendered`, `redirect_initial_observed`, `robots_meta_sample_truncated`) have conflicting/malformed values | **`UNKNOWN`** | `"Robots directive evidence is incomplete, malformed, or conflicting."` | `url` (`CONTEXT`) + conflicting/incomplete directive observations (`PRIMARY`) |
-| **P3** | At least one valid directive bundle has a proven syntax or unsupported-token error in `robots_parse_errors` (`robots_parse_errors != "none"` and not solely `"ambiguous:*"`) | **`WARNING`** | `"Malformed or unsupported robots directive observed: <details>."` | `url` (`CONTEXT`) + all observations of each offending `directive:*` bundle (`PRIMARY`: `directive_raw`, `robots_directive_tokens`, `robots_parse_errors`, `directive_unsupported_tokens`, `directive_source`, `directive_target`) |
-| **P4** | Any directive bundle has an ambiguous/unverifiable error code (`strings.HasPrefix(err, "ambiguous:")` or `directive_scope_unknown == "true"` without proven `WARNING`) | **`UNKNOWN`** | `"Robots directive exists but scope or prefix syntax cannot be reliably verified."` | `url` (`CONTEXT`) + ambiguous `directive:*` bundle observations (`PRIMARY`) |
-| **P5** | Directive source acquisition is incomplete or unverifiable:<br>- `fetch_error_type != ""` or `http_status` missing or `< 200` or `>= 300` or `redirect_initial_observed == "true"`<br>- OR `content_type` is missing/empty<br>- OR on an HTML response (`isHTML`): `rendered == "true"` or `html_extraction_status != "complete"` or `robots_meta_sample_truncated == "true"` | **`UNKNOWN`** | `"Raw robots directive source is unavailable or incomplete (<reason>)."` | `url` (`CONTEXT`) + deciding completeness/status observations (`PRIMARY`: `html_extraction_status`, `rendered`, `http_status`, `fetch_error_type`, `robots_meta_sample_truncated`, plus any retained directive bundles as `SUPPORTING`) |
-| **P6** | Source is complete (Priority P5 passed) and **zero** directive bundles exist (`len(bundles) == 0`) | **`NOT_APPLICABLE`** | `"No robots directive exists."` | `url` (`CONTEXT`) + completeness context (`html_extraction_status` / `http_status` / `content_type` as `CONTEXT`) |
-| **P7** | Source is complete (Priority P5 passed), `len(bundles) >= 1`, and **every** bundle has `robots_parse_errors == "none"` | **`PASS`** | `"All observed robots directive tokens are recognized and valid."` | `url` (`CONTEXT`) + all evaluated `directive:*` bundle observations (`PRIMARY`: `directive_raw`, `robots_directive_tokens`, `robots_parse_errors`, `directive_source`, `directive_target`) |
+| **P1: Unusable Subject Identity** | `url_identity` is missing, empty, or has conflicting observations | **`UNKNOWN`** | `"Required URL identity evidence is unavailable."` (or conflicting) | `url` (`CONTEXT`, if any) |
+| **P2: Malformed / Conflicting / Incomplete Bundle Observations (`MISSING != FALSE`)** | - Any observation in `directive_source`, `directive_target`, `directive_raw`, `robots_directive_tokens`, `robots_parse_errors`, `directive_unsupported_tokens`, `directive_scope_unknown` lacks a `"directive:*"` ref in `SourceEvidenceRefs`, **OR**<br>- Any `directive:*` bundle is missing `directive_source`, `directive_raw`, `robots_directive_tokens`, or `robots_parse_errors` (`MISSING != FALSE`), or has conflicting values for a single-valued bundle field, **OR**<br>- Any URL-level completeness field (`http_status`, `content_type`, `http_header_status`, `html_extraction_status`, `rendered`, `robots_meta_sample_truncated`, `x_robots_sample_truncated`) has conflicting or malformed values | **`UNKNOWN`** | `"Robots directive evidence is incomplete, malformed, or conflicting."` | `url` (`CONTEXT`) + offending/incomplete observations (`PRIMARY`) |
+| **P3: Proven Malformed Syntax or Unsupported Directive (`WARNING` Short-Circuit)** | At least one valid `directive:*` bundle has `robots_parse_errors` containing one or more `parse_error:*` or `unsupported_directive:*` codes | **`WARNING`** | - If `parse_error:*` present: `"Malformed robots directive observed: <details>."`<br>- If only `unsupported_directive:*` present: `"Unsupported robots directive observed: <details>."` | `url` (`CONTEXT`) + all observations of each offending `directive:*` bundle (`PRIMARY`: `directive_raw`, `robots_directive_tokens`, `robots_parse_errors`, `directive_unsupported_tokens`, `directive_source`, `directive_target`) |
+| **P4: Ambiguous Directive Scope or Prefix (`UNKNOWN`)** | No bundle triggered P3 (`WARNING`), and at least one `directive:*` bundle has `robots_parse_errors` containing `ambiguous:*` or `directive_scope_unknown == "true"` | **`UNKNOWN`** | `"Robots directive exists but user-agent prefix or scope syntax cannot be reliably verified."` | `url` (`CONTEXT`) + ambiguous `directive:*` bundle observations (`PRIMARY`) |
+| **P5: Incomplete Acquisition Across Applicable Channels (`UNKNOWN`)** | No bundle triggered P3 or P4, and acquisition across applicable channels is incomplete:<br>1. **Channel 1 (`X-Robots-Tag`):** `http_header_status != "complete"` or `x_robots_sample_truncated == "true"` or `http_status` not in `200..299` or `content_type` missing/empty.<br>2. **Channel 2 (HTML `<meta>`, required when `isHTML == true`):** `rendered == "true"` or `html_extraction_status != "complete"` or `robots_meta_sample_truncated != "false"` (note: requiring explicit `robots_meta_sample_truncated == "false"` ensures legacy pre-V1.10b HTML rows without `RobotsMetaExtracted` return `UNKNOWN`!). | **`UNKNOWN`** | `"Raw robots directive source is unavailable or incomplete (<channel reason>)."` | `url` (`CONTEXT`) + deciding channel completeness observations (`PRIMARY`: `http_header_status`, `html_extraction_status`, `rendered`, `http_status`, `robots_meta_sample_truncated`, `x_robots_sample_truncated`) + any retained valid bundles (`SUPPORTING`) |
+| **P6: Zero Directives on Complete Channels (`NOT_APPLICABLE`)** | All applicable channels are complete (Priority P5 passed) and `len(bundles) == 0` | **`NOT_APPLICABLE`** | `"No robots directive exists."` | `url` (`CONTEXT`) + channel completeness observations (`CONTEXT`: `http_header_status`, plus `html_extraction_status` and `robots_meta_sample_truncated` when `isHTML`) |
+| **P7: All Directives Valid on Complete Channels (`PASS`)** | All applicable channels are complete (Priority P5 passed), `len(bundles) >= 1`, and every bundle has `robots_parse_errors == "none"` | **`PASS`** | `"All observed robots directive tokens are recognized and valid."` | `url` (`CONTEXT`) + all evaluated `directive:*` bundle observations (`PRIMARY`: `directive_raw`, `robots_directive_tokens`, `robots_parse_errors`, `directive_source`, `directive_target`) + channel completeness observations (`CONTEXT`) |
 
 ---
 
-## 8. Missing & Conflicting Evidence Handling (`MISSING != FALSE`)
+## 8. Missing & Conflicting Evidence Handling
 
-1. **Missing `robots_parse_errors` on a Directive Bundle:**
-   - If a snapshot (e.g., a synthetic test fixture or pre-V1.10c snapshot) contains `directive_raw` / `robots_directive_tokens` for a bundle `directive:X` but **lacks** a `robots_parse_errors` observation for `directive:X`, `evaluateINDEX003` **must not** assume `robots_parse_errors == "none"`. By Priority P2 (`MISSING != FALSE`), it must return **`UNKNOWN`**.
-2. **Empty `robots_directive_tokens` vs. Missing Observation:**
-   - When a `<meta name="robots" content="">` tag has an empty `content` attribute, the adapter emits `directive_raw = ""`, `robots_directive_tokens = ""`, and `robots_parse_errors = "empty_directive"`. Because `robots_parse_errors` is explicitly `"empty_directive"`, Priority P3 deterministically returns **`WARNING`**.
-3. **Unreferenced Directive Observations:**
-   - Identical to [`evaluateINDEX002`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/engine/index002.go#L40-L52), every per-directive observation is correlated strictly via its explicit `"directive:*"` reference in `SourceEvidenceRefs`. Any directive observation lacking a `"directive:*"` reference is treated as unreferenced/unreliable evidence (`UNKNOWN` unless another valid bundle already proves `WARNING`).
-4. **Multiple Conflicting Observations for the Same Field:**
-   - If a single bundle `directive:X` has two `robots_parse_errors` observations with different values (e.g., `"none"` and `"unsupported_token:foo"`), or if `SubjectURL` has conflicting `html_extraction_status` observations (`"complete"` and `"read_error"`), Priority P2 returns **`UNKNOWN`**.
+1. **Strict Enforcement of `MISSING != FALSE`:**
+   - **Bundle level:** If a `directive:*` bundle is present in the snapshot without an explicit `robots_parse_errors` observation, Priority P2 returns **`UNKNOWN`** (never assuming `"none"`).
+   - **Channel 1 level:** If `http_header_status` is missing on `SubjectURL` (and no `WARNING` is proven in P3), Priority P5 returns **`UNKNOWN`** (never assuming HTTP headers were completely inspected).
+   - **Channel 2 level:** On an HTML response (`isHTML == true`), if `html_extraction_status` is missing or `!= "complete"`, or if `robots_meta_sample_truncated` is missing or `!= "false"` (and no `WARNING` is proven in P3), Priority P5 returns **`UNKNOWN`**.
+2. **Conflicting Observations:**
+   - Multiple observations with different values for any single-valued URL field (`url_identity`, `http_status`, `content_type`, `http_header_status`, `html_extraction_status`, `rendered`, `robots_meta_sample_truncated`, `x_robots_sample_truncated`) or single-valued bundle field (`directive_source`, `directive_target`, `directive_raw`, `robots_directive_tokens`, `robots_parse_errors`) immediately return **`UNKNOWN`** under Priority P1/P2.
 
 ---
 
-## 9. Versioning, Legacy Compatibility & Regression Assessment
+## 9. Legacy Compatibility, Versioning & Regression Analysis
 
-### 9.1 `NormalizationVersion` Policy
-- **In V1.10a (this milestone):** `NormalizationVersion` remains **`"v1.10.0"`** (no code changes).
-- **In V1.10b (SiteCrawl acquisition):** `NormalizationVersion` remains **`"v1.10.0"`** if V1.10b only adds raw fields to `sitecrawl.Page` without changing adapter output.
-- **In V1.10c (Adapter normalization):** Because V1.10c adds new normalized observation fields (`robots_parse_errors`, `directive_unsupported_tokens`, `robots_meta_sample_truncated`) and extends `processPageDirectives` to non-HTML `X-Robots-Tag` responses and comma-containing `unavailable_after` dates, `NormalizationVersion` **must be bumped from `"v1.10.0"` to `"v1.11.0"`** in V1.10c.
-
-### 9.2 Legacy SQLite Data Fallback Behavior
-When `adapter.Build` reads a legacy `sitecrawl_pages` row created before V1.10b (where `pr.page.RawRobotsMeta == nil`, `pr.page.RobotsMetaTotalCount == 0`, and `pr.page.RawXRobotsTags == nil`):
-1. **Header Fallback:** If `len(pr.page.RawXRobotsTags) == 0` and `pr.page.XRobotsTag != ""` (or `pr.xRobots != ""`), fall back to splitting the single joined `XRobotsTag` string using the existing `prevHadPrefix` state machine in `parseXRobotsSegment`.
-2. **Meta Fallback:** If `len(pr.page.RawRobotsMeta) == 0` and `pr.page.ExtractionStatus == ""`:
-   - Fall back to `pr.page.MetaTags` and `pr.page.MetaRobots` / `pr.metaRobots` exactly as V1.10.0 does today.
-   - Note that for legacy rows (`pr.page.ExtractionStatus == ""`), `html_extraction_status` is `"missing_legacy"`. Therefore, in `AR-INDEX-003`:
-     - If a legacy row has a **proven** malformed/unsupported token in `MetaTags` or `X-Robots-Tag` (e.g., `noindex; nofollow`), `AR-INDEX-003` returns **`WARNING`** (Priority P3).
-     - If a legacy HTML row has only valid tokens or no tokens, `html_extraction_status == "missing_legacy"` causes `AR-INDEX-003` to return **`UNKNOWN`** (Priority P5) because raw extraction completeness and empty-meta absence cannot be verified on legacy rows.
-
-### 9.3 Regression Risk Assessment for Existing Rules
-
-| Existing Rule | Consumed Observations | Impact of Proposed V1.10b/c Changes & Mitigation | Regression Risk |
-|---|---|---|---|
-| **`AR-INDEX-001`** *(Effective noindex conflicts with explicit indexability intent)* | `url_identity`, `effective_noindex`, `expected_indexable` policy, plus supporting `directive_*` refs when `effective_noindex == "true"` ([`index001.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/engine/index001.go)) | - For HTML pages, `effective_noindex` calculation in `processPageDirectives` (`adapter.go:2685-2720`) is preserved.<br>- **Critical Guardrail for Non-HTML Responses:** When V1.10c enables `X-Robots-Tag` processing for non-HTML responses (e.g. PDFs), should `effective_noindex` also be emitted on non-HTML responses? Wait: on a PDF (`content_type = "application/pdf"`), if `X-Robots-Tag: noindex` is present, emitting `effective_noindex = "true"` (and `"false"` when no `X-Robots-Tag` noindex is present on a 200 response) is truthful; however, let's check `AR-CANON-007` and `AR-DISC-005`: `AR-DISC-005` already checks `isHTML` (`disc005.go:205`) and returns `NOT_APPLICABLE` for non-HTML URLs! And in existing tests, no test expects `effective_noindex` to be withheld on valid pages. To guarantee zero unexpected changes in `AR-INDEX-001`, we will verify all existing `index001_test.go` and `adapter_test.go` assertions. | **Low** |
-| **`AR-INDEX-002`** *(Conflicting index directives)* | `url_identity`, `directive_source`, `directive_target`, `directive_raw`, `directive_tokens`, `directive_scope_unknown` ([`index002.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/engine/index002.go)) | - `index002.go` ignores `robots_parse_errors` and `directive_unsupported_tokens`.<br>- Preserving discrete `RawRobotsMeta` and `RawXRobotsTags` actually **improves** scope precision on multi-tag/multi-header pages while preserving 100% of existing `index002_test.go` and `adapter_test.go` cases.<br>- **Important Guardrail:** If `<meta name="robots" content="">` (empty content) is present, should it emit a `directive:*` bundle with `directive_tokens = ""`? Look at [`index002.go:338`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/engine/index002.go#L338):<br>`isKnownAndReliable := !isScopeUnknown && !targetConflict && targetVal != "" && !tokensConflict && len(b.tokens) > 0`<br>And in [`index002_test.go:101`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/engine/index002_test.go#L101), if `len(b.tokens) == 0` (or if `directive_tokens` has `Value: ""`), wait: in `adapter.go:2529`, `directive_tokens` is always emitted (`len(b.tokens) == 1`), even when `tokensVal == ""`! If `tokensVal == ""`, `index002.go:327` splits `""` by `,`, gets `[""]`, sees neither `index` nor `noindex`, and treats the bundle as `isKnownAndReliable = true` with no conflict! However, for `effective_noindex` in `adapter.go:2689`, an empty `<meta name="robots" content="">` has `Target: "*"`, `ScopeUnknown: false`, and no `noindex`, so `canProveIndexable` remains `true`. | **Low** (Verified against `index002.go:327-338`) |
-| **`AR-CANON-007`** *(Canonical target is not noindex)* | `canonical_target_subject_ref` -> target `http_status == 200` and target `effective_noindex` ([`canon007.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/engine/canon007.go)) | Consumes only `effective_noindex` on the target URL. Unaffected by `robots_parse_errors`. | **Zero** |
-| **`AR-DISC-005`** *(Sitemap-listed URL is not noindex)* | `SubjectSitemapEntry` -> target `http_status == 200`, `isHTML`, `effective_noindex`, plus supporting `meta_robots_raw`, `x_robots_raw`, `googlebot_meta_robots_raw`, `googlebot_x_robots_raw` ([`disc005.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/engine/disc005.go)) | Consumes `effective_noindex` and `*_robots_raw` fields on 200 HTML URLs. All 4 raw fields remain emitted with identical field names and semantics. | **Zero** |
+1. **`NormalizationVersion` Policy:**
+   - **V1.10a / V1.10a.1:** Remains `"v1.10.0"`.
+   - **V1.10b (SiteCrawl acquisition only):** Remains `"v1.10.0"` if adapter output is untouched in V1.10b.
+   - **V1.10c (Adapter normalization):** Bumps `NormalizationVersion` from `"v1.10.0"` to **`"v1.11.0"`** when `robots_parse_errors`, `directive_unsupported_tokens`, `http_header_status`, `robots_meta_sample_truncated`, and `x_robots_sample_truncated` are emitted.
+2. **Legacy SQLite Fallback Behavior:**
+   - For SQLite crawl runs created prior to V1.10b (`pr.page.RobotsMetaExtracted == false` and `len(pr.page.RawXRobotsTags) == 0`):
+     - Adapter falls back to `pr.page.MetaTags`, `pr.page.MetaRobots` / `pr.metaRobots`, and `pr.page.XRobotsTag` / `pr.xRobots`.
+     - If any legacy directive contains a proven `parse_error:*` or `unsupported_directive:*`, `AR-INDEX-003` returns **`WARNING`** (Priority P3).
+     - Otherwise, on legacy HTML rows, because `RobotsMetaExtracted == false` (`robots_meta_sample_truncated` is not emitted as `"false"`), Priority P5 returns **`UNKNOWN`** rather than a false `PASS` or `NOT_APPLICABLE` (since legacy rows did not record `<meta name="robots">` tags lacking `content` or overwritten duplicate tags).
+3. **Zero Regression on `AR-INDEX-001`, `AR-INDEX-002`, `AR-CANON-007`, and `AR-DISC-005`:**
+   - Vacuous `<meta name="robots" content="">` and `<meta name="robots" content="   ">` (`HasContentAttr == true`, 0 tokens) do not emit synthetic `directive:*` bundles, preserving `len(directives) == 0` -> `NOT_APPLICABLE` in `AR-INDEX-002` and `effective_noindex = "false"` in `AR-INDEX-001` / `AR-CANON-007` / `AR-DISC-005`.
+   - Missing-attribute `<meta name="robots">` (`HasContentAttr == false`) emits a `directive:*` bundle with `ParsedTokens = nil` (`directive_tokens = ""`) and `robots_parse_errors = "parse_error:missing_content_attribute"`; in `AR-INDEX-002` (`internal/audit/engine/index002.go`, lines 327–338), `directive_tokens = ""` has no `index`/`noindex` conflict and does not break `AR-INDEX-002`.
+   - Non-HTML `X-Robots-Tag` processing in `processPageDirectives` emits `directive_*` and `robots_*` observations on non-HTML URLs while keeping `effective_noindex` emission gated on `isHTML` so `AR-INDEX-001` and `AR-CANON-007` behavior on non-HTML resources is 100% unchanged.
 
 ---
 
-## 10. High-Risk QA Scenarios Matrix (30 Scenarios)
+## 10. Updated High-Risk QA Scenario Matrix (34 Scenarios)
 
-The following 30 high-risk scenarios define the mandatory verification matrix for `AR-INDEX-003`:
-
-| # | Scenario Description | Input Evidence (`<meta>` / `X-Robots-Tag` / Completeness) | Expected `robots_parse_errors` | Expected `AR-INDEX-003` Verdict |
+| # | Scenario Description | Input Evidence (`<meta>` / `X-Robots-Tag` / Channel States) | Expected `robots_parse_errors` / `UnsupportedTokens` | Expected `AR-INDEX-003` Verdict |
 |---|---|---|---|---|
-| **1** | **Clean 200 HTML page with no robots meta tag and no `X-Robots-Tag`** | `http_status=200`, `content_type="text/html"`, `html_extraction_status="complete"`, 0 directives | *(no bundles)* | **`NOT_APPLICABLE`** |
-| **2** | **Standard valid `<meta name="robots" content="index, follow">`** | `html_extraction_status="complete"`, 1 meta bundle (`target="*"`, `tokens="index, follow"`) | `"none"` | **`PASS`** |
-| **3** | **All 11 standalone V1 tokens in mixed case & whitespace** | `<meta name="ROBOTS" content=" ALL, None, Index, NoIndex, Follow, NoFollow, NoArchive, NoSnippet, NoTranslate, NoImageIndex, IndexIfEmbedded ">` (`html_extraction_status="complete"`) | `"none"` | **`PASS`** *(Note: `AR-INDEX-002` returns `FAIL` for `index`+`noindex`, while `AR-INDEX-003` returns `PASS` because every token's syntax is valid)* |
-| **4** | **Valid parameterized directives (`max-snippet`, `max-image-preview`, `max-video-preview`)** | `<meta name="robots" content="max-snippet: -1, max-image-preview: LARGE, max-video-preview: 0">` (`html_extraction_status="complete"`) | `"none"` | **`PASS`** |
-| **5** | **Valid `unavailable_after` with ISO 8601 / RFC 3339 date** | `<meta name="robots" content="noindex, unavailable_after: 2026-12-31T23:59:59Z">` (`html_extraction_status="complete"`) | `"none"` | **`PASS`** |
-| **6** | **Valid `unavailable_after` with comma-containing RFC 1123 / RFC 850 date** | `X-Robots-Tag: unavailable_after: Tue, 31 Dec 2026 23:59:59 GMT, noarchive` (`html_extraction_status="complete"`) | `"none"` | **`PASS`** *(Comma-aware splitter preserves date intact)* |
-| **7** | **Near-miss spelling typo in standalone directive (`no-index`, `nofollows`, `no_index`)** | `<meta name="robots" content="no-index, follow">` (even if `html_extraction_status="truncated_size_limit"`) | `"unsupported_token:no-index"` | **`WARNING`** |
-| **8** | **Deprecated/unsupported legacy directive (`noodp`, `noydir`, `nocache`)** | `<meta name="robots" content="index, follow, noodp, noydir">` | `"unsupported_token:noodp, unsupported_token:noydir"` | **`WARNING`** |
-| **9** | **Semicolon or pipe delimiter instead of comma (`noindex; nofollow`, `noindex\|nofollow`)** | `<meta name="robots" content="noindex; nofollow">` | `"malformed_delimiter:noindex; nofollow"` | **`WARNING`** |
-| **10** | **Whitespace-only separation between tokens (`noindex nofollow`)** | `<meta name="robots" content="noindex nofollow">` | `"malformed_delimiter:noindex nofollow"` | **`WARNING`** |
-| **11** | **Empty `<meta name="robots" content="">` or whitespace `<meta name="robots" content="   ">` or `<meta name="robots">`** | `<meta name="robots" content="">` | `"empty_directive"` | **`WARNING`** |
-| **12** | **Empty token slot from consecutive/trailing commas (`noindex, , nofollow` or `noindex,`)** | `<meta name="robots" content="noindex, , nofollow">` | `"empty_token_segment"` | **`WARNING`** |
-| **13** | **Invalid `max-snippet` parameter (`max-snippet:abc`, `max-snippet:-2`, `max-snippet:100px`, `max-snippet:`)** | `<meta name="robots" content="max-snippet:-2">` | `"invalid_parameter_value:max-snippet:-2"` | **`WARNING`** |
-| **14** | **Invalid `max-image-preview` parameter (`max-image-preview:huge`, `max-image-preview:true`, `max-image-preview:100`)** | `<meta name="robots" content="max-image-preview:huge">` | `"invalid_parameter_value:max-image-preview:huge"` | **`WARNING`** |
-| **15** | **Invalid `max-video-preview` parameter (`max-video-preview:none`, `max-video-preview:-5`)** | `<meta name="robots" content="max-video-preview:none">` | `"invalid_parameter_value:max-video-preview:none"` | **`WARNING`** |
-| **16** | **Invalid `unavailable_after` date (`unavailable_after:2026-02-30`, `unavailable_after:next-week`, `unavailable_after:`)** | `<meta name="robots" content="unavailable_after:not-a-date">` | `"invalid_parameter_value:unavailable_after:not-a-date"` | **`WARNING`** |
-| **17** | **Unexpected parameter on standalone directive (`noindex:true`, `nofollow:all`)** | `<meta name="robots" content="noindex:true">` | `"unexpected_parameter:noindex:true"` | **`WARNING`** |
-| **18** | **Misspelled parameterized directive name in `X-Robots-Tag` (`max-snipet: 50`, `max_snippet: 50`, `unavailable-after: 2026-12-31`)** | `X-Robots-Tag: max-snipet: 50` | `"unsupported_token:max-snipet: 50"` | **`WARNING`** *(Caught by Step 2 of `DEC-V1.10-002`; never mistaken for a user-agent prefix)* |
-| **19** | **User-agent prefix placed inside HTML `<meta name="robots" content="googlebot: noindex">`** | `<meta name="robots" content="googlebot: noindex">` | `"meta_agent_prefix:googlebot: noindex"` | **`WARNING`** |
-| **20** | **Valid agent-specific `<meta name="googlebot" content="noindex, max-snippet:120">` and `<meta name="OAI-SearchBot" content="noindex">`** | `html_extraction_status="complete"`, 2 meta bundles | `"none"` on both | **`PASS`** |
-| **21** | **Multiple same-name `<meta name="googlebot">` tags where the first is malformed and the second is valid** | Tag 1: `<meta name="googlebot" content="no-index">`, Tag 2: `<meta name="googlebot" content="nofollow">` | Bundle 0: `"unsupported_token:no-index"`, Bundle 1: `"none"` | **`WARNING`** *(Proves why Option A in `DEC-V1.10-004` is required; Option B would overwrite Tag 1)* |
-| **22** | **Valid multi-token `X-Robots-Tag` with user-agent prefix (`X-Robots-Tag: googlebot: noindex, nofollow, max-image-preview:large`)** | Discrete header in `RawXRobotsTags`, `html_extraction_status="complete"` | `"none"` | **`PASS`** |
-| **23** | **Two separate `X-Robots-Tag` HTTP headers (`X-Robots-Tag: googlebot: noindex` + `X-Robots-Tag: nofollow`)** | `RawXRobotsTags = ["googlebot: noindex", "nofollow"]`, `html_extraction_status="complete"` | Bundle 0 (`googlebot`): `"none"`, Bundle 1 (`*`): `"none"` | **`PASS`** *(Proves why `RawXRobotsTags` slice preservation is required)* |
-| **24** | **Unrecognized ASCII token prefix in `X-Robots-Tag` followed by valid directive (`X-Robots-Tag: custominternalbot: noindex`)** | `X-Robots-Tag: custominternalbot: noindex`, no other errors | `"ambiguous:unverified_agent_prefix:custominternalbot"` | **`UNKNOWN`** *(Per `DEC-V1.10-002` Step 4c)* |
-| **25** | **Unrecognized prefix in `X-Robots-Tag` followed by invalid directive (`X-Robots-Tag: foo: bar`)** | `X-Robots-Tag: foo: bar` | `"unsupported_token:foo: bar"` | **`WARNING`** *(Per `DEC-V1.10-002` Step 4a)* |
-| **26** | **Non-HTML resource (`application/pdf`) with `X-Robots-Tag`**<br>- **26a:** `200 application/pdf` with no `X-Robots-Tag`<br>- **26b:** `200 application/pdf` with `X-Robots-Tag: noindex, noarchive`<br>- **26c:** `200 application/pdf` with `X-Robots-Tag: no-index` | `http_status=200`, `content_type="application/pdf"` | - **26a:** *(no bundles)*<br>- **26b:** `"none"`<br>- **26c:** `"unsupported_token:no-index"` | - **26a:** **`NOT_APPLICABLE`**<br>- **26b:** **`PASS`**<br>- **26c:** **`WARNING`** |
-| **27** | **Truncated or read-errored 200 HTML page (`html_extraction_status` = `"truncated_size_limit"` or `"read_error"`)**<br>- **27a:** Zero directives or only valid directives retained before truncation<br>- **27b:** Proven malformed directive (`<meta name="robots" content="no-index">` or `X-Robots-Tag: no-index`) already retained | `html_extraction_status="truncated_size_limit"` | - **27a:** `"none"` (or 0 bundles)<br>- **27b:** `"unsupported_token:no-index"` | - **27a:** **`UNKNOWN`**<br>- **27b:** **`WARNING`** |
-| **28** | **Rendered HTML page (`rendered == "true"`)**<br>- **28a:** No `X-Robots-Tag` or valid `X-Robots-Tag: noindex`<br>- **28b:** Malformed `X-Robots-Tag: no-index` in HTTP response header | `rendered="true"`, `html_extraction_status="missing_legacy"` | - **28a:** `"none"` (or 0 bundles)<br>- **28b:** `"unsupported_token:no-index"` | - **28a:** **`UNKNOWN`** *(Raw HTML meta directives were replaced by DOM)*<br>- **28b:** **`WARNING`** *(HTTP header already proves violation)* |
-| **29** | **Page with `> 10` `<meta>` robots declarations (`robots_meta_sample_truncated == "true"`)**<br>- **29a:** All 10 retained samples are valid<br>- **29b:** Sample #3 contains `noindex; nofollow` | `RobotsMetaTotalCount=12`, `len(RawRobotsMeta)=10`, `robots_meta_sample_truncated="true"` | - **29a:** `"none"` on all 10<br>- **29b:** `"malformed_delimiter:..."` on bundle 2 | - **29a:** **`UNKNOWN`** *(Tags 11–12 uninspected)*<br>- **29b:** **`WARNING`** |
-| **30** | **Missing `robots_parse_errors` observation on a directive bundle (`MISSING != FALSE`) or conflicting `robots_parse_errors` values** | Bundle `directive:1` has `robots_directive_tokens="noindex"` but no `robots_parse_errors` observation | *(missing or conflicting)* | **`UNKNOWN`** |
+| **1** | **Clean 200 HTML page with zero `<meta>` robots tags and zero `X-Robots-Tag` headers** | `http_header_status="complete"`, `html_extraction_status="complete"`, `robots_meta_sample_truncated="false"`, 0 bundles | *(0 bundles)* | **`NOT_APPLICABLE`** |
+| **2** | **Standard valid `<meta name="robots" content="index, follow">`** | Both channels `"complete"`, 1 meta bundle (`target="*"`, `tokens="index, follow"`) | `"none"` / `[]` | **`PASS`** |
+| **3** | **All 10 active Google standalone tokens + `noarchive` in mixed case & whitespace** | `<meta name="ROBOTS" content=" ALL, None, Index, NoIndex, Follow, NoFollow, NoArchive, NoSnippet, NoTranslate, NoImageIndex, IndexIfEmbedded ">` | `"none"` / `[]` | **`PASS`** *(Valid syntax in `AR-INDEX-003`; contradiction evaluated by `AR-INDEX-002`)* |
+| **4** | **Valid parameterized directives (`max-snippet`, `max-image-preview`, `max-video-preview`)** | `<meta name="robots" content="max-snippet: -1, max-image-preview: LARGE, max-video-preview: 0">` | `"none"` / `[]` | **`PASS`** |
+| **5** | **Valid `unavailable_after` with ISO 8601 / RFC 3339 date** | `<meta name="robots" content="noindex, unavailable_after: 2026-12-31T23:59:59Z">` | `"none"` / `[]` | **`PASS`** |
+| **6** | **Valid `unavailable_after` with comma-containing RFC 1123 / RFC 850 date** | `X-Robots-Tag: unavailable_after: Tue, 31 Dec 2026 23:59:59 GMT, noarchive` | `"none"` / `[]` | **`PASS`** |
+| **7** | **`<meta name="robots" content="">` (explicit empty `content=""`, `HasContentAttr=true`) (`QA-02`)** | Clean 200 HTML; `HasContentAttr=true`, `ContentRaw=""`, no other directives | *(Vacuous declaration: 0 tokens, 0 bundles)* | **`NOT_APPLICABLE`** *(or `PASS` if paired with a valid `X-Robots-Tag: noindex`; **never** `WARNING`)* |
+| **8** | **`<meta name="robots" content="   ">` (whitespace-only `content`, `HasContentAttr=true`) (`QA-02`)** | Clean 200 HTML; `HasContentAttr=true`, `ContentRaw="   "`, no other directives | *(Vacuous declaration: 0 tokens, 0 bundles)* | **`NOT_APPLICABLE`** *(or `PASS` if paired with a valid directive; **never** `WARNING`)* |
+| **9** | **`<meta name="robots">` (missing `content` attribute, `HasContentAttr=false`) (`QA-02`)** | Clean 200 HTML; `HasContentAttr=false` | `"parse_error:missing_content_attribute"` / `[]` | **`WARNING`** *(Violates WHATWG HTML § 4.2.5)* |
+| **10** | **Empty comma segment (`content="noindex, , nofollow"`, `content="noindex,"`, `content=","`) (`OQ-1`)** | `<meta name="robots" content="noindex, , nofollow">` | `"parse_error:empty_token_segment"` / `[]` | **`WARNING`** |
+| **11** | **Deprecated/obsolete directory directives (`noodp`, `noydir`) (`QA-01`)** | `<meta name="robots" content="index, follow, noodp, noydir">` | `"unsupported_directive:obsolete:noodp, unsupported_directive:obsolete:noydir"` / `["noodp", "noydir"]` | **`WARNING`** *(Reported as `unsupported_directive`, **not** `malformed`)* |
+| **12** | **Unsupported Google rules (`nopagereadaloud`, `nositelinkssearchbox`, `nocache`, `nopreview`) (`QA-01`)** | `<meta name="robots" content="noindex, nocache">` | `"unsupported_directive:nocache"` / `["nocache"]` | **`WARNING`** *(Reported as `unsupported_directive`, **not** `malformed`)* |
+| **13** | **Near-miss spelling typo in standalone directive (`no-index`, `nofollows`, `no_index`, `archive`, `snippet`)** | `<meta name="robots" content="no-index, follow">` | `"unsupported_directive:no-index"` / `["no-index"]` | **`WARNING`** |
+| **14** | **Semicolon or pipe delimiter instead of comma (`noindex; nofollow`, `noindex\|nofollow`)** | `<meta name="robots" content="noindex; nofollow">` | `"parse_error:invalid_delimiter:noindex; nofollow"` / `[]` | **`WARNING`** |
+| **15** | **Whitespace-only separation between multiple tokens (`noindex nofollow`)** | `<meta name="robots" content="noindex nofollow">` | `"parse_error:invalid_delimiter:noindex nofollow"` / `[]` | **`WARNING`** |
+| **16** | **Invalid `max-snippet` parameter (`max-snippet:abc`, `max-snippet:-2`, `max-snippet:100px`, `max-snippet:`, `max-snippet`)** | `<meta name="robots" content="max-snippet:-2">` | `"parse_error:invalid_parameter_value:max-snippet:-2"` / `[]` | **`WARNING`** |
+| **17** | **Invalid `max-image-preview` parameter (`max-image-preview:huge`, `max-image-preview:true`, `max-image-preview:`)** | `<meta name="robots" content="max-image-preview:huge">` | `"parse_error:invalid_parameter_value:max-image-preview:huge"` / `[]` | **`WARNING`** |
+| **18** | **Invalid `max-video-preview` parameter (`max-video-preview:none`, `max-video-preview:-5`, `max-video-preview:`)** | `<meta name="robots" content="max-video-preview:none">` | `"parse_error:invalid_parameter_value:max-video-preview:none"` / `[]` | **`WARNING`** |
+| **19** | **Invalid `unavailable_after` date (`unavailable_after:2026-02-30`, `unavailable_after:not-a-date`, `unavailable_after:`)** | `<meta name="robots" content="unavailable_after:not-a-date">` | `"parse_error:invalid_parameter_value:unavailable_after:not-a-date"` / `[]` | **`WARNING`** |
+| **20** | **Unexpected parameter on standalone directive (`noindex:true`, `nofollow:all`, `nosnippet:1`)** | `<meta name="robots" content="noindex:true">` | `"parse_error:unexpected_parameter:noindex:true"` / `[]` | **`WARNING`** |
+| **21** | **Misspelled parameterized directive name in `X-Robots-Tag` (`max-snipet: 50`, `max_snippet: 50`, `unavailable-after: 2026-12-31`) (`QA-03`)** | `X-Robots-Tag: max-snipet: 50` | `"unsupported_directive:max-snipet: 50"` / `["max-snipet: 50"]` | **`WARNING`** |
+| **22** | **User-agent prefix placed inside HTML `<meta name="robots" content="googlebot: noindex">`** | `<meta name="robots" content="googlebot: noindex">` | `"parse_error:meta_agent_prefix:googlebot: noindex"` / `[]` | **`WARNING`** |
+| **23** | **Valid agent-specific `<meta name="googlebot" content="noindex, max-snippet:120">` and `<meta name="OAI-SearchBot" content="noindex">`** | Both channels `"complete"`, 2 meta bundles | `"none"` on both | **`PASS`** |
+| **24** | **Multiple same-name `<meta name="googlebot">` tags where Tag 1 is malformed (`no-index`) and Tag 2 is valid (`nofollow`) (`QA-05`)** | `RawRobotsMeta` retains both in `Seq` 0 and 1 | Bundle 0: `"unsupported_directive:no-index"`<br>Bundle 1: `"none"` | **`WARNING`** |
+| **25** | **Valid multi-token `X-Robots-Tag` with recognized user-agent prefix (`X-Robots-Tag: googlebot: noindex, nofollow`) (`QA-03`)** | Discrete header in `RawXRobotsTags`, both channels `"complete"` | `"none"` / `[]` | **`PASS`** |
+| **26** | **Two separate `X-Robots-Tag` HTTP header fields (`X-Robots-Tag: googlebot: noindex` + `X-Robots-Tag: nofollow`) (`QA-03`)** | `RawXRobotsTags = ["googlebot: noindex", "nofollow"]`, both channels `"complete"` | Bundle 0 (`googlebot`): `"none"`<br>Bundle 1 (`*`): `"none"` | **`PASS`** |
+| **27** | **Multiple agent-prefixed segments inside a single `X-Robots-Tag` header (`X-Robots-Tag: googlebot: noindex, bingbot: nofollow`) (`QA-03`)** | Single header string containing two `<agent>:` prefixes | `"ambiguous:multiple_agent_prefixes"` | **`UNKNOWN`** *(or `WARNING` if any token has a proven syntax error)* |
+| **28** | **Unrecognized RFC 9110 user-agent prefix + valid V1 directive (`X-Robots-Tag: custombot: noindex`) (`QA-03`, `OQ-2`)** | `X-Robots-Tag: custombot: noindex` | `"ambiguous:unverified_agent_prefix:custombot"` | **`UNKNOWN`** |
+| **29** | **Unrecognized RFC 9110 prefix + unrecognized bare token (`X-Robots-Tag: foo: bar`) vs. recognized agent + unrecognized token (`X-Robots-Tag: googlebot: bar`) (`QA-03`)** | - **29a:** `X-Robots-Tag: foo: bar`<br>- **29b:** `X-Robots-Tag: googlebot: bar`<br>- **29c:** `X-Robots-Tag: foo: noindex; nofollow` | - **29a:** `"ambiguous:unrecognized_colon_pair:foo: bar"`<br>- **29b:** `"unsupported_directive:bar"`<br>- **29c:** `"parse_error:invalid_delimiter:noindex; nofollow"` | - **29a:** **`UNKNOWN`**<br>- **29b:** **`WARNING`**<br>- **29c:** **`WARNING`** |
+| **30** | **Non-HTML resource (`200 application/pdf`) with `X-Robots-Tag` (`QA-04`)**<br>- **30a:** No `X-Robots-Tag`<br>- **30b:** `X-Robots-Tag: noindex, noarchive`<br>- **30c:** `X-Robots-Tag: no-index` | `http_status=200`, `content_type="application/pdf"`, `http_header_status="complete"` | - **30a:** *(0 bundles)*<br>- **30b:** `"none"`<br>- **30c:** `"unsupported_directive:no-index"` | - **30a:** **`NOT_APPLICABLE`**<br>- **30b:** **`PASS`**<br>- **30c:** **`WARNING`** |
+| **31** | **Truncated (`truncated_size_limit` / `read_error`) or Rendered (`rendered == "true"`) 200 HTML page (`QA-04`)**<br>- **31a:** Zero directives or only valid directives retained<br>- **31b:** Proven malformed/unsupported directive retained in `<meta>` or `X-Robots-Tag` | `http_header_status="complete"`, `html_extraction_status="truncated_size_limit"` (or `rendered="true"`) | - **31a:** `"none"` (or 0 bundles)<br>- **31b:** `"unsupported_directive:no-index"` | - **31a:** **`UNKNOWN`**<br>- **31b:** **`WARNING`** |
+| **32** | **Redirect row (`301` / `redirect_initial_observed == "true"`), non-2xx HTML row (`404`), or failed fetch (`status == 0`) (`QA-04`)**<br>- **32a:** No proven malformed `X-Robots-Tag` on the response<br>- **32b:** `404` or `301` response carries `X-Robots-Tag: no-index` | `http_header_status="redirect_intermediate"` or `html_extraction_status="missing_legacy"` or `http_header_status="unavailable"` | - **32a:** 0 or `"none"` bundles<br>- **32b:** `"unsupported_directive:no-index"` | - **32a:** **`UNKNOWN`**<br>- **32b:** **`WARNING`** |
+| **33** | **Sample cap exceeded (`> 10` `<meta>` tags `robots_meta_sample_truncated == "true"` or `> 10` `X-Robots-Tag` headers `x_robots_sample_truncated == "true"`) (`QA-05`)**<br>- **33a:** All 10 retained samples are `"none"`<br>- **33b:** Sample #4 has `noindex; nofollow` | `RobotsMetaTotalCount=12`, `len(RawRobotsMeta)=10`, `robots_meta_sample_truncated="true"` | - **33a:** `"none"` on all 10<br>- **33b:** `"parse_error:invalid_delimiter:..."` | - **33a:** **`UNKNOWN`**<br>- **33b:** **`WARNING`** |
+| **34** | **Missing `robots_parse_errors` on a bundle (`MISSING != FALSE`), unreferenced directive observation, or conflicting observations (`QA-04`)** | Bundle `directive:1` has `robots_directive_tokens="noindex"` but no `robots_parse_errors` | *(missing or conflicting)* | **`UNKNOWN`** |
 
 ---
 
-## 11. Open Questions Requiring Independent QA Approval
+## 11. Resolution of Outstanding Contract Questions (`OQ-1`, `OQ-2`, `OQ-3`)
 
-While we have provided concrete recommendations for every decision above, the following specific boundary choices are highlighted for Independent QA confirmation:
+All three open questions from V1.10a have been explicitly resolved using primary standards and conservative V1 guardrails:
 
-1. **OQ-1 (Trailing/Empty Comma Segments — Scenario 12):**
-   - When a directive contains a trailing comma or empty segment (e.g., `<meta name="robots" content="noindex, ">` or `"noindex, , nofollow"`), our proposal classifies this as **`WARNING`** (`parse_error:empty_token_segment`), whereas `parseDirectiveTokens` in V1.3b2 silently ignored empty segments between commas. Does Independent QA approve flagging empty comma segments as `WARNING` in `AR-INDEX-003` (while keeping `AR-INDEX-001` and `AR-INDEX-002` token extraction tolerant of empty segments)?
-2. **OQ-2 (Unrecognized ASCII User-Agent Prefix in `X-Robots-Tag` with Valid Directives — Scenario 24):**
-   - For `X-Robots-Tag: custominternalbot: noindex` (where `custominternalbot` is a valid RFC 9110 token that is neither in the V1 crawler list nor a `max*`/`unavailable*` typo, and `noindex` is a valid V1 directive), our proposal returns **`UNKNOWN`** (`ambiguous:unverified_agent_prefix`). Does Independent QA approve `UNKNOWN` for unverified user-agent prefixes in `X-Robots-Tag`, or should any syntactically valid `<rfc9110-token>: <valid-v1-directives>` in `X-Robots-Tag` evaluate to `PASS`?
-3. **OQ-3 (Scope of `<meta name="...">` Attributes Inspected — Section 4.2.2.1):**
-   - Our proposal inspects `<meta name="robots">` plus the 31 recognized search/AI crawler agent names (`isRobotsMetaName(name)`), ignoring non-robots `<meta>` tags (`viewport`, `description`, `referrer`, `google-site-verification`, etc.). What if a page has a typo in the `<meta name>` attribute itself, such as `<meta name="robot" content="noindex">` or `<meta name="google-bot" content="noindex">`?
-   - **Proposed handling:** Include common robots `<meta name>` misspellings (`"robot"`, `"google-bot"`, `"google_bot"`, `"bing-bot"`) in `isRobotsMetaName` and emit `robots_parse_errors = "invalid_meta_name:<name>"` -> **`WARNING`** so that `<meta name="robot" content="noindex">` is caught as a malformed robots directive rather than silently ignored as an unrelated HTML meta tag! Does Independent QA approve catching `name="robot"` / `name="google-bot"` as `WARNING`?
+| Question ID | Question Summary | Final V1.10a.1 Resolution | Justification & Authority |
+|---|---|---|---|
+| **`OQ-1` (CLOSED)** | Empty comma segments (`"noindex, , nofollow"`, `"noindex,"`, `","`) vs. empty meta declarations (`content=""`, `content="   "`, and missing `content`). | 1. `<meta name="robots" content="">` and `<meta name="robots" content="   ">` (`HasContentAttr == true`): **Vacuous 0-token declarations (`NOT_APPLICABLE` if sole; `PASS` alongside valid directives; never `WARNING`)**.<br>2. `<meta name="robots">` (`HasContentAttr == false`): **`WARNING` (`parse_error:missing_content_attribute`)**.<br>3. Non-empty directive with empty comma slot (`"noindex, , nofollow"`, `"noindex,"`, `","`): **`WARNING` (`parse_error:empty_token_segment`)**. | WHATWG HTML § 4.2.5 requires `content` when `name` is present (`<meta name="robots">` without `content` is invalid HTML), while `content=""` is valid HTML with 0 tokens. Explicit commas with missing operands are malformed comma-separated lists. |
+| **`OQ-2` (CLOSED)** | Unknown/custom user-agent prefixes in `X-Robots-Tag` (`X-Robots-Tag: custombot: noindex` and `X-Robots-Tag: foo: bar`). | **Return `UNKNOWN`** (`ambiguous:unverified_agent_prefix` for `custombot: noindex`; `ambiguous:unrecognized_colon_pair` for `foo: bar`) unless `<lhs>` is a known `max*`/`unavailable*`/`no*` directive typo or standalone directive with parameter (`WARNING`), or `<lhs>` is a recognized crawler with an invalid `<rhs>` (`googlebot: bar` -> `WARNING`), or `<rhs>` has a proven delimiter/parameter syntax error (`WARNING`). | `SRC-GOOGLE-ROBOTS-001` allows any crawler user-agent in `X-Robots-Tag`. A hardcoded crawler list is not a complete validity registry; returning `UNKNOWN` avoids both false `WARNING`s on custom bots and false `PASS`es on unverified prefixes. |
+| **`OQ-3` (CLOSED)** | Suspected `<meta name>` typos such as `<meta name="robot" content="noindex">`. | **Out of Scope for `AR-INDEX-003` (Retracted).** Do **not** inspect `<meta name="robot">` or other non-robots `<meta name>` attributes in `AR-INDEX-003`. | Preserves the frozen `AR-INDEX-003` manifest boundary (`preconditions: meta robots or X-Robots-Tag exists`). Auditing HTML `<meta name>` attribute typos would silently expand the frozen rule's scope. |
 
 ---
 
-## 12. Proposed Phased Implementation Plan (Post-Approval)
+## 12. V1.10b Implementation Readiness Assessment & Phased Plan
 
-Following **Risk-Based QA + Batch Implementation + MVP-First**, implementation after V1.10a contract approval is divided into two or three tight, verifiable milestones:
+### 12.1 Readiness Assessment for Milestone V1.10b
+- **Contract Completeness:** All 5 Independent QA findings (`QA-01`..`QA-05`) and all 3 open questions (`OQ-1`..`OQ-3`) are resolved with exact data structures, state machines, and a 34-scenario verification matrix.
+- **Architectural Risk:** **Low.** V1.10b requires zero SQLite table DDL changes and zero changes to existing `Page.MetaTags`, `Page.MetaRobots`, or `Page.XRobotsTag` fields.
+- **Recommendation:** Ready to proceed to **Milestone V1.10b** immediately upon Independent QA sign-off of this revised V1.10a.1 contract.
 
-### Milestone V1.10b — Acquisition & Evidence Preservation (`internal/sitecrawl/`)
-- **Scope:**
-  1. Add `RawMetaDirective`, `RobotsMetaTotalCount int`, `RawRobotsMeta []RawMetaDirective`, and `RawXRobotsTags []string` to `sitecrawl.Page` in [`internal/sitecrawl/types.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/sitecrawl/types.go).
-  2. Update [`internal/sitecrawl/extract.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/sitecrawl/extract.go#L438-L510) (`readMeta`) to capture raw untruncated/untrimmed `RawMetaDirective` entries (up to cap 10) and increment `RobotsMetaTotalCount` for all robots/crawler `<meta>` declarations (including empty `content=""` and missing `content`).
-  3. Update [`internal/sitecrawl/fetch.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/sitecrawl/fetch.go#L242-L245) and [`internal/sitecrawl/page.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/sitecrawl/page.go#L26) to preserve `res.Header.Values("X-Robots-Tag")` in `Page.RawXRobotsTags` (while keeping `Page.XRobotsTag` joined for backward compatibility).
-  4. Add unit tests in `internal/sitecrawl/extract_test.go` and `fetch_test.go`.
+### 12.2 Phased Implementation Plan (Awaiting QA Approval)
 
-### Milestone V1.10c — Adapter Normalization & Directive Syntax Validator (`internal/audit/adapter/`)
-- **Scope:**
-  1. Bump `NormalizationVersion` from `"v1.10.0"` to `"v1.11.0"` in [`internal/audit/adapter/adapter.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/adapter/adapter.go#L356).
-  2. Update `adapter.go` so `processPageDirectives` runs for both HTML pages (meta + `X-Robots-Tag`) and non-HTML responses (`X-Robots-Tag` only).
-  3. Implement the V1 directive syntax/token/parameter validator (`DEC-V1.10-001` & `DEC-V1.10-002`), including comma-aware `unavailable_after` date splitting and validation, populating `RobotsDirectiveObservation.UnsupportedTokens` and `ParseErrors`, and emitting `robots_parse_errors`, `directive_unsupported_tokens`, and `robots_meta_sample_truncated`.
-  4. Verify zero regressions across `AR-INDEX-001`, `AR-INDEX-002`, `AR-CANON-007`, and `AR-DISC-005`.
+1. **Milestone V1.10b — Raw Directive Acquisition & Preservation (`internal/sitecrawl/`):**
+   - Add `RawMetaDirective`, `RobotsMetaExtracted bool`, `RobotsMetaTotalCount int`, `RawRobotsMeta []RawMetaDirective` (cap 10), `XRobotsTagTotalCount int`, and `RawXRobotsTags []string` (cap 10) to `sitecrawl.Page` in `internal/sitecrawl/types.go`.
+   - Update `internal/sitecrawl/extract.go` (`readMeta`), `internal/sitecrawl/fetch.go` (`readTerminal`), `internal/sitecrawl/page.go` (`buildPage`), and `internal/sitecrawl/crawler.go` (`absorb`) to populate these fields losslessly while preserving existing fields.
+   - Add unit tests in `internal/sitecrawl/extract_test.go` and `internal/sitecrawl/fetch_test.go`.
+2. **Milestone V1.10c — Adapter Normalization & Directive Validator (`internal/audit/adapter/`):**
+   - Bump `NormalizationVersion` from `"v1.10.0"` to `"v1.11.0"` in `internal/audit/adapter/adapter.go`.
+   - Emit Channel 1 (`http_header_status`, `x_robots_sample_truncated`), Channel 2 (`robots_meta_sample_truncated`), and Channel 3 (`robots_parse_errors`, `directive_unsupported_tokens`) observations across both HTML and non-HTML responses.
+   - Verify zero regressions on `AR-INDEX-001`, `AR-INDEX-002`, `AR-CANON-007`, and `AR-DISC-005`.
+3. **Milestone V1.10d — `AR-INDEX-003` Evaluator & 34-Scenario Test Suite (`internal/audit/engine/`):**
+   - Implement `evaluateINDEX003` in `internal/audit/engine/index003.go` and register `AR-INDEX-003` in `internal/audit/engine/engine.go` (`20 / 47 -> 21 / 47`).
+   - Add unit and hermetic SQLite -> Adapter -> Engine tests in `internal/audit/engine/index003_test.go` covering all 34 QA scenarios.
 
-### Milestone V1.10d — `AR-INDEX-003` Evaluator & Integration Tests (`internal/audit/engine/`)
-- **Scope:**
-  1. Implement `evaluateINDEX003` in `internal/audit/engine/index003.go` enforcing the Section 7 precedence table.
-  2. Register `AR-INDEX-003` in [`internal/audit/engine/engine.go`](file:///d:/Projects/audit%20technical/sitecrawl-docs/internal/audit/engine/engine.go), advancing executable rules from **`20 / 47` to `21 / 47`**.
-  3. Add comprehensive unit and hermetic SQLite -> Adapter -> Engine integration tests in `internal/audit/engine/index003_test.go` covering all 30 QA scenarios.
+---
+
+## 13. Change Log Mapping (`QA-01` through `QA-05` -> Document Sections)
+
+| QA Finding | Summary of Required Fix | Document Sections Updated in V1.10a.1 |
+|---|---|---|
+| **`QA-01`** | Audit every token in the V1 registry (`noarchive`, `index`, `follow`, legacy directives); separate `unsupported_directive` from `parse_error` (malformed syntax); provide full evidence matrix. | Section 1.1 (`DEC-V1.10-001`), Section 3, Section 4.1 (`4.1.1` retraction/clarification & `4.1.2` 21-row evidence matrix), Section 6.1, Section 10 (Scenarios 3, 11, 12, 13). |
+| **`QA-02`** | Review `<meta name="robots" content="">`, `<meta name="robots">`, and `<meta name="robots" content="   ">` separately; do not force `WARNING` on `content=""` or `content="   "` without authority; preserve raw declaration & `HasContentAttr`. | Section 1.1 (`DEC-V1.10-003`), Section 3 (WHATWG HTML § 4.2.5), Section 4.3.1 (Cases 2A–2E table), Section 4.4.1 (`RawMetaDirective.HasContentAttr`), Section 10 (Scenarios 7, 8, 9, 10), Section 11 (`OQ-1`). |
+| **`QA-03`** | Reassess `foo: bar`, `custombot: noindex`, `googlebot: noindex, nofollow`, multiple `X-Robots-Tag` headers, multiple agent prefixes, and parameterized directive typos; prefer `UNKNOWN` over speculative `WARNING`. | Section 1.1 (`DEC-V1.10-002`), Section 4.2 (`4.2.1` & `4.2.2` 6-case disambiguation matrix), Section 10 (Scenarios 21, 25, 26, 27, 28, 29a/b/c), Section 11 (`OQ-2`, `OQ-3`). |
+| **`QA-04`** | Define separate evidence completeness contracts for (1) HTTP header acquisition, (2) HTML meta extraction, and (3) directive parsing/normalization; enforce `MISSING != FALSE`; address redirects, non-HTML, rendered, truncated, legacy, and conflicts. | Section 1.1 (`DEC-V1.10-003`), Section 4.3.2 (Channels 1, 2, 3 tables), Section 4.3.3 (8 response archetypes), Section 6.2 (`http_header_status`), Section 7 (Precedence P1–P7), Section 8, Section 10 (Scenarios 30–34). |
+| **`QA-05`** | Specify uncapped total counts, capped raw samples, explicit sample-truncation indicators, source order/identity, verdict impact of incomplete samples, legacy fallback, and replace all machine-local absolute file URI links with portable repository-relative paths. | Section 1.1 (`DEC-V1.10-004`), Section 4.4 (`4.4.1`–`4.4.3`), Section 6.2 (`robots_meta_sample_truncated`, `x_robots_sample_truncated`), Section 9.2, Section 10 (Scenarios 24, 33a/b), and all file references throughout the document. |
