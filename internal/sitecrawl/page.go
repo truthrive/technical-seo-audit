@@ -22,9 +22,11 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 		Error:       res.Error,
 		Redirects:   res.Hops,
 		RedirectTo:  res.RedirectTo,
-		LastMod:     res.LastMod,
-		XRobotsTag:  res.XRobotsTag,
-		BotBlocked:  res.BotBlocked,
+		LastMod:              res.LastMod,
+		XRobotsTag:           res.XRobotsTag,
+		XRobotsTagTotalCount: res.XRobotsTagTotalCount,
+		RawXRobotsTags:       res.RawXRobotsTags,
+		BotBlocked:           res.BotBlocked,
 		RobotsState: RobotsUnknown,
 		MetaTags:    map[string]string{},
 		OGTags:      map[string]string{},
@@ -83,6 +85,9 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 	p.BaseHrefRaw = d.BaseHrefRaw
 	p.BaseHrefCount = d.BaseHrefCount
 	p.MetaRobots = d.MetaRobots
+	p.RobotsMetaExtracted = true
+	p.RobotsMetaTotalCount = d.RobotsMetaTotalCount
+	p.RawRobotsMeta = d.RawRobotsMeta
 	p.MetaRefresh = d.MetaRefresh
 	p.RelNext = d.RelNext
 	p.RelPrev = d.RelPrev

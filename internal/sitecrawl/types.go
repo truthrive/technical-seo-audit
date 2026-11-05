@@ -268,6 +268,10 @@ const (
 	// past any real page; MaxFileSizeMB governs non-HTML resources only.
 	maxHTMLBytes = 4 << 20
 
+	// Robots directive collection caps.
+	maxRobotsMeta      = 10
+	maxXRobotsHeaders  = 10
+
 	maxCrawlDelayMs = 60000
 	// A CDN serving "Crawl-delay: 10" would turn a 50k crawl into 5.8 days.
 	// Honour the directive, but cap it and say so in the UI.
@@ -396,6 +400,16 @@ type Hop struct {
 	Location string `json:"location"`
 }
 
+// RawMetaDirective preserves one raw <meta> robots/crawler directive declaration
+// in document order before trimming or map deduplication.
+type RawMetaDirective struct {
+	Seq            int    `json:"seq"`               // 0-based declaration index in document order (0..9)
+	Name           string `json:"name"`              // lowercased trimmed name attribute (e.g. "robots", "googlebot")
+	NameRaw        string `json:"name_raw,omitempty"`// original raw name attribute string
+	ContentRaw     string `json:"content_raw"`       // untouched raw content attribute value
+	HasContentAttr bool   `json:"has_content_attr"`  // true iff the "content" attribute key existed on the <meta> token
+}
+
 // Page is everything known about one crawled URL. It is stored as a JSON blob;
 // the columns SQL needs to filter or sort on are promoted alongside it (see
 // schemaStmts) and derived from this struct by pageRow.
@@ -441,9 +455,14 @@ type Page struct {
 	BaseHrefRaw         string   `json:"base_href_raw,omitempty"`
 	BaseHrefCount       int      `json:"base_href_count,omitempty"`
 	ExtractionStatus    string   `json:"extraction_status,omitempty"`
-	MetaRobots          string   `json:"metaRobots"`
-	XRobotsTag  string   `json:"xRobotsTag"`
-	MetaRefresh string   `json:"metaRefresh,omitempty"`
+	MetaRobots           string             `json:"metaRobots"`
+	RobotsMetaExtracted  bool               `json:"robots_meta_extracted,omitempty"`
+	RobotsMetaTotalCount int                `json:"robots_meta_total_count,omitempty"`
+	RawRobotsMeta        []RawMetaDirective `json:"raw_robots_meta,omitempty"`
+	XRobotsTag           string             `json:"xRobotsTag"`
+	XRobotsTagTotalCount int                `json:"x_robots_tag_total_count,omitempty"`
+	RawXRobotsTags       []string           `json:"raw_x_robots_tags,omitempty"`
+	MetaRefresh          string             `json:"metaRefresh,omitempty"`
 	RelNext     string   `json:"relNext,omitempty"`
 	RelPrev     string   `json:"relPrev,omitempty"`
 	Author      string   `json:"author,omitempty"`

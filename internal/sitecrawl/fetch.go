@@ -50,6 +50,8 @@ type fetched struct {
 	ElapsedMs   int
 	LastMod     string
 	XRobotsTag  string
+	XRobotsTagTotalCount int
+	RawXRobotsTags       []string
 	ErrorType   string
 	Error       string
 	// Doc is nil unless the terminal response was HTML that we read.
@@ -189,6 +191,19 @@ func (f *fetcher) chain(ctx context.Context, startURL string, ua uaPreset, wantB
 		// every redirect from the Response Codes tab.
 		if hop == 0 {
 			out.Status = res.StatusCode
+			initialXRobots := res.Header.Values("X-Robots-Tag")
+			out.XRobotsTagTotalCount = len(initialXRobots)
+			count := len(initialXRobots)
+			if count > maxXRobotsHeaders {
+				count = maxXRobotsHeaders
+			}
+			if count > 0 {
+				out.RawXRobotsTags = append([]string(nil), initialXRobots[:count]...)
+				out.XRobotsTag = strings.Join(initialXRobots, ", ")
+			} else {
+				out.RawXRobotsTags = nil
+				out.XRobotsTag = ""
+			}
 		}
 		out.FinalStatus = res.StatusCode
 		out.FinalURL = current
@@ -239,9 +254,23 @@ func (f *fetcher) readTerminal(res *http.Response, out *fetched, wantBody bool) 
 	out.ContentType = strings.TrimSpace(strings.SplitN(res.Header.Get("Content-Type"), ";", 2)[0])
 	out.Kind = kindOf(out.ContentType, out.FinalURL)
 	out.LastMod = res.Header.Get("Last-Modified")
-	if values := res.Header.Values("X-Robots-Tag"); len(values) > 0 {
-		// X-Robots-Tag is legitimately repeatable, so keep every value.
-		out.XRobotsTag = strings.Join(values, ", ")
+	if len(out.Hops) == 0 {
+		values := res.Header.Values("X-Robots-Tag")
+		out.XRobotsTag = ""
+		if len(values) > 0 {
+			// X-Robots-Tag is legitimately repeatable, so keep every value.
+			out.XRobotsTag = strings.Join(values, ", ")
+		}
+		out.XRobotsTagTotalCount = len(values)
+		count := len(values)
+		if count > maxXRobotsHeaders {
+			count = maxXRobotsHeaders
+		}
+		if count > 0 {
+			out.RawXRobotsTags = append([]string(nil), values[:count]...)
+		} else {
+			out.RawXRobotsTags = nil
+		}
 	}
 
 	cap := f.opts.maxFileSize()

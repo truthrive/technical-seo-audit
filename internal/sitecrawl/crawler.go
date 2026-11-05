@@ -459,6 +459,9 @@ func (c *coordinator) absorb(r crawlResult) {
 	p.Rendered = r.rendered
 	if r.rendered {
 		p.ExtractionStatus = ""
+		p.RobotsMetaExtracted = false
+		p.RobotsMetaTotalCount = 0
+		p.RawRobotsMeta = nil
 	}
 	p.RobotsState = r.robots.State
 	if r.robots.State == "" {

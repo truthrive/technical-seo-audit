@@ -56,6 +56,8 @@ type document struct {
 	Canonicals          []string
 	CanonicalTotalCount int
 	RawCanonicals       []string
+	RobotsMetaTotalCount int
+	RawRobotsMeta        []RawMetaDirective
 	RelNext             string
 	RelPrev             string
 
@@ -435,6 +437,54 @@ func readAttrs(z *html.Tokenizer, hasAttr bool) map[string]string {
 	return attrs
 }
 
+var recognizedCrawlerAgents = map[string]bool{
+	"googlebot":            true,
+	"googlebot-news":       true,
+	"googlebot-image":      true,
+	"googlebot-video":      true,
+	"adsbot-google":        true,
+	"adsbot-google-mobile": true,
+	"mediapartners-google": true,
+	"apis-google":          true,
+	"google-extended":      true,
+	"bingbot":              true,
+	"adidxbot":             true,
+	"msnbot":               true,
+	"oai-searchbot":        true,
+	"oaisearchbot":         true,
+	"gptbot":               true,
+	"chatgpt-user":         true,
+	"claudebot":            true,
+	"anthropic-ai":         true,
+	"perplexitybot":        true,
+	"applebot":             true,
+	"applebot-extended":    true,
+	"slurp":                true,
+	"duckduckbot":          true,
+	"baiduspider":          true,
+	"yandex":               true,
+	"facebookexternalhit":  true,
+	"meta-externalagent":   true,
+	"twitterbot":           true,
+	"linkedinbot":          true,
+	"bytespider":           true,
+	"ccbot":                true,
+}
+
+func isRecognizedCrawlerAgent(name string) bool {
+	if recognizedCrawlerAgents[name] {
+		return true
+	}
+	return strings.HasPrefix(name, "googlebot-") || strings.HasPrefix(name, "googlebot_")
+}
+
+func isRobotsMetaName(name string) bool {
+	if name == "robots" {
+		return true
+	}
+	return isRecognizedCrawlerAgent(name)
+}
+
 func (d *document) readMeta(attrs map[string]string) {
 	content := strings.TrimSpace(attrs["content"])
 
@@ -470,7 +520,8 @@ func (d *document) readMeta(attrs map[string]string) {
 		return
 	}
 
-	name := strings.ToLower(strings.TrimSpace(attrs["name"]))
+	rawName := attrs["name"]
+	name := strings.ToLower(strings.TrimSpace(rawName))
 	if name == "" {
 		return
 	}
@@ -478,6 +529,21 @@ func (d *document) readMeta(attrs map[string]string) {
 		d.TwitterTags[strings.TrimPrefix(name, "twitter:")] = content
 		return
 	}
+
+	if isRobotsMetaName(name) {
+		d.RobotsMetaTotalCount++
+		contentRaw, hasContent := attrs["content"]
+		if len(d.RawRobotsMeta) < maxRobotsMeta {
+			d.RawRobotsMeta = append(d.RawRobotsMeta, RawMetaDirective{
+				Seq:            len(d.RawRobotsMeta),
+				Name:           name,
+				NameRaw:        rawName,
+				ContentRaw:     contentRaw,
+				HasContentAttr: hasContent,
+			})
+		}
+	}
+
 	d.MetaTags[name] = content
 
 	switch name {
