@@ -129,6 +129,13 @@ const (
 	ErrCancelled  = "cancelled"
 )
 
+// HTML extraction completeness statuses persisted on Page.ExtractionStatus.
+const (
+	ExtractionStatusComplete           = "complete"
+	ExtractionStatusTruncatedSizeLimit = "truncated_size_limit"
+	ExtractionStatusReadError          = "read_error"
+)
+
 // Indexability reasons, shown in the Indexability Status column.
 const (
 	IndexNoindex       = "noindex"
@@ -415,21 +422,26 @@ type Page struct {
 	BotBlocked  bool   `json:"botBlocked"`
 
 	// head
-	Title       string   `json:"title"`
-	Titles      []string `json:"titles"` // every <title>, to flag multiples
-	MetaDesc    string   `json:"metaDesc"`
-	MetaDescs   []string `json:"metaDescs"`
-	H1          []string `json:"h1"`
-	H2          []string `json:"h2"`
-	H3          []string `json:"h3"`
-	WordCount   int      `json:"wordCount"`
-	TextRatio   float64  `json:"textRatio"`
-	Lang        string   `json:"lang"`
-	Charset     string   `json:"charset"`
-	Viewport    string   `json:"viewport"`
-	Canonical   string   `json:"canonical"`
-	Canonicals  []string `json:"canonicals"`
-	MetaRobots  string   `json:"metaRobots"`
+	Title               string   `json:"title"`
+	Titles              []string `json:"titles"` // every <title>, to flag multiples
+	MetaDesc            string   `json:"metaDesc"`
+	MetaDescs           []string `json:"metaDescs"`
+	H1                  []string `json:"h1"`
+	H2                  []string `json:"h2"`
+	H3                  []string `json:"h3"`
+	WordCount           int      `json:"wordCount"`
+	TextRatio           float64  `json:"textRatio"`
+	Lang                string   `json:"lang"`
+	Charset             string   `json:"charset"`
+	Viewport            string   `json:"viewport"`
+	Canonical           string   `json:"canonical"`
+	Canonicals          []string `json:"canonicals"`
+	CanonicalTotalCount int      `json:"canonical_total_count,omitempty"`
+	RawCanonicals       []string `json:"raw_canonicals,omitempty"`
+	BaseHrefRaw         string   `json:"base_href_raw,omitempty"`
+	BaseHrefCount       int      `json:"base_href_count,omitempty"`
+	ExtractionStatus    string   `json:"extraction_status,omitempty"`
+	MetaRobots          string   `json:"metaRobots"`
 	XRobotsTag  string   `json:"xRobotsTag"`
 	MetaRefresh string   `json:"metaRefresh,omitempty"`
 	RelNext     string   `json:"relNext,omitempty"`

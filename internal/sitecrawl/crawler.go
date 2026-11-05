@@ -457,6 +457,9 @@ func (c *coordinator) absorb(r crawlResult) {
 
 	p := buildPage(r.item, r.res, c.seedHost, c.opts)
 	p.Rendered = r.rendered
+	if r.rendered {
+		p.ExtractionStatus = ""
+	}
 	p.RobotsState = r.robots.State
 	if r.robots.State == "" {
 		p.RobotsState = RobotsUnknown

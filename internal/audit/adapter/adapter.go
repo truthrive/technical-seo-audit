@@ -353,7 +353,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		AuditRunID:               req.AuditRunID,
 		CreatedAt:                time.Now().UTC(),
 		SnapshotStatus:           audit.SnapshotBuilding,
-		NormalizationVersion:     "v1.9.0",
+		NormalizationVersion:     "v1.10.0",
 		CrawlComplete:            crawlComplete,
 		SitemapDiscoveryComplete: false,
 		RenderSelectionComplete:  false,
@@ -902,6 +902,20 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		isHTML := pr.kind == sitecrawl.KindHTML || strings.Contains(pr.contentType, "html")
 		if isHTML {
 			isRendered := (pr.rendered == 1 || pr.page.Rendered)
+			htmlExtractionStatus := classifyHTMLExtractionStatus(pr, isRendered)
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "html_extraction_status",
+				Value:              htmlExtractionStatus,
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+
 			if isRendered {
 				evidenceGaps = append(evidenceGaps, EvidenceGap{
 					GapCode:         GapRenderedRawSourceUnavailable,
@@ -992,6 +1006,11 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					metaDescVal = pr.metaDesc
 				}
 
+				var rawCanonSlice []string
+				if len(pr.page.RawCanonicals) > 0 {
+					rawCanonSlice = append([]string(nil), pr.page.RawCanonicals...)
+				}
+
 				htmlObs := audit.HtmlObservation{
 					HTMLObservationID:   audit.HtmlObservationID(fmt.Sprintf("html:%s:%d", req.AuditRunID, urlID)),
 					AuditRunID:          req.AuditRunID,
@@ -1002,7 +1021,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					H1Values:            h1Values,
 					MetaRobotsRaw:       metaRobotsRaw,
 					XRobotsRaw:          xRobotsRaw,
-					CanonicalRawValues:  nil, // Raw canonical syntax unavailable
+					CanonicalRawValues:  rawCanonSlice,
 					MainTextPresent:     nil, // Not verified
 					MainTextFingerprint: "",
 					ContentFingerprint:  "",
@@ -1081,8 +1100,20 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					canonicals = []string{c}
 				}
 
+				hasRawProvenance := pr.page.ExtractionStatus != "" || pr.page.CanonicalTotalCount > 0 || len(pr.page.RawCanonicals) > 0
+				totalCount := len(canonicals)
+				if hasRawProvenance {
+					totalCount = pr.page.CanonicalTotalCount
+					if len(pr.page.RawCanonicals) > totalCount {
+						totalCount = len(pr.page.RawCanonicals)
+					}
+					if len(canonicals) > totalCount {
+						totalCount = len(canonicals)
+					}
+				}
+
 				// canonical_count: count declarations preserved by SiteCrawl.
-				// Duplicates must remain counted.
+				// Duplicates and empty href declarations remain counted.
 				// For trustworthy non-rendered HTML with no canonical: canonical_count = 0.
 				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
 					ObservationID:      nextObsID(),
@@ -1091,13 +1122,13 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					SubjectType:        audit.SubjectURL,
 					SubjectRef:         string(urlIDStr),
 					Field:              "canonical_count",
-					Value:              strconv.Itoa(len(canonicals)),
+					Value:              strconv.Itoa(totalCount),
 					DerivationType:     audit.DerivationNormalized,
 					SourceEvidenceRefs: []string{pageSrcRef},
 					ObservedAt:         obsTime,
 				})
 
-				if len(canonicals) > 0 {
+				if totalCount > 0 {
 					var targetIDs []audit.URLID
 					for _, c := range canonicals {
 						if tid, ok := idsByURL[c]; ok {
@@ -1105,19 +1136,51 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 						}
 					}
 
-					canonicalObservations = append(canonicalObservations, audit.CanonicalObservation{
-						CanonicalObservationID: audit.CanonicalObservationID(fmt.Sprintf("canon:%s:%d", req.AuditRunID, urlID)),
-						AuditRunID:             req.AuditRunID,
-						URLID:                  urlIDStr,
-						CanonicalCount:         len(canonicals),
-						RawValues:              nil, // Raw canonical syntax unavailable
-						NormalizedValues:       canonicals,
-						ResolvedTargetURLIDs:   targetIDs,
-						ParseErrors:            nil,
-						ObservedAt:             obsTime,
-					})
+					sampleTruncated := false
+					if hasRawProvenance {
+						sampleTruncated = totalCount > len(pr.page.RawCanonicals) && len(pr.page.RawCanonicals) > 0
+						if totalCount > 5 && len(pr.page.RawCanonicals) <= 5 {
+							sampleTruncated = true
+						}
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "canonical_sample_truncated",
+							Value:              strconv.FormatBool(sampleTruncated),
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+						if sampleTruncated {
+							evidenceGaps = append(evidenceGaps, EvidenceGap{
+								GapCode:         GapCanonicalSampleCapped,
+								SubjectRef:      string(urlIDStr),
+								Field:           "canonical_raw",
+								Reason:          fmt.Sprintf("Page declared %d canonical tags, exceeding the 5-item sample cap; only the first %d raw/resolved declarations were retained.", totalCount, len(pr.page.RawCanonicals)),
+								SourceComponent: "sitecrawl_pages",
+							})
+						}
+					}
 
-					// Keep existing canonical_resolved semantics unchanged
+					for _, rawC := range pr.page.RawCanonicals {
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "canonical_raw",
+							Value:              rawC,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+					}
+
+					// Keep existing canonical_resolved semantics unchanged (non-empty resolved strings only)
 					for _, c := range canonicals {
 						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
 							ObservationID:      nextObsID(),
@@ -1133,43 +1196,203 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 						})
 					}
 
-					// Normalize each usable canonical through Audit URL normalization rules.
-					allNormalized := true
 					var (
+						allNormalized    = true
 						normTargets      []string
 						seenDistinctNorm = make(map[string]struct{})
 						distinctTargets  []string
+						parseErrors      []string
 					)
-					for _, c := range canonicals {
-						normTarget, err := normalizeCanonicalTarget(c, pr.url)
-						if err != nil {
-							allNormalized = false
-							continue
-						}
-						normTargets = append(normTargets, normTarget)
+
+					if totalCount == 1 && hasRawProvenance && len(pr.page.RawCanonicals) == 1 {
+						syntaxStatus, parseErr, normTarget := classifySingleCanonical(
+							pr.page.RawCanonicals[0],
+							pr.page.BaseHrefRaw,
+							pr.page.BaseHrefCount,
+							pr.url,
+						)
 						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
 							ObservationID:      nextObsID(),
 							AuditRunID:         req.AuditRunID,
 							SnapshotID:         req.SnapshotID,
 							SubjectType:        audit.SubjectURL,
 							SubjectRef:         string(urlIDStr),
-							Field:              "canonical_normalized_target",
-							Value:              normTarget,
+							Field:              "canonical_syntax_status",
+							Value:              syntaxStatus,
 							DerivationType:     audit.DerivationNormalized,
 							SourceEvidenceRefs: []string{pageSrcRef},
 							ObservedAt:         obsTime,
 						})
-						if _, exists := seenDistinctNorm[normTarget]; !exists {
-							seenDistinctNorm[normTarget] = struct{}{}
+						if parseErr != "" {
+							parseErrors = append(parseErrors, parseErr)
+							normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+								ObservationID:      nextObsID(),
+								AuditRunID:         req.AuditRunID,
+								SnapshotID:         req.SnapshotID,
+								SubjectType:        audit.SubjectURL,
+								SubjectRef:         string(urlIDStr),
+								Field:              "canonical_parse_error",
+								Value:              parseErr,
+								DerivationType:     audit.DerivationNormalized,
+								SourceEvidenceRefs: []string{pageSrcRef},
+								ObservedAt:         obsTime,
+							})
+						}
+						if syntaxStatus == "valid" && normTarget != "" {
+							normTargets = append(normTargets, normTarget)
 							distinctTargets = append(distinctTargets, normTarget)
+							normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+								ObservationID:      nextObsID(),
+								AuditRunID:         req.AuditRunID,
+								SnapshotID:         req.SnapshotID,
+								SubjectType:        audit.SubjectURL,
+								SubjectRef:         string(urlIDStr),
+								Field:              "canonical_normalized_target",
+								Value:              normTarget,
+								DerivationType:     audit.DerivationNormalized,
+								SourceEvidenceRefs: []string{pageSrcRef},
+								ObservedAt:         obsTime,
+							})
+						} else {
+							allNormalized = false
+						}
+					} else if totalCount == 1 && !hasRawProvenance {
+						// Legacy single-canonical row without RawCanonicals provenance
+						for _, c := range canonicals {
+							normTarget, err := normalizeCanonicalTarget(c, pr.url)
+							if err != nil {
+								allNormalized = false
+								continue
+							}
+							normTargets = append(normTargets, normTarget)
+							normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+								ObservationID:      nextObsID(),
+								AuditRunID:         req.AuditRunID,
+								SnapshotID:         req.SnapshotID,
+								SubjectType:        audit.SubjectURL,
+								SubjectRef:         string(urlIDStr),
+								Field:              "canonical_normalized_target",
+								Value:              normTarget,
+								DerivationType:     audit.DerivationNormalized,
+								SourceEvidenceRefs: []string{pageSrcRef},
+								ObservedAt:         obsTime,
+							})
+							if _, exists := seenDistinctNorm[normTarget]; !exists {
+								seenDistinctNorm[normTarget] = struct{}{}
+								distinctTargets = append(distinctTargets, normTarget)
+							}
+						}
+						if !allNormalized || len(normTargets) == 0 {
+							parseErr := "insufficient_evidence:unclassified_normalization_failure"
+							parseErrors = append(parseErrors, parseErr)
+							normalizedObservations = append(normalizedObservations,
+								audit.NormalizedObservation{
+									ObservationID:      nextObsID(),
+									AuditRunID:         req.AuditRunID,
+									SnapshotID:         req.SnapshotID,
+									SubjectType:        audit.SubjectURL,
+									SubjectRef:         string(urlIDStr),
+									Field:              "canonical_syntax_status",
+									Value:              "insufficient_evidence",
+									DerivationType:     audit.DerivationNormalized,
+									SourceEvidenceRefs: []string{pageSrcRef},
+									ObservedAt:         obsTime,
+								},
+								audit.NormalizedObservation{
+									ObservationID:      nextObsID(),
+									AuditRunID:         req.AuditRunID,
+									SnapshotID:         req.SnapshotID,
+									SubjectType:        audit.SubjectURL,
+									SubjectRef:         string(urlIDStr),
+									Field:              "canonical_parse_error",
+									Value:              parseErr,
+									DerivationType:     audit.DerivationNormalized,
+									SourceEvidenceRefs: []string{pageSrcRef},
+									ObservedAt:         obsTime,
+								},
+							)
+						}
+					} else {
+						// Multi-canonical (totalCount > 1) or synthetic raw provenance without single RawCanonicals
+						if hasRawProvenance && len(pr.page.RawCanonicals) > 0 {
+							for _, rawC := range pr.page.RawCanonicals {
+								status, parseErr, normTarget := classifySingleCanonical(
+									rawC,
+									pr.page.BaseHrefRaw,
+									pr.page.BaseHrefCount,
+									pr.url,
+								)
+								if parseErr != "" {
+									parseErrors = append(parseErrors, parseErr)
+								}
+								if status != "valid" || normTarget == "" {
+									allNormalized = false
+									continue
+								}
+								normTargets = append(normTargets, normTarget)
+								normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+									ObservationID:      nextObsID(),
+									AuditRunID:         req.AuditRunID,
+									SnapshotID:         req.SnapshotID,
+									SubjectType:        audit.SubjectURL,
+									SubjectRef:         string(urlIDStr),
+									Field:              "canonical_normalized_target",
+									Value:              normTarget,
+									DerivationType:     audit.DerivationNormalized,
+									SourceEvidenceRefs: []string{pageSrcRef},
+									ObservedAt:         obsTime,
+								})
+								if _, exists := seenDistinctNorm[normTarget]; !exists {
+									seenDistinctNorm[normTarget] = struct{}{}
+									distinctTargets = append(distinctTargets, normTarget)
+								}
+							}
+						} else {
+							for _, c := range canonicals {
+								normTarget, err := normalizeCanonicalTarget(c, pr.url)
+								if err != nil {
+									allNormalized = false
+									continue
+								}
+								normTargets = append(normTargets, normTarget)
+								normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+									ObservationID:      nextObsID(),
+									AuditRunID:         req.AuditRunID,
+									SnapshotID:         req.SnapshotID,
+									SubjectType:        audit.SubjectURL,
+									SubjectRef:         string(urlIDStr),
+									Field:              "canonical_normalized_target",
+									Value:              normTarget,
+									DerivationType:     audit.DerivationNormalized,
+									SourceEvidenceRefs: []string{pageSrcRef},
+									ObservedAt:         obsTime,
+								})
+								if _, exists := seenDistinctNorm[normTarget]; !exists {
+									seenDistinctNorm[normTarget] = struct{}{}
+									distinctTargets = append(distinctTargets, normTarget)
+								}
+							}
 						}
 					}
 
+					canonicalObservations = append(canonicalObservations, audit.CanonicalObservation{
+						CanonicalObservationID: audit.CanonicalObservationID(fmt.Sprintf("canon:%s:%d", req.AuditRunID, urlID)),
+						AuditRunID:             req.AuditRunID,
+						URLID:                  urlIDStr,
+						CanonicalCount:         totalCount,
+						RawValues:              rawCanonSlice,
+						NormalizedValues:       canonicals,
+						ResolvedTargetURLIDs:   targetIDs,
+						ParseErrors:            parseErrors,
+						ObservedAt:             obsTime,
+					})
+
 					// canonical_normalization_complete:
-					// When canonical_count > 0, emit true only if every preserved declaration
-					// can be normalized to a valid HTTP(S) target. Otherwise emit false.
+					// When canonical_count > 0, emit true only if every declaration (including any
+					// unretained declaration beyond the 5-item sample cap) can be normalized to a
+					// valid HTTP(S) target. Otherwise emit false.
 					completeVal := "false"
-					if allNormalized && len(normTargets) == len(canonicals) {
+					if !sampleTruncated && allNormalized && len(normTargets) == totalCount {
 						completeVal = "true"
 					}
 					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
@@ -1394,7 +1617,14 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 	evidenceGaps = append(evidenceGaps, smGaps...)
 
 	// 11. Append conditional and global capability-level evidence gaps
-	if len(canonicalObservations) > 0 {
+	hasLegacyMissingRawCanon := false
+	for _, co := range canonicalObservations {
+		if len(co.RawValues) == 0 {
+			hasLegacyMissingRawCanon = true
+			break
+		}
+	}
+	if hasLegacyMissingRawCanon {
 		evidenceGaps = append(evidenceGaps, EvidenceGap{
 			GapCode:         GapRawCanonicalUnavailable,
 			Field:           "raw_canonical_values",
@@ -1621,6 +1851,194 @@ func normalizeCanonicalTarget(rawCanon string, baseURL string) (string, error) {
 		return "", fmt.Errorf("audit adapter: normalize canonical URL %q: %w", target, err)
 	}
 	return normURL, nil
+}
+
+// classifyHTMLExtractionStatus maps persisted SiteCrawl page transport/extraction state
+// to the four-value html_extraction_status vocabulary ("complete", "truncated_size_limit",
+// "read_error", "missing_legacy").
+func classifyHTMLExtractionStatus(pr *rawPageRecord, isRendered bool) string {
+	if isRendered || len(pr.page.Redirects) > 0 || pr.redirectHops > 0 {
+		return "missing_legacy"
+	}
+	if pr.errorType == sitecrawl.ErrTooLarge || pr.page.ExtractionStatus == sitecrawl.ExtractionStatusTruncatedSizeLimit {
+		return "truncated_size_limit"
+	}
+	if pr.errorType != "" || pr.page.ExtractionStatus == sitecrawl.ExtractionStatusReadError {
+		return "read_error"
+	}
+	if pr.status < 200 || pr.status >= 300 {
+		return "missing_legacy"
+	}
+	if pr.page.ExtractionStatus == sitecrawl.ExtractionStatusComplete {
+		return "complete"
+	}
+	return "missing_legacy"
+}
+
+// hasMalformedHostOrPort checks whether a parsed URL with an authority component has an
+// unparseable or non-numeric port (e.g. "https://example.com:badport") or invalid characters.
+func hasMalformedHostOrPort(u *url.URL) bool {
+	if u == nil {
+		return true
+	}
+	if strings.Contains(u.Host, ":") {
+		h := u.Host
+		// Check IPv6 bracket balance
+		if strings.HasPrefix(h, "[") {
+			closeIdx := strings.Index(h, "]")
+			if closeIdx < 0 {
+				return true
+			}
+			rest := h[closeIdx+1:]
+			if strings.HasPrefix(rest, ":") {
+				portStr := rest[1:]
+				if portStr == "" {
+					return false
+				}
+				if p, err := strconv.Atoi(portStr); err != nil || p <= 0 || p > 65535 {
+					return true
+				}
+			} else if rest != "" {
+				return true
+			}
+			return false
+		}
+		// Non-IPv6 host with colon
+		colonIdx := strings.LastIndex(h, ":")
+		portStr := h[colonIdx+1:]
+		if portStr != "" {
+			if p, err := strconv.Atoi(portStr); err != nil || p <= 0 || p > 65535 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isNonHierarchicalScheme reports whether scheme is an opaque/non-hierarchical URI scheme
+// that cannot serve as a hierarchical base for relative reference resolution.
+func isNonHierarchicalScheme(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "mailto", "javascript", "data", "tel", "urn", "about", "blob":
+		return true
+	default:
+		return false
+	}
+}
+
+// classifySingleCanonical evaluates a single raw canonical declaration against its
+// document <base href> and page URL context under the approved V1.9b contract
+// (DEC-V1.9A-001 & Scenario 6 sub-cases).
+func classifySingleCanonical(rawHref string, baseHrefRaw string, baseHrefCount int, pageURL string) (syntaxStatus string, parseError string, normTarget string) {
+	trimmed := strings.TrimSpace(rawHref)
+	if trimmed == "" {
+		return "parser_error", "parser_error:empty_href", ""
+	}
+	if strings.ContainsAny(trimmed, " \t\r\n") {
+		return "parser_error", "parser_error:malformed_url", ""
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil || hasMalformedHostOrPort(parsed) {
+		return "parser_error", "parser_error:malformed_url", ""
+	}
+
+	// Case 1: Absolute URI with an explicit scheme (Scenario 2, 3, 6b-i, 7, 8)
+	if parsed.IsAbs() {
+		scheme := strings.ToLower(parsed.Scheme)
+		if scheme != "http" && scheme != "https" {
+			return "resolution_error", "resolution_error:unsupported_scheme", ""
+		}
+		if parsed.Hostname() == "" {
+			return "resolution_error", "resolution_error:missing_host", ""
+		}
+		norm, _, err := normalizeURL(trimmed)
+		if err != nil {
+			return "parser_error", "parser_error:malformed_url", ""
+		}
+		return "valid", "", norm
+	}
+
+	// Case 2: Scheme-relative network-path reference (e.g. "//example.com/path" or "///path")
+	if strings.HasPrefix(trimmed, "//") {
+		if parsed.Hostname() == "" {
+			return "resolution_error", "resolution_error:missing_host", ""
+		}
+	}
+
+	// Case 3: Relative canonical reference (!parsed.IsAbs()) — requires base resolution
+	if strings.TrimSpace(pageURL) == "" {
+		return "insufficient_evidence", "insufficient_evidence:missing_base_context", ""
+	}
+	pageBaseParsed, err := url.Parse(pageURL)
+	if err != nil || !pageBaseParsed.IsAbs() {
+		return "insufficient_evidence", "insufficient_evidence:missing_base_context", ""
+	}
+	if _, _, err := normalizeURL(pageURL); err != nil {
+		return "insufficient_evidence", "insufficient_evidence:missing_base_context", ""
+	}
+
+	// Scenario 6c: Multiple <base href> declarations with potentially conflicting bases
+	if baseHrefCount > 1 {
+		return "insufficient_evidence", "insufficient_evidence:missing_base_context", ""
+	}
+
+	baseTrimmed := strings.TrimSpace(baseHrefRaw)
+	// Scenario 4 & Scenario 6b-ii: No <base href>, empty <base href="">, or fragment-only <base href="#frag">
+	// deterministically falls back to the document's FinalURL (pageBaseParsed).
+	if baseHrefCount == 0 || baseTrimmed == "" || strings.HasPrefix(baseTrimmed, "#") {
+		resolved := pageBaseParsed.ResolveReference(parsed).String()
+		norm, _, err := normalizeURL(resolved)
+		if err != nil {
+			return "resolution_error", "resolution_error:missing_host", ""
+		}
+		return "valid", "", norm
+	}
+
+	// Scenario 5, 6a-i, 6a-ii: Single non-empty, non-fragment <base href>
+	if strings.ContainsAny(baseTrimmed, " \t\r\n") {
+		return "insufficient_evidence", "insufficient_evidence:ambiguous_base_fallback", ""
+	}
+	baseParsed, err := url.Parse(baseTrimmed)
+	if err != nil || hasMalformedHostOrPort(baseParsed) {
+		return "insufficient_evidence", "insufficient_evidence:ambiguous_base_fallback", ""
+	}
+
+	var effectiveBase *url.URL
+	if baseParsed.IsAbs() {
+		baseScheme := strings.ToLower(baseParsed.Scheme)
+		if baseScheme != "http" && baseScheme != "https" {
+			// Scenario 6a-i: Valid non-HTTP(S) <base href>
+			if baseParsed.Opaque != "" || isNonHierarchicalScheme(baseScheme) {
+				return "resolution_error", "resolution_error:non_hierarchical_base", ""
+			}
+			return "resolution_error", "resolution_error:unsupported_scheme", ""
+		}
+		if baseParsed.Hostname() == "" {
+			// Scenario 6a-ii: <base href="http:///dir/"> has empty host (malformed HTTP(S) base)
+			return "insufficient_evidence", "insufficient_evidence:ambiguous_base_fallback", ""
+		}
+		if _, _, err := normalizeURL(baseParsed.String()); err != nil {
+			return "insufficient_evidence", "insufficient_evidence:ambiguous_base_fallback", ""
+		}
+		effectiveBase = baseParsed
+	} else {
+		// Relative <base href> (e.g. "/dir/" or "//cdn.example.com/dir/")
+		if strings.HasPrefix(baseTrimmed, "//") && baseParsed.Hostname() == "" {
+			return "insufficient_evidence", "insufficient_evidence:ambiguous_base_fallback", ""
+		}
+		effectiveBase = pageBaseParsed.ResolveReference(baseParsed)
+		if _, _, err := normalizeURL(effectiveBase.String()); err != nil {
+			return "insufficient_evidence", "insufficient_evidence:ambiguous_base_fallback", ""
+		}
+	}
+
+	resolved := effectiveBase.ResolveReference(parsed).String()
+	norm, _, err := normalizeURL(resolved)
+	if err != nil {
+		return "resolution_error", "resolution_error:missing_host", ""
+	}
+	return "valid", "", norm
 }
 
 // normalizeFetchError maps persisted SiteCrawl error slugs into Audit evidence vocabulary.

@@ -324,3 +324,82 @@ func TestExtractTruncatedDocument(t *testing.T) {
 		t.Errorf("title = %q, want the head parsed before truncation", first(d.Titles))
 	}
 }
+
+func TestExtractCanonicalProvenanceAndUncappedCount(t *testing.T) {
+	t.Run("empty and whitespace canonical declarations are counted and raw values preserved", func(t *testing.T) {
+		d := parse(t, "https://example.com/dir/page", `
+<html><head>
+<link rel="canonical" href="">
+<link rel="canonical" href="   ">
+<link rel="canonical">
+<link rel="canonical" href="/valid">
+</head><body>ok</body></html>`)
+
+		if d.CanonicalTotalCount != 4 {
+			t.Fatalf("CanonicalTotalCount = %d, want 4", d.CanonicalTotalCount)
+		}
+		wantRaw := []string{"", "   ", "", "/valid"}
+		if len(d.RawCanonicals) != len(wantRaw) {
+			t.Fatalf("RawCanonicals len = %d, want %d (%v)", len(d.RawCanonicals), len(wantRaw), d.RawCanonicals)
+		}
+		for i, w := range wantRaw {
+			if d.RawCanonicals[i] != w {
+				t.Errorf("RawCanonicals[%d] = %q, want %q", i, d.RawCanonicals[i], w)
+			}
+		}
+		// Backward compatibility: Canonicals only stores non-empty post-absolutized URLs
+		if len(d.Canonicals) != 1 || d.Canonicals[0] != "https://example.com/valid" {
+			t.Errorf("Canonicals = %v, want [https://example.com/valid]", d.Canonicals)
+		}
+	})
+
+	t.Run("more than 5 canonical declarations tracks uncapped total while capping stored samples at 5", func(t *testing.T) {
+		d := parse(t, "https://example.com/", `
+<html><head>
+<link rel="canonical" href="/c1">
+<link rel="canonical" href="">
+<link rel="canonical" href="/c3">
+<link rel="canonical" href="/c4">
+<link rel="canonical" href="/c5">
+<link rel="canonical" href="/c6">
+<link rel="canonical" href="/c7">
+</head><body>ok</body></html>`)
+
+		if d.CanonicalTotalCount != 7 {
+			t.Fatalf("CanonicalTotalCount = %d, want 7", d.CanonicalTotalCount)
+		}
+		if len(d.RawCanonicals) != 5 {
+			t.Fatalf("len(RawCanonicals) = %d, want 5", len(d.RawCanonicals))
+		}
+		wantRaw := []string{"/c1", "", "/c3", "/c4", "/c5"}
+		for i, w := range wantRaw {
+			if d.RawCanonicals[i] != w {
+				t.Errorf("RawCanonicals[%d] = %q, want %q", i, d.RawCanonicals[i], w)
+			}
+		}
+		// Canonicals stores up to 5 non-empty resolved URLs
+		if len(d.Canonicals) != 5 {
+			t.Fatalf("len(Canonicals) = %d, want 5", len(d.Canonicals))
+		}
+	})
+
+	t.Run("base href raw and count are preserved accurately", func(t *testing.T) {
+		d := parse(t, "https://example.com/dir/page", `
+<html><head>
+<base target="_blank">
+<base href="https://cdn.example.com/base/">
+<base href="https://other.example.com/second/">
+<link rel="canonical" href="sub.html">
+</head><body>ok</body></html>`)
+
+		if d.BaseHrefCount != 2 {
+			t.Errorf("BaseHrefCount = %d, want 2 (only <base> with href counted)", d.BaseHrefCount)
+		}
+		if d.BaseHrefRaw != "https://cdn.example.com/base/" {
+			t.Errorf("BaseHrefRaw = %q, want first <base href>", d.BaseHrefRaw)
+		}
+		if len(d.RawCanonicals) != 1 || d.RawCanonicals[0] != "sub.html" {
+			t.Errorf("RawCanonicals = %v, want [sub.html]", d.RawCanonicals)
+		}
+	})
+}

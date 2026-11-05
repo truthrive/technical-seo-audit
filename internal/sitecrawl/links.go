@@ -151,18 +151,29 @@ func collectLinks(f *frontier, srcID int64, p *Page, doc *document, opts Options
 // They have to be crawled, or the rules that verify them have nothing to verify
 // against — a canonical chain is only visible once both ends are known.
 func referencedURLs(p *Page) []string {
-	out := make([]string, 0, len(p.Hreflang)+len(p.Canonicals)+2)
-	out = append(out, p.Canonicals...)
+	candidates := make([]string, 0, len(p.Hreflang)+len(p.Canonicals)+2)
+	candidates = append(candidates, p.Canonicals...)
 	for _, h := range p.Hreflang {
 		if h.URL != "" {
-			out = append(out, h.URL)
+			candidates = append(candidates, h.URL)
 		}
 	}
 	if p.RelNext != "" {
-		out = append(out, p.RelNext)
+		candidates = append(candidates, p.RelNext)
 	}
 	if p.RelPrev != "" {
-		out = append(out, p.RelPrev)
+		candidates = append(candidates, p.RelPrev)
+	}
+	out := make([]string, 0, len(candidates))
+	for _, raw := range candidates {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Host == "" {
+			continue
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "http", "https":
+			out = append(out, raw)
+		}
 	}
 	return out
 }

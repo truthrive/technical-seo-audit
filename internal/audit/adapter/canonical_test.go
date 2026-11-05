@@ -3,11 +3,15 @@ package adapter_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/truthrive/technical-seo-audit/internal/audit"
 	"github.com/truthrive/technical-seo-audit/internal/audit/adapter"
 	"github.com/truthrive/technical-seo-audit/internal/audit/engine"
+	"github.com/truthrive/technical-seo-audit/internal/platform/standalone"
 	"github.com/truthrive/technical-seo-audit/internal/sitecrawl"
 )
 
@@ -718,6 +722,638 @@ func TestAdapter_CanonicalEvidence(t *testing.T) {
 		}
 		if len(results001) != 1 || results001[0].Status != audit.StatusFail {
 			t.Errorf("expected FAIL for AR-INDEX-001 when effective_noindex conflicts with expected_indexable, got %+v", results001)
+		}
+	})
+}
+
+func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
+	// 1. All 4 html_extraction_status states: complete, truncated_size_limit, read_error, missing_legacy
+	t.Run("1. html_extraction_status states", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:v19c:extract:status"
+		u1 := "https://example.com/complete"
+		u2 := "https://example.com/truncated"
+		u3 := "https://example.com/read-error"
+		u4 := "https://example.com/legacy"
+		setupTestRun(t, db, runID, u1)
+		insertURL(t, db, runID, 1, u1)
+		insertURL(t, db, runID, 2, u2)
+		insertURL(t, db, runID, 3, u3)
+		insertURL(t, db, runID, 4, u4)
+
+		p1, _ := json.Marshal(sitecrawl.Page{
+			URL:              u1,
+			Status:           200,
+			Kind:             sitecrawl.KindHTML,
+			ExtractionStatus: sitecrawl.ExtractionStatusComplete,
+			CrawledAt:        "2026-10-01T00:00:10Z",
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, status, content_type, crawled_at)
+			VALUES(?, 1, ?, ?, 'html', 200, 'text/html', '2026-10-01T00:00:10Z')`, runID, u1, string(p1))
+
+		p2, _ := json.Marshal(sitecrawl.Page{
+			URL:              u2,
+			Status:           200,
+			Kind:             sitecrawl.KindHTML,
+			ExtractionStatus: sitecrawl.ExtractionStatusTruncatedSizeLimit,
+			CrawledAt:        "2026-10-01T00:00:11Z",
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, status, content_type, crawled_at)
+			VALUES(?, 2, ?, ?, 'html', 200, 'text/html', '2026-10-01T00:00:11Z')`, runID, u2, string(p2))
+
+		p3, _ := json.Marshal(sitecrawl.Page{
+			URL:              u3,
+			Status:           200,
+			Kind:             sitecrawl.KindHTML,
+			ExtractionStatus: sitecrawl.ExtractionStatusReadError,
+			CrawledAt:        "2026-10-01T00:00:12Z",
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, status, content_type, crawled_at)
+			VALUES(?, 3, ?, ?, 'html', 200, 'text/html', '2026-10-01T00:00:12Z')`, runID, u3, string(p3))
+
+		p4, _ := json.Marshal(sitecrawl.Page{
+			URL:       u4,
+			Status:    200,
+			Kind:      sitecrawl.KindHTML,
+			CrawledAt: "2026-10-01T00:00:13Z",
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, status, content_type, crawled_at)
+			VALUES(?, 4, ?, ?, 'html', 200, 'text/html', '2026-10-01T00:00:13Z')`, runID, u4, string(p4))
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: "audit:v19c:extract",
+			SnapshotID: "snap:v19c:extract",
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+
+		if res.EvidenceSnapshot.NormalizationVersion != "v1.10.0" {
+			t.Errorf("NormalizationVersion = %q, want v1.10.0", res.EvidenceSnapshot.NormalizationVersion)
+		}
+
+		statusBySubj := make(map[string]string)
+		for _, obs := range res.EvidenceSnapshot.NormalizedObservations {
+			if obs.Field == "html_extraction_status" {
+				statusBySubj[obs.SubjectRef] = obs.Value
+			}
+		}
+
+		want := map[string]string{
+			"url:audit:v19c:extract:1": "complete",
+			"url:audit:v19c:extract:2": "truncated_size_limit",
+			"url:audit:v19c:extract:3": "read_error",
+			"url:audit:v19c:extract:4": "missing_legacy",
+		}
+		for subj, w := range want {
+			if got := statusBySubj[subj]; got != w {
+				t.Errorf("%s html_extraction_status = %q, want %q", subj, got, w)
+			}
+		}
+	})
+
+	// 2. Empty and whitespace canonical declarations + parser_error / resolution_error classification
+	t.Run("2. single canonical syntax and resolution error classification", func(t *testing.T) {
+		cases := []struct {
+			name           string
+			rawHref        string
+			resolvedSlice  []string
+			baseHrefRaw    string
+			baseHrefCount  int
+			wantStatus     string
+			wantParseError string
+			wantNormTarget string
+			wantComplete   string
+		}{
+			{
+				name:           "Scenario 9: empty href",
+				rawHref:        "",
+				resolvedSlice:  nil,
+				wantStatus:     "parser_error",
+				wantParseError: "parser_error:empty_href",
+				wantComplete:   "false",
+			},
+			{
+				name:           "Scenario 10: whitespace-only href",
+				rawHref:        "   \t  ",
+				resolvedSlice:  nil,
+				wantStatus:     "parser_error",
+				wantParseError: "parser_error:empty_href",
+				wantComplete:   "false",
+			},
+			{
+				name:           "Scenario 8a: malformed URL unclosed IPv6",
+				rawHref:        "http://[::1",
+				resolvedSlice:  []string{"http://[::1"},
+				wantStatus:     "parser_error",
+				wantParseError: "parser_error:malformed_url",
+				wantComplete:   "false",
+			},
+			{
+				name:           "Scenario 8b: malformed URL bad port",
+				rawHref:        "https://example.com:badport/page",
+				resolvedSlice:  []string{"https://example.com:badport/page"},
+				wantStatus:     "parser_error",
+				wantParseError: "parser_error:malformed_url",
+				wantComplete:   "false",
+			},
+			{
+				name:           "Scenario 8c: missing host http:///path",
+				rawHref:        "http:///path",
+				resolvedSlice:  []string{"http:///path"},
+				wantStatus:     "resolution_error",
+				wantParseError: "resolution_error:missing_host",
+				wantComplete:   "false",
+			},
+			{
+				name:           "Scenario 7: unsupported scheme mailto",
+				rawHref:        "mailto:seo@example.com",
+				resolvedSlice:  []string{"mailto:seo@example.com"},
+				wantStatus:     "resolution_error",
+				wantParseError: "resolution_error:unsupported_scheme",
+				wantComplete:   "false",
+			},
+			{
+				name:           "Scenario 5: relative canonical with valid HTTP(S) base href",
+				rawHref:        "sub/page.html",
+				resolvedSlice:  []string{"https://cdn.example.com/dir/sub/page.html"},
+				baseHrefRaw:    "https://cdn.example.com/dir/",
+				baseHrefCount:  1,
+				wantStatus:     "valid",
+				wantParseError: "",
+				wantNormTarget: "https://cdn.example.com/dir/sub/page.html",
+				wantComplete:   "true",
+			},
+			{
+				name:           "Scenario 6a-i: relative canonical with valid ftp base href",
+				rawHref:        "sub.html",
+				resolvedSlice:  []string{"ftp://files.example.com/dir/sub.html"},
+				baseHrefRaw:    "ftp://files.example.com/dir/",
+				baseHrefCount:  1,
+				wantStatus:     "resolution_error",
+				wantParseError: "resolution_error:unsupported_scheme",
+				wantComplete:   "false",
+			},
+			{
+				name:           "Scenario 6a-i: relative canonical with opaque mailto base href",
+				rawHref:        "sub.html",
+				resolvedSlice:  []string{"https://example.com/dir/sub.html"},
+				baseHrefRaw:    "mailto:admin@example.com",
+				baseHrefCount:  1,
+				wantStatus:     "resolution_error",
+				wantParseError: "resolution_error:non_hierarchical_base",
+				wantComplete:   "false",
+			},
+			{
+				name:           "Scenario 6a-ii: relative canonical with malformed base href http://[::1",
+				rawHref:        "sub.html",
+				resolvedSlice:  []string{"https://example.com/dir/sub.html"},
+				baseHrefRaw:    "http://[::1",
+				baseHrefCount:  1,
+				wantStatus:     "insufficient_evidence",
+				wantParseError: "insufficient_evidence:ambiguous_base_fallback",
+				wantComplete:   "false",
+			},
+			{
+				name:           "Scenario 6a-ii: relative canonical with empty-host base href http:///dir/",
+				rawHref:        "sub.html",
+				resolvedSlice:  []string{"https://example.com/dir/sub.html"},
+				baseHrefRaw:    "http:///dir/",
+				baseHrefCount:  1,
+				wantStatus:     "insufficient_evidence",
+				wantParseError: "insufficient_evidence:ambiguous_base_fallback",
+				wantComplete:   "false",
+			},
+			{
+				name:           "Scenario 6b-i: absolute HTTP(S) canonical ignores malformed base href",
+				rawHref:        "https://example.com/canonical-target",
+				resolvedSlice:  []string{"https://example.com/canonical-target"},
+				baseHrefRaw:    "http://[::1",
+				baseHrefCount:  1,
+				wantStatus:     "valid",
+				wantParseError: "",
+				wantNormTarget: "https://example.com/canonical-target",
+				wantComplete:   "true",
+			},
+			{
+				name:           "Scenario 6b-ii: relative canonical with empty base href falls back to page URL",
+				rawHref:        "sub.html",
+				resolvedSlice:  []string{"https://example.com/dir/sub.html"},
+				baseHrefRaw:    "",
+				baseHrefCount:  1,
+				wantStatus:     "valid",
+				wantParseError: "",
+				wantNormTarget: "https://example.com/dir/sub.html",
+				wantComplete:   "true",
+			},
+			{
+				name:           "Scenario 6b-ii: relative canonical with fragment-only base href falls back to page URL",
+				rawHref:        "sub.html",
+				resolvedSlice:  []string{"https://example.com/dir/sub.html"},
+				baseHrefRaw:    "#section",
+				baseHrefCount:  1,
+				wantStatus:     "valid",
+				wantParseError: "",
+				wantNormTarget: "https://example.com/dir/sub.html",
+				wantComplete:   "true",
+			},
+			{
+				name:           "Scenario 6c: relative canonical with multiple conflicting base href declarations",
+				rawHref:        "sub.html",
+				resolvedSlice:  []string{"https://example.com/dir/sub.html"},
+				baseHrefRaw:    "https://example.com/b1/",
+				baseHrefCount:  2,
+				wantStatus:     "insufficient_evidence",
+				wantParseError: "insufficient_evidence:missing_base_context",
+				wantComplete:   "false",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				db := newTestDB(t)
+				runID := "run:v19c:case"
+				pageURL := "https://example.com/dir/page.html"
+				setupTestRun(t, db, runID, pageURL)
+				insertURL(t, db, runID, 1, pageURL)
+
+				pData, _ := json.Marshal(sitecrawl.Page{
+					URL:                 pageURL,
+					Status:              200,
+					Kind:                sitecrawl.KindHTML,
+					ExtractionStatus:    sitecrawl.ExtractionStatusComplete,
+					CanonicalTotalCount: 1,
+					RawCanonicals:       []string{tc.rawHref},
+					Canonicals:          tc.resolvedSlice,
+					BaseHrefRaw:         tc.baseHrefRaw,
+					BaseHrefCount:       tc.baseHrefCount,
+					CrawledAt:           "2026-10-01T00:00:10Z",
+				})
+				_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, status, content_type, crawled_at)
+					VALUES(?, 1, ?, ?, 'html', 200, 'text/html', '2026-10-01T00:00:10Z')`, runID, pageURL, string(pData))
+
+				res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+					CrawlRunID: runID,
+					AuditRunID: "audit:v19c:case",
+					SnapshotID: "snap:v19c:case",
+				})
+				if err != nil {
+					t.Fatalf("build failed: %v", err)
+				}
+
+				fields := make(map[string][]string)
+				for _, obs := range res.EvidenceSnapshot.NormalizedObservations {
+					if obs.SubjectRef == "url:audit:v19c:case:1" {
+						fields[obs.Field] = append(fields[obs.Field], obs.Value)
+					}
+				}
+
+				if v := fields["canonical_count"]; len(v) != 1 || v[0] != "1" {
+					t.Errorf("canonical_count = %v, want [1]", v)
+				}
+				if v := fields["canonical_raw"]; len(v) != 1 || v[0] != tc.rawHref {
+					t.Errorf("canonical_raw = %v, want [%q]", v, tc.rawHref)
+				}
+				if v := fields["canonical_syntax_status"]; len(v) != 1 || v[0] != tc.wantStatus {
+					t.Errorf("canonical_syntax_status = %v, want [%q]", v, tc.wantStatus)
+				}
+				if tc.wantParseError == "" {
+					if v, ok := fields["canonical_parse_error"]; ok {
+						t.Errorf("unexpected canonical_parse_error = %v", v)
+					}
+				} else {
+					if v := fields["canonical_parse_error"]; len(v) != 1 || v[0] != tc.wantParseError {
+						t.Errorf("canonical_parse_error = %v, want [%q]", v, tc.wantParseError)
+					}
+				}
+				if tc.wantNormTarget == "" {
+					if v, ok := fields["canonical_normalized_target"]; ok {
+						t.Errorf("unexpected canonical_normalized_target = %v", v)
+					}
+				} else {
+					if v := fields["canonical_normalized_target"]; len(v) != 1 || v[0] != tc.wantNormTarget {
+						t.Errorf("canonical_normalized_target = %v, want [%q]", v, tc.wantNormTarget)
+					}
+				}
+				if v := fields["canonical_normalization_complete"]; len(v) != 1 || v[0] != tc.wantComplete {
+					t.Errorf("canonical_normalization_complete = %v, want [%q]", v, tc.wantComplete)
+				}
+			})
+		}
+	})
+
+	// 3. > 5 canonical declarations (uncapped count, sample truncation, GapCanonicalSampleCapped, and AR-CANON-003/004/006/007 compatibility)
+	t.Run("3. more than 5 canonical declarations and cross-rule compatibility", func(t *testing.T) {
+		db := newTestDB(t)
+		runID := "run:v19c:gt5"
+		u1 := "https://example.com/six-identical-in-sample"
+		u2 := "https://example.com/empty-canon-only"
+		u3 := "https://example.com/two-with-one-empty"
+		setupTestRun(t, db, runID, u1)
+		insertURL(t, db, runID, 1, u1)
+		insertURL(t, db, runID, 2, u2)
+		insertURL(t, db, runID, 3, u3)
+
+		// u1: 6 canonical tags, first 5 retained samples are identical
+		p1, _ := json.Marshal(sitecrawl.Page{
+			URL:                 u1,
+			Status:              200,
+			Kind:                sitecrawl.KindHTML,
+			ExtractionStatus:    sitecrawl.ExtractionStatusComplete,
+			CanonicalTotalCount: 6,
+			RawCanonicals:       []string{u1, u1, u1, u1, u1},
+			Canonicals:          []string{u1, u1, u1, u1, u1},
+			CrawledAt:           "2026-10-01T00:00:10Z",
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, status, content_type, crawled_at)
+			VALUES(?, 1, ?, ?, 'html', 200, 'text/html', '2026-10-01T00:00:10Z')`, runID, u1, string(p1))
+
+		// u2: 1 empty canonical tag (<link rel="canonical" href="">)
+		p2, _ := json.Marshal(sitecrawl.Page{
+			URL:                 u2,
+			Status:              200,
+			Kind:                sitecrawl.KindHTML,
+			ExtractionStatus:    sitecrawl.ExtractionStatusComplete,
+			CanonicalTotalCount: 1,
+			RawCanonicals:       []string{""},
+			Canonicals:          nil,
+			CrawledAt:           "2026-10-01T00:00:11Z",
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, status, content_type, crawled_at)
+			VALUES(?, 2, ?, ?, 'html', 200, 'text/html', '2026-10-01T00:00:11Z')`, runID, u2, string(p2))
+
+		// u3: 2 canonical tags ([u3, ""])
+		p3, _ := json.Marshal(sitecrawl.Page{
+			URL:                 u3,
+			Status:              200,
+			Kind:                sitecrawl.KindHTML,
+			ExtractionStatus:    sitecrawl.ExtractionStatusComplete,
+			CanonicalTotalCount: 2,
+			RawCanonicals:       []string{u3, ""},
+			Canonicals:          []string{u3},
+			CrawledAt:           "2026-10-01T00:00:12Z",
+		})
+		_, _ = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, status, content_type, crawled_at)
+			VALUES(?, 3, ?, ?, 'html', 200, 'text/html', '2026-10-01T00:00:12Z')`, runID, u3, string(p3))
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: runID,
+			AuditRunID: "audit:v19c:gt5",
+			SnapshotID: "snap:v19c:gt5",
+		})
+		if err != nil {
+			t.Fatalf("build failed: %v", err)
+		}
+
+		// Check u1 observations and GapCanonicalSampleCapped
+		u1Fields := make(map[string][]string)
+		for _, obs := range res.EvidenceSnapshot.NormalizedObservations {
+			if obs.SubjectRef == "url:audit:v19c:gt5:1" {
+				u1Fields[obs.Field] = append(u1Fields[obs.Field], obs.Value)
+			}
+		}
+		if v := u1Fields["canonical_count"]; len(v) != 1 || v[0] != "6" {
+			t.Errorf("u1 canonical_count = %v, want [6]", v)
+		}
+		if v := u1Fields["canonical_sample_truncated"]; len(v) != 1 || v[0] != "true" {
+			t.Errorf("u1 canonical_sample_truncated = %v, want [true]", v)
+		}
+		if v := u1Fields["canonical_normalization_complete"]; len(v) != 1 || v[0] != "false" {
+			t.Errorf("u1 canonical_normalization_complete = %v, want [false] when sample is truncated", v)
+		}
+
+		foundSampleGap := false
+		for _, g := range res.EvidenceGaps {
+			if g.GapCode == adapter.GapCanonicalSampleCapped && g.SubjectRef == "url:audit:v19c:gt5:1" {
+				foundSampleGap = true
+			}
+			if g.GapCode == adapter.GapRawCanonicalUnavailable {
+				t.Errorf("GapRawCanonicalUnavailable must not be emitted when all CanonicalObservations have RawValues")
+			}
+		}
+		if !foundSampleGap {
+			t.Errorf("expected GapCanonicalSampleCapped for u1 with 6 canonical tags")
+		}
+
+		// Evaluate existing canonical rules (AR-CANON-003, AR-CANON-004, AR-CANON-006, AR-CANON-007)
+		eng, err := engine.New()
+		if err != nil {
+			t.Fatalf("engine.New failed: %v", err)
+		}
+		if gotImpl := len(eng.ImplementedRuleIDs()); gotImpl != 19 {
+			t.Fatalf("expected executable rule count to remain 19 in V1.9c, got %d", gotImpl)
+		}
+
+		evalStatusMap := func(ruleID string) map[string]audit.RuleResultStatus {
+			rrs, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, ruleID)
+			if err != nil {
+				t.Fatalf("EvaluateRule(%s) failed: %v", ruleID, err)
+			}
+			m := make(map[string]audit.RuleResultStatus)
+			for _, r := range rrs {
+				m[r.SubjectRef] = r.Status
+			}
+			return m
+		}
+
+		// AR-CANON-003: u1 -> PASS (has non-empty canonical_resolved), u2 -> WARNING (empty href has no canonical_resolved), u3 -> PASS
+		c003 := evalStatusMap("AR-CANON-003")
+		if c003["url:audit:v19c:gt5:1"] != audit.StatusPass {
+			t.Errorf("AR-CANON-003 u1 = %s, want PASS", c003["url:audit:v19c:gt5:1"])
+		}
+		if c003["url:audit:v19c:gt5:2"] != audit.StatusWarning {
+			t.Errorf("AR-CANON-003 u2 (empty href) = %s, want WARNING", c003["url:audit:v19c:gt5:2"])
+		}
+		if c003["url:audit:v19c:gt5:3"] != audit.StatusPass {
+			t.Errorf("AR-CANON-003 u3 = %s, want PASS", c003["url:audit:v19c:gt5:3"])
+		}
+
+		// AR-CANON-004: u1 (6 tags, sample truncated) -> UNKNOWN; u2 (1 empty tag) -> PASS; u3 (2 tags, 1 empty) -> UNKNOWN
+		c004 := evalStatusMap("AR-CANON-004")
+		if c004["url:audit:v19c:gt5:1"] != audit.StatusUnknown {
+			t.Errorf("AR-CANON-004 u1 (6 tags, sample truncated) = %s, want UNKNOWN", c004["url:audit:v19c:gt5:1"])
+		}
+		if c004["url:audit:v19c:gt5:2"] != audit.StatusPass {
+			t.Errorf("AR-CANON-004 u2 (1 empty tag) = %s, want PASS", c004["url:audit:v19c:gt5:2"])
+		}
+		if c004["url:audit:v19c:gt5:3"] != audit.StatusUnknown {
+			t.Errorf("AR-CANON-004 u3 (2 tags, 1 empty) = %s, want UNKNOWN", c004["url:audit:v19c:gt5:3"])
+		}
+
+		// AR-CANON-006: u1, u2, u3 all have canonical_normalization_complete=false -> UNKNOWN
+		c006 := evalStatusMap("AR-CANON-006")
+		for i := 1; i <= 3; i++ {
+			subj := "url:audit:v19c:gt5:" + string(rune('0'+i))
+			if c006[subj] != audit.StatusUnknown {
+				t.Errorf("AR-CANON-006 %s = %s, want UNKNOWN", subj, c006[subj])
+			}
+		}
+
+		// AR-CANON-007: u1, u2, u3 all have canonical_normalization_complete=false -> NOT_APPLICABLE
+		c007 := evalStatusMap("AR-CANON-007")
+		for i := 1; i <= 3; i++ {
+			subj := "url:audit:v19c:gt5:" + string(rune('0'+i))
+			if c007[subj] != audit.StatusNotApplicable {
+				t.Errorf("AR-CANON-007 %s = %s, want NOT_APPLICABLE", subj, c007[subj])
+			}
+		}
+	})
+
+	// 4. Hermetic end-to-end SiteCrawl -> SQLite -> Adapter -> Engine pipeline test
+	t.Run("4. hermetic end-to-end crawl to adapter canonical evidence", func(t *testing.T) {
+		mux := http.NewServeMux()
+		var srvURL string
+
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, `<!doctype html><html><head>
+<link rel="canonical" href="/valid-rel">
+</head><body>
+<a href="/valid-rel">Valid Rel</a>
+<a href="/empty-href">Empty Href</a>
+<a href="/six-tags">Six Tags</a>
+<a href="/ftp-base">FTP Base</a>
+<a href="/bad-base-abs-canon">Bad Base Abs Canon</a>
+</body></html>`)
+		})
+
+		mux.HandleFunc("/valid-rel", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, `<!doctype html><html><head><link rel="canonical" href="%s/valid-rel"></head><body>Target</body></html>`, srvURL)
+		})
+
+		mux.HandleFunc("/empty-href", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<!doctype html><html><head><link rel="canonical" href="   "></head><body>Empty</body></html>`)
+		})
+
+		mux.HandleFunc("/six-tags", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<!doctype html><html><head>
+<link rel="canonical" href="/valid-rel">
+<link rel="canonical" href="/valid-rel">
+<link rel="canonical" href="/valid-rel">
+<link rel="canonical" href="/valid-rel">
+<link rel="canonical" href="/valid-rel">
+<link rel="canonical" href="/valid-rel">
+</head><body>Six</body></html>`)
+		})
+
+		mux.HandleFunc("/ftp-base", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<!doctype html><html><head>
+<base href="ftp://files.example.com/dir/">
+<link rel="canonical" href="sub.html">
+</head><body>FTP Base</body></html>`)
+		})
+
+		mux.HandleFunc("/bad-base-abs-canon", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, `<!doctype html><html><head>
+<base href="http://[::1">
+<link rel="canonical" href="%s/valid-rel">
+</head><body>Abs Canon with Bad Base</body></html>`, srvURL)
+		})
+
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+		srvURL = srv.URL
+
+		db, err := standalone.OpenDB(":memory:")
+		if err != nil {
+			t.Fatalf("OpenDB: %v", err)
+		}
+		defer db.Close()
+
+		runner := sitecrawl.NewRunner(db)
+		if err := runner.EnsureSchema(); err != nil {
+			t.Fatalf("EnsureSchema: %v", err)
+		}
+
+		summary, err := runner.Crawl(context.Background(), []string{srv.URL + "/"}, sitecrawl.Options{
+			Mode:             sitecrawl.ModeSpider,
+			MaxDepth:         2,
+			MaxURLs:          20,
+			Concurrency:      1,
+			RespectRobots:    false,
+			DiscoverSitemaps: false,
+		})
+		if err != nil {
+			t.Fatalf("Crawl: %v", err)
+		}
+
+		res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+			CrawlRunID: summary.ID,
+			AuditRunID: "audit:hermetic:v19c",
+			SnapshotID: "snap:hermetic:v19c",
+		})
+		if err != nil {
+			t.Fatalf("adapter.Build: %v", err)
+		}
+
+		obsByURL := make(map[string]map[string][]string)
+		subjToURL := make(map[string]string)
+		for _, obs := range res.EvidenceSnapshot.NormalizedObservations {
+			if obs.SubjectType == audit.SubjectURL && obs.Field == "url_identity" {
+				subjToURL[obs.SubjectRef] = obs.Value
+				if obsByURL[obs.Value] == nil {
+					obsByURL[obs.Value] = make(map[string][]string)
+				}
+			}
+		}
+		for _, obs := range res.EvidenceSnapshot.NormalizedObservations {
+			if u, ok := subjToURL[obs.SubjectRef]; ok {
+				obsByURL[u][obs.Field] = append(obsByURL[u][obs.Field], obs.Value)
+			}
+		}
+
+		// Verify /empty-href
+		emptyObs := obsByURL[srv.URL+"/empty-href"]
+		if v := emptyObs["html_extraction_status"]; len(v) != 1 || v[0] != "complete" {
+			t.Errorf("/empty-href html_extraction_status = %v, want [complete]", v)
+		}
+		if v := emptyObs["canonical_count"]; len(v) != 1 || v[0] != "1" {
+			t.Errorf("/empty-href canonical_count = %v, want [1]", v)
+		}
+		if v := emptyObs["canonical_raw"]; len(v) != 1 || v[0] != "   " {
+			t.Errorf("/empty-href canonical_raw = %v, want ['   ']", v)
+		}
+		if v := emptyObs["canonical_syntax_status"]; len(v) != 1 || v[0] != "parser_error" {
+			t.Errorf("/empty-href canonical_syntax_status = %v, want [parser_error]", v)
+		}
+		if v := emptyObs["canonical_parse_error"]; len(v) != 1 || v[0] != "parser_error:empty_href" {
+			t.Errorf("/empty-href canonical_parse_error = %v, want [parser_error:empty_href]", v)
+		}
+
+		// Verify /six-tags
+		sixObs := obsByURL[srv.URL+"/six-tags"]
+		if v := sixObs["canonical_count"]; len(v) != 1 || v[0] != "6" {
+			t.Errorf("/six-tags canonical_count = %v, want [6]", v)
+		}
+		if v := sixObs["canonical_sample_truncated"]; len(v) != 1 || v[0] != "true" {
+			t.Errorf("/six-tags canonical_sample_truncated = %v, want [true]", v)
+		}
+		if v := sixObs["canonical_normalization_complete"]; len(v) != 1 || v[0] != "false" {
+			t.Errorf("/six-tags canonical_normalization_complete = %v, want [false]", v)
+		}
+
+		// Verify /ftp-base (Scenario 6a-i)
+		ftpObs := obsByURL[srv.URL+"/ftp-base"]
+		if v := ftpObs["canonical_syntax_status"]; len(v) != 1 || v[0] != "resolution_error" {
+			t.Errorf("/ftp-base canonical_syntax_status = %v, want [resolution_error]", v)
+		}
+		if v := ftpObs["canonical_parse_error"]; len(v) != 1 || v[0] != "resolution_error:unsupported_scheme" {
+			t.Errorf("/ftp-base canonical_parse_error = %v, want [resolution_error:unsupported_scheme]", v)
+		}
+
+		// Verify /bad-base-abs-canon (Scenario 6b-i)
+		absObs := obsByURL[srv.URL+"/bad-base-abs-canon"]
+		if v := absObs["canonical_syntax_status"]; len(v) != 1 || v[0] != "valid" {
+			t.Errorf("/bad-base-abs-canon canonical_syntax_status = %v, want [valid]", v)
+		}
+		if v := absObs["canonical_normalization_complete"]; len(v) != 1 || v[0] != "true" {
+			t.Errorf("/bad-base-abs-canon canonical_normalization_complete = %v, want [true]", v)
 		}
 	})
 }

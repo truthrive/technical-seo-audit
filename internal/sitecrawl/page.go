@@ -50,6 +50,10 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 		p.Redirects = []Hop{}
 	}
 
+	if len(res.Hops) == 0 {
+		p.ExtractionStatus = res.ExtractionStatus
+	}
+
 	d := res.Doc
 	// A redirecting URL has no content of its own. The body that came back
 	// belongs to the end of the chain, and that URL gets its own row — showing
@@ -74,6 +78,10 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 	p.Viewport = d.Viewport
 	p.Canonicals = d.Canonicals
 	p.Canonical = first(d.Canonicals)
+	p.CanonicalTotalCount = d.CanonicalTotalCount
+	p.RawCanonicals = d.RawCanonicals
+	p.BaseHrefRaw = d.BaseHrefRaw
+	p.BaseHrefCount = d.BaseHrefCount
 	p.MetaRobots = d.MetaRobots
 	p.MetaRefresh = d.MetaRefresh
 	p.RelNext = d.RelNext

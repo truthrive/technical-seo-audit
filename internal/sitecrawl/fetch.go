@@ -54,6 +54,9 @@ type fetched struct {
 	Error       string
 	// Doc is nil unless the terminal response was HTML that we read.
 	Doc *document
+	// ExtractionStatus records verifiable HTML extraction completeness
+	// ("complete", "truncated_size_limit", or "read_error").
+	ExtractionStatus string
 	// BotBlocked records that the bot identity was refused and a browser
 	// identity succeeded instead.
 	BotBlocked bool
@@ -245,6 +248,9 @@ func (f *fetcher) readTerminal(res *http.Response, out *fetched, wantBody bool) 
 	if declared := res.ContentLength; declared > 0 && declared > cap {
 		out.Size = declared
 		out.ErrorType = ErrTooLarge
+		if isHTML(out.ContentType) && wantBody && res.StatusCode >= 200 && res.StatusCode < 300 {
+			out.ExtractionStatus = ExtractionStatusTruncatedSizeLimit
+		}
 		io.Copy(io.Discard, io.LimitReader(res.Body, drainCap))
 		return
 	}
@@ -277,13 +283,33 @@ func (f *fetcher) readTerminal(res *http.Response, out *fetched, wantBody bool) 
 	if limit > maxHTMLBytes {
 		limit = maxHTMLBytes
 	}
-	counter := &countingReader{r: io.LimitReader(res.Body, limit)}
-	doc := extractDocument(counter, base)
+	probe := &boundedProbeReader{r: res.Body, limit: limit}
+	doc := extractDocument(probe, base)
+	probe.probeTail()
 	out.Doc = doc
-	out.Size = counter.n
+	out.Size = probe.n
+	if probe.exceededLimit {
+		out.Size++
+	}
 	// Whatever the tokenizer left unread still counts toward the size.
-	if rest, _ := io.Copy(io.Discard, io.LimitReader(res.Body, drainCap)); rest > 0 {
-		out.Size += rest
+	var drainErr error
+	if !probe.reachedEOF && probe.readErr == nil {
+		var rest int64
+		rest, drainErr = io.Copy(io.Discard, io.LimitReader(res.Body, drainCap))
+		if rest > 0 {
+			out.Size += rest
+		}
+	}
+
+	switch {
+	case probe.readErr != nil || (doc.TokenizerErr != nil && !errors.Is(doc.TokenizerErr, io.EOF)) || drainErr != nil:
+		out.ExtractionStatus = ExtractionStatusReadError
+	case probe.exceededLimit:
+		out.ExtractionStatus = ExtractionStatusTruncatedSizeLimit
+	case probe.reachedEOF && errors.Is(doc.TokenizerErr, io.EOF) && drainErr == nil && out.ErrorType == "":
+		out.ExtractionStatus = ExtractionStatusComplete
+	default:
+		out.ExtractionStatus = ExtractionStatusReadError
 	}
 }
 
@@ -351,6 +377,74 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += int64(n)
 	return n, err
+}
+
+// boundedProbeReader reads at most limit bytes for the caller and probes 1
+// additional byte from r when the limit is reached so clean EOF at an exact
+// limit-byte boundary is distinguishable from size-limit truncation and read errors.
+type boundedProbeReader struct {
+	r             io.Reader
+	limit         int64
+	n             int64
+	exceededLimit bool
+	reachedEOF    bool
+	readErr       error
+}
+
+func (b *boundedProbeReader) Read(p []byte) (int, error) {
+	if b.exceededLimit || b.reachedEOF || b.readErr != nil {
+		if b.readErr != nil {
+			return 0, b.readErr
+		}
+		return 0, io.EOF
+	}
+	rem := b.limit - b.n
+	if rem > 0 {
+		if int64(len(p)) > rem {
+			p = p[:rem]
+		}
+		n, err := b.r.Read(p)
+		b.n += int64(n)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				b.reachedEOF = true
+				return n, io.EOF
+			}
+			b.readErr = err
+			return n, err
+		}
+		if b.n == b.limit {
+			b.probeTail()
+		}
+		return n, nil
+	}
+	b.probeTail()
+	if b.readErr != nil {
+		return 0, b.readErr
+	}
+	return 0, io.EOF
+}
+
+func (b *boundedProbeReader) probeTail() {
+	if b.exceededLimit || b.reachedEOF || b.readErr != nil || b.n < b.limit {
+		return
+	}
+	var probe [1]byte
+	pn, err := b.r.Read(probe[:])
+	if pn > 0 {
+		b.exceededLimit = true
+		if err != nil && !errors.Is(err, io.EOF) {
+			b.readErr = err
+		}
+		return
+	}
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			b.reachedEOF = true
+			return
+		}
+		b.readErr = err
+	}
 }
 
 // retryableFetchErr reports whether asking again could plausibly help.

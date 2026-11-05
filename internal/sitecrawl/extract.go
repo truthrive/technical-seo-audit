@@ -45,15 +45,21 @@ type document struct {
 	Viewport    string
 	MetaRobots  string
 	MetaRefresh string
-	Author      string
-	Keywords    string
-	Generator   string
-	ThemeColor  string
-	BaseHref    string
+	Author        string
+	Keywords      string
+	Generator     string
+	ThemeColor    string
+	BaseHref      string
+	BaseHrefRaw   string
+	BaseHrefCount int
 
-	Canonicals []string
-	RelNext    string
-	RelPrev    string
+	Canonicals          []string
+	CanonicalTotalCount int
+	RawCanonicals       []string
+	RelNext             string
+	RelPrev             string
+
+	TokenizerErr error
 
 	MetaTags    map[string]string
 	OGTags      map[string]string
@@ -172,6 +178,7 @@ func extractDocument(r io.Reader, base *url.URL) *document {
 	for {
 		tt := z.Next()
 		if tt == html.ErrorToken {
+			d.TokenizerErr = z.Err()
 			break
 		}
 		raw := z.Raw()
@@ -238,8 +245,14 @@ func extractDocument(r io.Reader, base *url.URL) *document {
 					d.Lang = strings.TrimSpace(attrs["lang"])
 				}
 			case "base":
-				if d.BaseHref == "" {
-					d.BaseHref = strings.TrimSpace(attrs["href"])
+				if rawHref, ok := attrs["href"]; ok {
+					if d.BaseHrefCount == 0 {
+						d.BaseHrefRaw = rawHref
+					}
+					d.BaseHrefCount++
+					if d.BaseHref == "" {
+						d.BaseHref = strings.TrimSpace(rawHref)
+					}
 				}
 			case "meta":
 				d.readMeta(attrs)
@@ -498,16 +511,32 @@ func (d *document) readMeta(attrs map[string]string) {
 
 func (d *document) readLink(attrs map[string]string) {
 	rel := strings.ToLower(strings.TrimSpace(attrs["rel"]))
-	href := strings.TrimSpace(attrs["href"])
-	if rel == "" || href == "" {
+	if rel == "" {
 		return
 	}
+	rawHref := attrs["href"]
+	href := strings.TrimSpace(rawHref)
+	seenCanonical := false
 	for _, token := range strings.Fields(rel) {
+		if token == "canonical" {
+			if !seenCanonical {
+				seenCanonical = true
+				d.CanonicalTotalCount++
+				if len(d.RawCanonicals) < 5 {
+					d.RawCanonicals = append(d.RawCanonicals, rawHref)
+				}
+				if href != "" {
+					d.Canonicals = appendCapped(d.Canonicals, href, 5)
+				}
+			}
+			continue
+		}
+		if href == "" {
+			continue
+		}
 		switch token {
 		case "stylesheet":
 			d.Stylesheets = appendCapped(d.Stylesheets, href, maxResources)
-		case "canonical":
-			d.Canonicals = appendCapped(d.Canonicals, href, 5)
 		case "next":
 			if d.RelNext == "" {
 				d.RelNext = href

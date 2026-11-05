@@ -63,6 +63,7 @@ const (
 	GapOrphanSitemapEntry                 = "GAP_ORPHAN_SITEMAP_ENTRY"
 	GapInvalidSitemapURLCorrelation       = "GAP_INVALID_SITEMAP_URL_CORRELATION"
 	GapSitemapMetadataInconsistent        = "GAP_SITEMAP_METADATA_INCONSISTENT"
+	GapCanonicalSampleCapped              = "GAP_CANONICAL_SAMPLE_CAPPED"
 )
 
 // Standard structured data block parse statuses.
