@@ -671,3 +671,110 @@ func TestRobotsAcquisition_ExistingCanonicalExtractionRegression(t *testing.T) {
 		t.Errorf("RobotsMeta = %+v", d.RawRobotsMeta)
 	}
 }
+
+// 24. Stream truncated at size limit preserves pre-truncation meta directives and flags truncated status.
+func TestRobotsAcquisition_StreamTruncatedSizeLimit_PreservesPreTruncationEvidence(t *testing.T) {
+	f := &fetcher{opts: Options{MaxFileSizeMB: 1}.normalized()}
+	limit := int(f.opts.maxFileSize())
+	prefix := `<!doctype html><html><head><meta name="robots" content="noindex, nofollow"></head><body>`
+	suffix := `</body></html>`
+	overBody := prefix + strings.Repeat("x", limit-len(prefix)-len(suffix)+1) + suffix
+
+	res := newTestHTMLResponse("https://example.com/trunc-robots", 200, -1, strings.NewReader(overBody))
+	out := fetched{FinalURL: "https://example.com/trunc-robots", Status: 200}
+
+	f.readTerminal(res, &out, true)
+
+	if out.ExtractionStatus != ExtractionStatusTruncatedSizeLimit {
+		t.Fatalf("out.ExtractionStatus = %q, want %q", out.ExtractionStatus, ExtractionStatusTruncatedSizeLimit)
+	}
+
+	p := buildPage(frontierItem{URL: "https://example.com/trunc-robots"}, out, "example.com", Options{})
+	if p.ExtractionStatus != ExtractionStatusTruncatedSizeLimit {
+		t.Errorf("p.ExtractionStatus = %q, want %q", p.ExtractionStatus, ExtractionStatusTruncatedSizeLimit)
+	}
+	if !p.RobotsMetaExtracted {
+		t.Errorf("p.RobotsMetaExtracted = false, want true (extractor ran on stream prefix)")
+	}
+	if p.RobotsMetaTotalCount != 1 {
+		t.Errorf("p.RobotsMetaTotalCount = %d, want 1", p.RobotsMetaTotalCount)
+	}
+	if len(p.RawRobotsMeta) != 1 {
+		t.Fatalf("len(p.RawRobotsMeta) = %d, want 1", len(p.RawRobotsMeta))
+	}
+	if p.RawRobotsMeta[0].Name != "robots" || p.RawRobotsMeta[0].ContentRaw != "noindex, nofollow" {
+		t.Errorf("p.RawRobotsMeta[0] = %+v, unexpected content", p.RawRobotsMeta[0])
+	}
+}
+
+// 25. Pre-parse Content-Length > cap skips body but preserves HTTP header X-Robots-Tag with truncated status.
+func TestRobotsAcquisition_ContentLengthExceedsCap_PreservesHeadersWithTruncatedStatus(t *testing.T) {
+	f := &fetcher{opts: Options{MaxFileSizeMB: 1}.normalized()}
+	capBytes := f.opts.maxFileSize()
+	res := newTestResponseWithHeaders("https://example.com/huge-robots", 200, "text/html", map[string][]string{
+		"X-Robots-Tag": {"noarchive"},
+	}, "<html><head><meta name=\"robots\" content=\"noindex\"></head></html>")
+	res.ContentLength = capBytes + 100
+	out := fetched{FinalURL: "https://example.com/huge-robots", Status: 200}
+
+	f.readTerminal(res, &out, true)
+
+	if out.ErrorType != ErrTooLarge {
+		t.Errorf("out.ErrorType = %q, want %q", out.ErrorType, ErrTooLarge)
+	}
+	if out.ExtractionStatus != ExtractionStatusTruncatedSizeLimit {
+		t.Errorf("out.ExtractionStatus = %q, want %q", out.ExtractionStatus, ExtractionStatusTruncatedSizeLimit)
+	}
+	if out.XRobotsTagTotalCount != 1 || len(out.RawXRobotsTags) != 1 || out.RawXRobotsTags[0] != "noarchive" {
+		t.Errorf("out XRobots mismatch: total=%d, raw=%v", out.XRobotsTagTotalCount, out.RawXRobotsTags)
+	}
+
+	p := buildPage(frontierItem{URL: "https://example.com/huge-robots"}, out, "example.com", Options{})
+	if p.ExtractionStatus != ExtractionStatusTruncatedSizeLimit {
+		t.Errorf("p.ExtractionStatus = %q, want %q", p.ExtractionStatus, ExtractionStatusTruncatedSizeLimit)
+	}
+	if p.RobotsMetaExtracted {
+		t.Errorf("p.RobotsMetaExtracted = true, want false (body never downloaded)")
+	}
+	if p.RobotsMetaTotalCount != 0 || len(p.RawRobotsMeta) != 0 {
+		t.Errorf("p robots meta counts mismatch: total=%d, raw=%v", p.RobotsMetaTotalCount, p.RawRobotsMeta)
+	}
+	if p.XRobotsTagTotalCount != 1 || len(p.RawXRobotsTags) != 1 || p.RawXRobotsTags[0] != "noarchive" {
+		t.Errorf("p XRobots mismatch: total=%d, raw=%v", p.XRobotsTagTotalCount, p.RawXRobotsTags)
+	}
+}
+
+// 26. Mid-stream read error preserves meta directives parsed before failure and flags read_error status.
+func TestRobotsAcquisition_MidStreamReadError_PreservesPreErrorEvidence(t *testing.T) {
+	f := &fetcher{opts: Options{MaxFileSizeMB: 1}.normalized()}
+	partialHTML := []byte(`<!doctype html><html><head><meta name="googlebot" content="nosnippet"></head><body><div>chunk`)
+	bodyReader := &errAfterBytesReader{
+		data: partialHTML,
+		err:  fmt.Errorf("simulated network reset mid-stream"),
+	}
+	res := newTestHTMLResponse("https://example.com/err-robots", 200, -1, bodyReader)
+	out := fetched{FinalURL: "https://example.com/err-robots", Status: 200}
+
+	f.readTerminal(res, &out, true)
+
+	if out.ExtractionStatus != ExtractionStatusReadError {
+		t.Fatalf("out.ExtractionStatus = %q, want %q", out.ExtractionStatus, ExtractionStatusReadError)
+	}
+
+	p := buildPage(frontierItem{URL: "https://example.com/err-robots"}, out, "example.com", Options{})
+	if p.ExtractionStatus != ExtractionStatusReadError {
+		t.Errorf("p.ExtractionStatus = %q, want %q", p.ExtractionStatus, ExtractionStatusReadError)
+	}
+	if !p.RobotsMetaExtracted {
+		t.Errorf("p.RobotsMetaExtracted = false, want true (extractor parsed pre-error bytes)")
+	}
+	if p.RobotsMetaTotalCount != 1 {
+		t.Errorf("p.RobotsMetaTotalCount = %d, want 1", p.RobotsMetaTotalCount)
+	}
+	if len(p.RawRobotsMeta) != 1 {
+		t.Fatalf("len(p.RawRobotsMeta) = %d, want 1", len(p.RawRobotsMeta))
+	}
+	if p.RawRobotsMeta[0].Name != "googlebot" || p.RawRobotsMeta[0].ContentRaw != "nosnippet" {
+		t.Errorf("p.RawRobotsMeta[0] = %+v, unexpected content", p.RawRobotsMeta[0])
+	}
+}
