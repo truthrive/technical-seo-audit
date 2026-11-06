@@ -65,9 +65,12 @@ func NewWithRegistry(reg *audit.Registry) (*Engine, error) {
 	}
 
 	// Register implemented V1 evaluators
+	e.register(ruleIDACC001, evaluateACC001)
 	e.register(ruleIDACC002, evaluateACC002)
 	e.register(ruleIDACC003, evaluateACC003)
 	e.register(ruleIDACC004, evaluateACC004)
+	e.register(ruleIDCANON001, evaluateCANON001)
+	e.register(ruleIDCANON002, evaluateCANON002)
 	e.register(ruleIDCANON003, evaluateCANON003)
 	e.register(ruleIDCANON004, evaluateCANON004)
 	e.register(ruleIDCANON005, evaluateCANON005)
@@ -86,6 +89,8 @@ func NewWithRegistry(reg *audit.Registry) (*Engine, error) {
 	e.register(ruleIDINDEX001, evaluateINDEX001)
 	e.register(ruleIDINDEX002, evaluateINDEX002)
 	e.register(ruleIDINDEX003, evaluateINDEX003)
+	e.register(ruleIDINDEX004, evaluateINDEX004)
+	e.register(ruleIDINDEX006, evaluateINDEX006)
 	e.register(ruleIDLINK002, evaluateLINK002)
 	e.register(ruleIDLINK003, evaluateLINK003)
 	e.register(ruleIDLINK004, evaluateLINK004)
@@ -108,8 +113,7 @@ func (e *Engine) register(ruleID string, fn Evaluator) {
 }
 
 // ImplementedRuleIDs returns the deterministically sorted list of rule IDs currently
-// supported with an executable evaluator. For Audit V1.9d, this is 20/47 rules:
-// ["AR-ACC-004", "AR-CANON-003", "AR-CANON-004", "AR-CANON-005", "AR-CANON-006", "AR-CANON-007", "AR-CANON-008", "AR-CANON-009", "AR-DISC-001", "AR-DISC-002", "AR-DISC-003", "AR-DISC-004", "AR-DISC-005", "AR-DISC-006", "AR-ENTITY-001", "AR-INDEX-001", "AR-INDEX-002", "AR-LINK-002", "AR-LINK-003", "AR-LINK-004"].
+// supported with an executable evaluator. For Audit V1 Fast-Track MVP Batch 2, this is 31/47 rules.
 func (e *Engine) ImplementedRuleIDs() []string {
 	ids := make([]string, 0, len(e.evaluators))
 	for id := range e.evaluators {

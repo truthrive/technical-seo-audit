@@ -1337,8 +1337,8 @@ func TestAdapter_Engine_AR_DISC_002_Integration(t *testing.T) {
 			{id: 1, url: "https://example.com/sitemap.xml", initStatus: 200, finalStatus: 200, redirectHops: 0, fetchComp: 1},
 		})
 		allIDs := eng.ImplementedRuleIDs()
-		if len(allIDs) != 26 {
-			t.Fatalf("expected 26 implemented rules, got %d", len(allIDs))
+		if len(allIDs) != 31 {
+			t.Fatalf("expected 31 implemented rules, got %d", len(allIDs))
 		}
 		for _, rID := range allIDs {
 			results, err := eng.EvaluateRule(ctx, snap, rID)
@@ -2072,11 +2072,11 @@ func TestEngine_AR_DISC_002_V1_8g_Regressions(t *testing.T) {
 		}
 	})
 
-	// 18. Executable rule count is 26/47
-	t.Run("18. executable rule count is 26/47", func(t *testing.T) {
+	// 18. Executable rule count is 31/47
+	t.Run("18. executable rule count is 31/47", func(t *testing.T) {
 		allIDs := eng.ImplementedRuleIDs()
-		if len(allIDs) != 26 {
-			t.Fatalf("expected exactly 26 implemented rules, got %d: %v", len(allIDs), allIDs)
+		if len(allIDs) != 31 {
+			t.Fatalf("expected exactly 31 implemented rules, got %d: %v", len(allIDs), allIDs)
 		}
 		reg, err := audit.LoadV1Registry()
 		if err != nil {

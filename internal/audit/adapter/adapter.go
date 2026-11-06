@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1171,6 +1172,13 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					rawCanonSlice = append([]string(nil), pr.page.RawCanonicals...)
 				}
 
+				var contentFingerprint string
+				if titleVal != "" || metaDescVal != "" || len(h1Values) > 0 || pr.page.WordCount > 0 {
+					h := sha256.New()
+					h.Write([]byte(fmt.Sprintf("%s|%s|%s|%d", titleVal, metaDescVal, strings.Join(h1Values, ","), pr.page.WordCount)))
+					contentFingerprint = fmt.Sprintf("%x", h.Sum(nil))
+				}
+
 				htmlObs := audit.HtmlObservation{
 					HTMLObservationID:   audit.HtmlObservationID(fmt.Sprintf("html:%s:%d", req.AuditRunID, urlID)),
 					AuditRunID:          req.AuditRunID,
@@ -1184,7 +1192,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					CanonicalRawValues:  rawCanonSlice,
 					MainTextPresent:     nil, // Not verified
 					MainTextFingerprint: "",
-					ContentFingerprint:  "",
+					ContentFingerprint:  contentFingerprint,
 					ObservedAt:          obsTime,
 				}
 				htmlObservations = append(htmlObservations, htmlObs)
@@ -1228,6 +1236,20 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 						Field:              "h1",
 						Value:              h1,
 						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+				}
+				if contentFingerprint != "" {
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "content_fingerprint",
+						Value:              contentFingerprint,
+						DerivationType:     audit.DerivationNormalized,
 						SourceEvidenceRefs: []string{pageSrcRef},
 						ObservedAt:         obsTime,
 					})
@@ -1773,6 +1795,121 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			SourceEvidenceRefs: []string{siteSrcRef},
 			ObservedAt:         runStartedAt,
 		})
+	}
+
+	// AR-ACC-001: site_https_url and HTTPS reachability observations on SubjectSite
+	if seedParsed, err := url.Parse(seedURL); err == nil && seedParsed != nil && seedParsed.Host != "" {
+		siteHTTPSURL := "https://" + seedParsed.Host + "/"
+		var (
+			httpsPage      *rawPageRecord
+			httpsAttempted bool
+			httpsStatus    int
+			httpsErrorType string
+			httpsTLSValid  *bool
+		)
+		if seedParsed.Scheme == "https" {
+			if id, ok := idsByURL[seedURL]; ok {
+				httpsPage = pagesByURLID[id]
+			}
+		}
+		if httpsPage == nil {
+			if id, ok := idsByURL[siteHTTPSURL]; ok {
+				httpsPage = pagesByURLID[id]
+			}
+		}
+		if httpsPage == nil {
+			for _, p := range pagesByURLID {
+				if strings.HasPrefix(p.url, "https://"+seedParsed.Host) {
+					httpsPage = p
+					break
+				}
+			}
+		}
+
+		if httpsPage != nil {
+			httpsAttempted = true
+			httpsStatus = httpsPage.status
+			httpsErrorType = httpsPage.errorType
+			if httpsPage.status > 0 {
+				v := true
+				httpsTLSValid = &v
+			} else if httpsPage.errorType == sitecrawl.ErrSSL {
+				v := false
+				httpsTLSValid = &v
+			}
+		} else if seedParsed.Scheme == "https" {
+			httpsAttempted = true
+			httpsStatus = 0
+		}
+
+		normalizedObservations = append(normalizedObservations,
+			audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectSite,
+				SubjectRef:         "site",
+				Field:              "site_https_url",
+				Value:              siteHTTPSURL,
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{siteSrcRef},
+				ObservedAt:         runStartedAt,
+			},
+			audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectSite,
+				SubjectRef:         "site",
+				Field:              "fetch_attempted",
+				Value:              strconv.FormatBool(httpsAttempted),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{siteSrcRef},
+				ObservedAt:         runStartedAt,
+			},
+		)
+		if httpsAttempted || httpsStatus > 0 {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectSite,
+				SubjectRef:         "site",
+				Field:              "fetch_status",
+				Value:              strconv.Itoa(httpsStatus),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{siteSrcRef},
+				ObservedAt:         runStartedAt,
+			})
+		}
+		if httpsTLSValid != nil {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectSite,
+				SubjectRef:         "site",
+				Field:              "tls_valid",
+				Value:              strconv.FormatBool(*httpsTLSValid),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{siteSrcRef},
+				ObservedAt:         runStartedAt,
+			})
+		}
+		if httpsErrorType != "" {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectSite,
+				SubjectRef:         "site",
+				Field:              "fetch_error_type",
+				Value:              httpsErrorType,
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{siteSrcRef},
+				ObservedAt:         runStartedAt,
+			})
+		}
 	}
 
 	// 10c. Normalize sitemap evidence

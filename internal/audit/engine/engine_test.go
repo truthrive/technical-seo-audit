@@ -184,7 +184,7 @@ func TestEngine_RuleSelection(t *testing.T) {
 	}
 
 	// 3b. Known in registry but unimplemented rule
-	unimplementedRules := []string{"AR-ACC-001", "AR-ACC-005", "AR-INDEX-004", "AR-CANON-001"}
+	unimplementedRules := []string{"AR-ACC-005", "AR-ACC-006", "AR-INDEX-005", "AR-CANON-011"}
 	for _, ruleID := range unimplementedRules {
 		_, err = eng.EvaluateRule(ctx, snap, ruleID)
 		if !errors.Is(err, engine.ErrRuleNotImplemented) {
@@ -256,9 +256,12 @@ func TestEngine_ImplementedRuleIDs(t *testing.T) {
 
 	ids := eng.ImplementedRuleIDs()
 	expected := []string{
+		"AR-ACC-001",
 		"AR-ACC-002",
 		"AR-ACC-003",
 		"AR-ACC-004",
+		"AR-CANON-001",
+		"AR-CANON-002",
 		"AR-CANON-003",
 		"AR-CANON-004",
 		"AR-CANON-005",
@@ -277,6 +280,8 @@ func TestEngine_ImplementedRuleIDs(t *testing.T) {
 		"AR-INDEX-001",
 		"AR-INDEX-002",
 		"AR-INDEX-003",
+		"AR-INDEX-004",
+		"AR-INDEX-006",
 		"AR-LINK-002",
 		"AR-LINK-003",
 		"AR-LINK-004",
