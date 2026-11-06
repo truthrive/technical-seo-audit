@@ -122,9 +122,7 @@ func evaluateINDEX004(
 
 		// 2. probe_final_status / http_status
 		statusObs := idx.GetObservations(target.st, target.ref, "probe_final_status")
-		if len(statusObs) == 0 {
-			statusObs = idx.GetObservations(target.st, target.ref, "http_status")
-		}
+		statusObs = append(statusObs, idx.GetObservations(target.st, target.ref, "http_status")...)
 		var (
 			finalStatus    int
 			statusRecorded bool
@@ -149,17 +147,44 @@ func evaluateINDEX004(
 		if len(finalURLObs) == 0 {
 			finalURLObs = idx.GetObservations(target.st, target.ref, "redirect_final_url")
 		}
-		var finalURL string
+		var (
+			finalURL         string
+			finalURLConflict bool
+		)
 		if len(finalURLObs) > 0 {
 			finalURL = strings.TrimSpace(finalURLObs[0].Value)
 			for _, o := range finalURLObs {
 				addEvidenceRef(o, "final_url", audit.EvidenceRoleSupporting)
+				if strings.TrimSpace(o.Value) != finalURL {
+					finalURLConflict = true
+				}
 			}
 		} else {
 			finalURL = probeURL
 		}
 
-		// 4. redirect_path / redirect_hop
+		// 4. fetch_attempted check
+		attemptObs := idx.GetObservations(target.st, target.ref, "fetch_attempted")
+		var (
+			attemptExplicit bool
+			fetchAttempted  bool
+			attemptConflict bool
+		)
+		if len(attemptObs) > 0 {
+			firstAttempt := strings.TrimSpace(attemptObs[0].Value)
+			attemptExplicit = true
+			if parsed, err := strconv.ParseBool(firstAttempt); err == nil {
+				fetchAttempted = parsed
+			}
+			for _, o := range attemptObs {
+				addEvidenceRef(o, "fetch_attempted", audit.EvidenceRoleSupporting)
+				if strings.TrimSpace(o.Value) != firstAttempt {
+					attemptConflict = true
+				}
+			}
+		}
+
+		// 5. redirect_path / redirect_hop
 		hopObs := idx.GetObservations(target.st, target.ref, "redirect_hop")
 		for _, o := range hopObs {
 			addEvidenceRef(o, "redirect_path", audit.EvidenceRoleSupporting)
@@ -175,12 +200,15 @@ func evaluateINDEX004(
 			observedSummary string
 		)
 
-		if urlConflict || statusConflict {
+		if urlConflict || statusConflict || finalURLConflict || attemptConflict {
 			evalStatus = audit.StatusUnknown
 			observedSummary = "Conflicting known-missing probe observations recorded."
 		} else if probeURL == "" {
 			evalStatus = audit.StatusUnknown
 			observedSummary = "Known-missing probe cannot complete or probe URL evidence is unavailable."
+		} else if attemptExplicit && !fetchAttempted {
+			evalStatus = audit.StatusUnknown
+			observedSummary = fmt.Sprintf("Known-missing probe fetch was not attempted for %s.", probeURL)
 		} else if !statusRecorded || finalStatus <= 0 {
 			evalStatus = audit.StatusUnknown
 			observedSummary = fmt.Sprintf("Known-missing probe %s cannot complete: no usable HTTP response obtained.", probeURL)
@@ -192,7 +220,7 @@ func evaluateINDEX004(
 			if finalURL != "" && finalURL != probeURL {
 				observedSummary = fmt.Sprintf("Known-missing probe %s redirected to %s and returned HTTP status %d instead of expected 404 or 410.", probeURL, finalURL, finalStatus)
 			} else {
-				observedSummary = fmt.Sprintf("Known-missing probe %s returned HTTP status %d instead of expected 404 or 410 (soft 404 or improper error handling).", probeURL, finalStatus)
+				observedSummary = fmt.Sprintf("Known-missing probe %s returned HTTP status %d instead of expected 404 or 410 (missing-resource endpoint does not return 404/410 status).", probeURL, finalStatus)
 			}
 		}
 

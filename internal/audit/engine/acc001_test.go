@@ -260,3 +260,88 @@ func TestAR_ACC_001_Evaluation(t *testing.T) {
 		})
 	}
 }
+
+func TestACC001_QA01Remediation(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	obsHelper := func(runID, snapID, id string, st audit.EvaluationSubjectType, ref, field, val string) audit.NormalizedObservation {
+		return audit.NormalizedObservation{
+			ObservationID:      audit.ObservationID(id),
+			AuditRunID:         audit.AuditRunID(runID),
+			SnapshotID:         audit.SnapshotID(snapID),
+			SubjectType:        st,
+			SubjectRef:         ref,
+			Field:              field,
+			Value:              val,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"test"},
+			ObservedAt:         now,
+		}
+	}
+
+	t.Run("Conflicting TLS validity observations return UNKNOWN", func(t *testing.T) {
+		runID := "run:test:acc001:conflict-tls"
+		snapID := "snap:test:acc001:conflict-tls"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:site:url", audit.SubjectSite, "site", "site_https_url", "https://example.com/"),
+				obsHelper(runID, snapID, "obs:site:att", audit.SubjectSite, "site", "fetch_attempted", "true"),
+				obsHelper(runID, snapID, "obs:site:st", audit.SubjectSite, "site", "fetch_status", "200"),
+				obsHelper(runID, snapID, "obs:site:tls:1", audit.SubjectSite, "site", "tls_valid", "true"),
+				obsHelper(runID, snapID, "obs:site:tls:2", audit.SubjectSite, "site", "tls_valid", "false"),
+			},
+		}
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-ACC-001")
+		if err != nil {
+			t.Fatalf("EvaluateRule AR-ACC-001 failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for conflicting TLS validity, got %v (summary: %s)", results[0].Status, results[0].ObservedSummary)
+		}
+	})
+
+	t.Run("No HTTPS fetch attempted returns UNKNOWN", func(t *testing.T) {
+		runID := "run:test:acc001:no-attempt"
+		snapID := "snap:test:acc001:no-attempt"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:site:url", audit.SubjectSite, "site", "site_https_url", "https://example.com/"),
+				obsHelper(runID, snapID, "obs:site:att", audit.SubjectSite, "site", "fetch_attempted", "false"),
+			},
+		}
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-ACC-001")
+		if err != nil {
+			t.Fatalf("EvaluateRule AR-ACC-001 failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN when fetch not attempted, got %v (summary: %s)", results[0].Status, results[0].ObservedSummary)
+		}
+	})
+}

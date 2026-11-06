@@ -151,11 +151,8 @@ func evaluateCANON001(
 			continue
 		}
 
-		// 1. origin_variant
+		// 1. origin_variant (explicit origin variant probe only; never fall back to ordinary crawled URL)
 		variantObs := idx.GetObservations(ts.st, ts.ref, "origin_variant")
-		if len(variantObs) == 0 && ts.st == audit.SubjectURL {
-			variantObs = idx.GetObservations(ts.st, ts.ref, "url_identity")
-		}
 		var (
 			variantURL      string
 			variantConflict bool
@@ -286,14 +283,45 @@ func evaluateCANON001(
 		if len(finalURLObs) == 0 {
 			finalURLObs = idx.GetObservations(ts.st, ts.ref, "redirect_final_url")
 		}
-		var finalURL string
+		var (
+			finalURL         string
+			finalURLConflict bool
+		)
 		if len(finalURLObs) > 0 {
 			finalURL = strings.TrimSpace(finalURLObs[0].Value)
 			for _, o := range finalURLObs {
 				addEvidenceRef(o, "variant_final_url", audit.EvidenceRolePrimary)
+				if strings.TrimSpace(o.Value) != finalURL {
+					finalURLConflict = true
+				}
 			}
 		} else {
 			finalURL = variantURL
+		}
+
+		if finalURLConflict {
+			rr := audit.RuleResult{
+				RuleResultID:    ruleResultID,
+				AuditRunID:      snapshot.AuditRunID,
+				SnapshotID:      snapshot.SnapshotID,
+				RuleID:          rule.RuleID,
+				ParentCheck:     rule.ParentCheck,
+				RuleVersion:     rule.RuleVersion,
+				SubjectType:     ts.st,
+				SubjectRef:      ts.ref,
+				Status:          audit.StatusUnknown,
+				Severity:        rule.DefaultSeverity,
+				Scope:           audit.ScopeSiteConfiguration,
+				ObservedSummary: "Conflicting final destination observations recorded for origin variant.",
+				ExpectedSummary: expectedSummaryCANON001,
+				EvaluatedAt:     evalTime,
+				EvidenceRefs:    evidenceRefs,
+			}
+			if err := validateRuleResult(rr); err != nil {
+				return nil, fmt.Errorf("audit engine: invalid rule result for %s: %w", ts.ref, err)
+			}
+			results = append(results, rr)
+			continue
 		}
 
 		// Redirect hops
@@ -308,7 +336,7 @@ func evaluateCANON001(
 		}
 
 		// If no hop observation objects, check initial status or redirect_hop_count
-		if len(hopStatuses) == 0 && (variantStatus == 301 || variantStatus == 308 || variantStatus == 302 || variantStatus == 307) {
+		if len(hopStatuses) == 0 && (variantStatus == 301 || variantStatus == 308 || variantStatus == 302 || variantStatus == 303 || variantStatus == 307) {
 			hopStatuses = append(hopStatuses, variantStatus)
 		}
 
@@ -324,7 +352,7 @@ func evaluateCANON001(
 			hasTemporary := false
 			allPermanent := len(hopStatuses) > 0
 			for _, s := range hopStatuses {
-				if s == 302 || s == 307 {
+				if s == 302 || s == 303 || s == 307 {
 					hasTemporary = true
 					allPermanent = false
 				} else if s != 301 && s != 308 {

@@ -267,3 +267,126 @@ func TestAR_CANON_001_Evaluation(t *testing.T) {
 		})
 	}
 }
+
+func TestCANON001_QA02Remediation(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	obsHelper := func(runID, snapID, id string, st audit.EvaluationSubjectType, ref, field, val string) audit.NormalizedObservation {
+		return audit.NormalizedObservation{
+			ObservationID:      audit.ObservationID(id),
+			AuditRunID:         audit.AuditRunID(runID),
+			SnapshotID:         audit.SnapshotID(snapID),
+			SubjectType:        st,
+			SubjectRef:         ref,
+			Field:              field,
+			Value:              val,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"test"},
+			ObservedAt:         now,
+		}
+	}
+
+	t.Run("Ordinary crawled URL without origin_variant is not treated as origin variant probe", func(t *testing.T) {
+		runID := "run:test:canon001:regular-url"
+		snapID := "snap:test:canon001:regular-url"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:pref:site", audit.SubjectSite, "site", "preferred_origin", "https://example.com"),
+				// Crawled URL has url_identity, http_status, final_url, but NO origin_variant
+				obsHelper(runID, snapID, "obs:url:1", audit.SubjectURL, "url:1", "url_identity", "http://example.com/regular-page"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectURL, "url:1", "http_status", "301"),
+				obsHelper(runID, snapID, "obs:fin:1", audit.SubjectURL, "url:1", "final_url", "https://example.com/regular-page"),
+			},
+		}
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-CANON-001")
+		if err != nil {
+			t.Fatalf("EvaluateRule AR-CANON-001 failed: %v", err)
+		}
+		// Since url:1 has no origin_variant, it falls back to SubjectSite ("site"), which also has no origin_variant -> returns UNKNOWN for site, NOT a false PASS on url:1!
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].SubjectType == audit.SubjectURL {
+			t.Errorf("expected SubjectURL without origin_variant not to be evaluated as origin variant, got SubjectType = %v", results[0].SubjectType)
+		}
+		if results[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN when no origin variant exists, got %v (summary: %s)", results[0].Status, results[0].ObservedSummary)
+		}
+	})
+
+	t.Run("Conflicting destination URLs on origin variant returns UNKNOWN", func(t *testing.T) {
+		runID := "run:test:canon001:conflict-dest"
+		snapID := "snap:test:canon001:conflict-dest"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:pref:site", audit.SubjectSite, "site", "preferred_origin", "https://example.com"),
+				obsHelper(runID, snapID, "obs:var:1", audit.SubjectSiteConfiguration, "cfg:1", "origin_variant", "http://example.com"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectSiteConfiguration, "cfg:1", "variant_fetch_status", "301"),
+				obsHelper(runID, snapID, "obs:dest:1", audit.SubjectSiteConfiguration, "cfg:1", "variant_final_url", "https://example.com"),
+				obsHelper(runID, snapID, "obs:dest:2", audit.SubjectSiteConfiguration, "cfg:1", "variant_final_url", "https://other.com"),
+			},
+		}
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-CANON-001")
+		if err != nil {
+			t.Fatalf("EvaluateRule AR-CANON-001 failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for conflicting destinations, got %v (summary: %s)", results[0].Status, results[0].ObservedSummary)
+		}
+	})
+
+	t.Run("Temporary redirect 303 returns WARNING", func(t *testing.T) {
+		runID := "run:test:canon001:303"
+		snapID := "snap:test:canon001:303"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:pref:site", audit.SubjectSite, "site", "preferred_origin", "https://example.com"),
+				obsHelper(runID, snapID, "obs:var:1", audit.SubjectSiteConfiguration, "cfg:1", "origin_variant", "http://example.com"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectSiteConfiguration, "cfg:1", "variant_fetch_status", "303"),
+				obsHelper(runID, snapID, "obs:dest:1", audit.SubjectSiteConfiguration, "cfg:1", "variant_final_url", "https://example.com"),
+			},
+		}
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-CANON-001")
+		if err != nil {
+			t.Fatalf("EvaluateRule AR-CANON-001 failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status != audit.StatusWarning {
+			t.Errorf("expected WARNING for 303 redirect, got %v (summary: %s)", results[0].Status, results[0].ObservedSummary)
+		}
+	})
+}

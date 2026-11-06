@@ -1800,12 +1800,14 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 	// AR-ACC-001: site_https_url and HTTPS reachability observations on SubjectSite
 	if seedParsed, err := url.Parse(seedURL); err == nil && seedParsed != nil && seedParsed.Host != "" {
 		siteHTTPSURL := "https://" + seedParsed.Host + "/"
+		siteHTTPSNoSlash := "https://" + seedParsed.Host
 		var (
 			httpsPage      *rawPageRecord
 			httpsAttempted bool
 			httpsStatus    int
 			httpsErrorType string
 			httpsTLSValid  *bool
+			pageSrcRef     string
 		)
 		if seedParsed.Scheme == "https" {
 			if id, ok := idsByURL[seedURL]; ok {
@@ -1818,27 +1820,32 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			}
 		}
 		if httpsPage == nil {
-			for _, p := range pagesByURLID {
-				if strings.HasPrefix(p.url, "https://"+seedParsed.Host) {
-					httpsPage = p
-					break
-				}
+			if id, ok := idsByURL[siteHTTPSNoSlash]; ok {
+				httpsPage = pagesByURLID[id]
 			}
 		}
 
+		srcRefs := []string{siteSrcRef}
+		obsTime := runStartedAt
 		if httpsPage != nil {
 			httpsAttempted = true
 			httpsStatus = httpsPage.status
 			httpsErrorType = httpsPage.errorType
+			siteHTTPSURL = httpsPage.url
+			pageSrcRef = fmt.Sprintf("sitecrawl_pages:%s:%d", req.CrawlRunID, httpsPage.urlID)
+			srcRefs = []string{pageSrcRef, siteSrcRef}
+			if pt, err := time.Parse(time.RFC3339, httpsPage.crawledAt); err == nil {
+				obsTime = pt
+			}
 			if httpsPage.status > 0 {
 				v := true
 				httpsTLSValid = &v
-			} else if httpsPage.errorType == sitecrawl.ErrSSL {
+			} else if httpsPage.errorType == sitecrawl.ErrSSL || strings.Contains(httpsPage.errorType, "ssl") || strings.Contains(httpsPage.errorType, "tls") || strings.Contains(httpsPage.errorType, "cert") {
 				v := false
 				httpsTLSValid = &v
 			}
 		} else if seedParsed.Scheme == "https" {
-			httpsAttempted = true
+			httpsAttempted = false
 			httpsStatus = 0
 		}
 
@@ -1852,8 +1859,8 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				Field:              "site_https_url",
 				Value:              siteHTTPSURL,
 				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{siteSrcRef},
-				ObservedAt:         runStartedAt,
+				SourceEvidenceRefs: srcRefs,
+				ObservedAt:         obsTime,
 			},
 			audit.NormalizedObservation{
 				ObservationID:      nextObsID(),
@@ -1864,8 +1871,8 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				Field:              "fetch_attempted",
 				Value:              strconv.FormatBool(httpsAttempted),
 				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{siteSrcRef},
-				ObservedAt:         runStartedAt,
+				SourceEvidenceRefs: srcRefs,
+				ObservedAt:         obsTime,
 			},
 		)
 		if httpsAttempted || httpsStatus > 0 {
@@ -1878,8 +1885,8 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				Field:              "fetch_status",
 				Value:              strconv.Itoa(httpsStatus),
 				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{siteSrcRef},
-				ObservedAt:         runStartedAt,
+				SourceEvidenceRefs: srcRefs,
+				ObservedAt:         obsTime,
 			})
 		}
 		if httpsTLSValid != nil {
@@ -1892,8 +1899,8 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				Field:              "tls_valid",
 				Value:              strconv.FormatBool(*httpsTLSValid),
 				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{siteSrcRef},
-				ObservedAt:         runStartedAt,
+				SourceEvidenceRefs: srcRefs,
+				ObservedAt:         obsTime,
 			})
 		}
 		if httpsErrorType != "" {
@@ -1906,8 +1913,8 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				Field:              "fetch_error_type",
 				Value:              httpsErrorType,
 				DerivationType:     audit.DerivationDirect,
-				SourceEvidenceRefs: []string{siteSrcRef},
-				ObservedAt:         runStartedAt,
+				SourceEvidenceRefs: srcRefs,
+				ObservedAt:         obsTime,
 			})
 		}
 	}

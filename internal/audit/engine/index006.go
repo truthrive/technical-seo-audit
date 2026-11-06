@@ -48,59 +48,179 @@ func evaluateINDEX006(
 	}
 
 	// 1. Resolve known 404 probe template evidence across the snapshot
+	type probeRecord struct {
+		probeRef    string
+		probeURL    string
+		status      int
+		fingerprint string
+		evidence    []audit.NormalizedObservation
+	}
+
 	var (
 		known404Fingerprint string
 		known404ProbeStatus int
 		known404ProbeURL    string
 		known404Evidence    []audit.NormalizedObservation
+		probeConflict       bool
 	)
 
-	// Check SubjectSite ("site")
-	for _, o := range idx.GetObservations(audit.SubjectSite, "site", "known_404_content_fingerprint") {
-		known404Fingerprint = strings.TrimSpace(o.Value)
-		known404Evidence = append(known404Evidence, o)
-	}
-	for _, o := range idx.GetObservations(audit.SubjectSite, "site", "known_404_probe_status") {
-		if s, err := strconv.Atoi(strings.TrimSpace(o.Value)); err == nil {
-			known404ProbeStatus = s
+	// Step 1a: Check SubjectSite ("site")
+	siteFPObs := idx.GetObservations(audit.SubjectSite, "site", "known_404_content_fingerprint")
+	siteStatusObs := idx.GetObservations(audit.SubjectSite, "site", "known_404_probe_status")
+	siteURLObs := idx.GetObservations(audit.SubjectSite, "site", "known_404_probe_url")
+
+	var (
+		siteFP     string
+		siteStatus int
+		siteURL    string
+	)
+	if len(siteFPObs) > 0 {
+		siteFP = strings.TrimSpace(siteFPObs[0].Value)
+		for _, o := range siteFPObs {
+			if strings.TrimSpace(o.Value) != siteFP {
+				probeConflict = true
+			}
+			known404Evidence = append(known404Evidence, o)
 		}
-		known404Evidence = append(known404Evidence, o)
 	}
-	for _, o := range idx.GetObservations(audit.SubjectSite, "site", "known_404_probe_url") {
-		known404ProbeURL = strings.TrimSpace(o.Value)
-		known404Evidence = append(known404Evidence, o)
+	if len(siteStatusObs) > 0 {
+		if s, err := strconv.Atoi(strings.TrimSpace(siteStatusObs[0].Value)); err == nil {
+			siteStatus = s
+		}
+		for _, o := range siteStatusObs {
+			if s, err := strconv.Atoi(strings.TrimSpace(o.Value)); err != nil || s != siteStatus {
+				probeConflict = true
+			}
+			known404Evidence = append(known404Evidence, o)
+		}
+	}
+	if len(siteURLObs) > 0 {
+		siteURL = strings.TrimSpace(siteURLObs[0].Value)
+		for _, o := range siteURLObs {
+			if strings.TrimSpace(o.Value) != siteURL {
+				probeConflict = true
+			}
+			known404Evidence = append(known404Evidence, o)
+		}
 	}
 
-	// If not on SubjectSite, check SubjectProbe subjects
-	if known404Fingerprint == "" || known404ProbeStatus == 0 {
+	if siteFP != "" && (siteStatus == 404 || siteStatus == 410) && !probeConflict {
+		known404Fingerprint = siteFP
+		known404ProbeStatus = siteStatus
+		known404ProbeURL = siteURL
+	}
+
+	// Step 1b: If not on SubjectSite, check SubjectProbe subjects
+	if known404Fingerprint == "" && !probeConflict {
+		var validProbes []probeRecord
+		var seenStatuses []int
+
 		for _, pRef := range idx.SubjectRefs(audit.SubjectProbe) {
-			for _, o := range idx.GetObservations(audit.SubjectProbe, pRef, "content_fingerprint") {
-				if known404Fingerprint == "" {
-					known404Fingerprint = strings.TrimSpace(o.Value)
-					known404Evidence = append(known404Evidence, o)
-				}
+			var (
+				pFP          string
+				pStatus      int
+				pURL         string
+				pEvidence    []audit.NormalizedObservation
+				pIntConflict bool
+			)
+
+			// Fingerprint for THIS probe
+			fpObs := idx.GetObservations(audit.SubjectProbe, pRef, "content_fingerprint")
+			if len(fpObs) == 0 {
+				fpObs = idx.GetObservations(audit.SubjectProbe, pRef, "known_404_content_fingerprint")
 			}
-			for _, o := range idx.GetObservations(audit.SubjectProbe, pRef, "probe_final_status") {
-				if known404ProbeStatus == 0 {
-					if s, err := strconv.Atoi(strings.TrimSpace(o.Value)); err == nil {
-						known404ProbeStatus = s
-						known404Evidence = append(known404Evidence, o)
+			if len(fpObs) > 0 {
+				pFP = strings.TrimSpace(fpObs[0].Value)
+				for _, o := range fpObs {
+					pEvidence = append(pEvidence, o)
+					if strings.TrimSpace(o.Value) != pFP {
+						pIntConflict = true
 					}
 				}
 			}
-			if known404ProbeStatus == 0 {
-				for _, o := range idx.GetObservations(audit.SubjectProbe, pRef, "http_status") {
-					if s, err := strconv.Atoi(strings.TrimSpace(o.Value)); err == nil {
-						known404ProbeStatus = s
-						known404Evidence = append(known404Evidence, o)
+
+			// Status for THIS probe
+			stObs := idx.GetObservations(audit.SubjectProbe, pRef, "probe_final_status")
+			if len(stObs) == 0 {
+				stObs = idx.GetObservations(audit.SubjectProbe, pRef, "http_status")
+			}
+			if len(stObs) == 0 {
+				stObs = idx.GetObservations(audit.SubjectProbe, pRef, "known_404_probe_status")
+			}
+			if len(stObs) > 0 {
+				if s, err := strconv.Atoi(strings.TrimSpace(stObs[0].Value)); err == nil {
+					pStatus = s
+					seenStatuses = append(seenStatuses, s)
+				}
+				for _, o := range stObs {
+					pEvidence = append(pEvidence, o)
+					if s, err := strconv.Atoi(strings.TrimSpace(o.Value)); err != nil || s != pStatus {
+						pIntConflict = true
 					}
 				}
 			}
-			for _, o := range idx.GetObservations(audit.SubjectProbe, pRef, "missing_probe_url") {
-				if known404ProbeURL == "" {
-					known404ProbeURL = strings.TrimSpace(o.Value)
-					known404Evidence = append(known404Evidence, o)
+
+			// URL for THIS probe
+			uObs := idx.GetObservations(audit.SubjectProbe, pRef, "missing_probe_url")
+			if len(uObs) == 0 {
+				uObs = idx.GetObservations(audit.SubjectProbe, pRef, "probe_url")
+			}
+			if len(uObs) == 0 {
+				uObs = idx.GetObservations(audit.SubjectProbe, pRef, "url_identity")
+			}
+			if len(uObs) > 0 {
+				pURL = strings.TrimSpace(uObs[0].Value)
+				for _, o := range uObs {
+					pEvidence = append(pEvidence, o)
+					if strings.TrimSpace(o.Value) != pURL {
+						pIntConflict = true
+					}
 				}
+			}
+
+			if pIntConflict {
+				probeConflict = true
+				continue
+			}
+
+			// A probe candidate is valid ONLY if THIS same probe has BOTH status 404/410 AND a fingerprint
+			if pFP != "" && (pStatus == 404 || pStatus == 410) {
+				validProbes = append(validProbes, probeRecord{
+					probeRef:    pRef,
+					probeURL:    pURL,
+					status:      pStatus,
+					fingerprint: pFP,
+					evidence:    pEvidence,
+				})
+			}
+		}
+
+		// Check if multiple probes have conflicting statuses
+		if len(seenStatuses) > 1 {
+			firstSt := seenStatuses[0]
+			for _, st := range seenStatuses {
+				if st != firstSt {
+					probeConflict = true
+					break
+				}
+			}
+		}
+
+		// Reconcile valid probes
+		if len(validProbes) > 0 && !probeConflict {
+			firstFP := validProbes[0].fingerprint
+			firstStatus := validProbes[0].status
+			for _, vp := range validProbes {
+				if vp.fingerprint != firstFP || vp.status != firstStatus {
+					probeConflict = true
+					break
+				}
+			}
+			if !probeConflict {
+				known404Fingerprint = firstFP
+				known404ProbeStatus = firstStatus
+				known404ProbeURL = validProbes[0].probeURL
+				known404Evidence = validProbes[0].evidence
 			}
 		}
 	}
@@ -279,6 +399,32 @@ func evaluateINDEX006(
 		}
 
 		// Precondition: Known-missing probe must have returned 404/410 with fingerprint
+		if probeConflict {
+			obsSummary := "Reliable soft-404 comparison unavailable: conflicting probe template fingerprints or statuses recorded across probes."
+			rr := audit.RuleResult{
+				RuleResultID:    ruleResultID,
+				AuditRunID:      snapshot.AuditRunID,
+				SnapshotID:      snapshot.SnapshotID,
+				RuleID:          rule.RuleID,
+				ParentCheck:     rule.ParentCheck,
+				RuleVersion:     rule.RuleVersion,
+				SubjectType:     audit.SubjectURL,
+				SubjectRef:      subjectRef,
+				Status:          audit.StatusUnknown,
+				Severity:        rule.DefaultSeverity,
+				Scope:           audit.ScopeURL,
+				ObservedSummary: obsSummary,
+				ExpectedSummary: expectedSummaryINDEX006,
+				EvaluatedAt:     evalTime,
+				EvidenceRefs:    evidenceRefs,
+			}
+			if err := validateRuleResult(rr); err != nil {
+				return nil, fmt.Errorf("audit engine: invalid rule result for %s: %w", subjectRef, err)
+			}
+			results = append(results, rr)
+			continue
+		}
+
 		if (subject404Status != 404 && subject404Status != 410) || subject404FP == "" {
 			obsSummary := "Reliable soft-404 comparison unavailable: known-missing 404 template fingerprint is unavailable or probe did not return 404/410."
 			rr := audit.RuleResult{
@@ -360,7 +506,7 @@ func evaluateINDEX006(
 
 		if targetFingerprint == subject404FP {
 			evalStatus = audit.StatusWarning
-			observedSummary = fmt.Sprintf("Target URL %s returns HTTP 200 but content matches known 404 template fingerprint (%s) (soft 404 detected).", urlVal, targetFingerprint)
+			observedSummary = fmt.Sprintf("Target URL %s returns HTTP 200 but content matches known 404 template fingerprint (%s) (potential soft-404 template match).", urlVal, targetFingerprint)
 		} else {
 			evalStatus = audit.StatusPass
 			observedSummary = fmt.Sprintf("Target URL %s returns HTTP 200 and content fingerprint (%s) differs from known 404 template fingerprint (%s).", urlVal, targetFingerprint, subject404FP)

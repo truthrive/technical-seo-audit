@@ -247,6 +247,32 @@ func evaluateCANON002(
 			continue
 		}
 
+		// Precondition: URLs with query parameters have no meaningful trailing-slash pair
+		if parsed.RawQuery != "" && explicitSlashURL == "" && explicitNonSlashURL == "" {
+			rr := audit.RuleResult{
+				RuleResultID:    ruleResultID,
+				AuditRunID:      snapshot.AuditRunID,
+				SnapshotID:      snapshot.SnapshotID,
+				RuleID:          rule.RuleID,
+				ParentCheck:     rule.ParentCheck,
+				RuleVersion:     rule.RuleVersion,
+				SubjectType:     target.st,
+				SubjectRef:      target.ref,
+				Status:          audit.StatusNotApplicable,
+				Severity:        rule.DefaultSeverity,
+				Scope:           audit.ScopeURL,
+				ObservedSummary: fmt.Sprintf("URL %q with query parameters has no meaningful trailing-slash pair.", evalURL),
+				ExpectedSummary: expectedSummaryCANON002,
+				EvaluatedAt:     evalTime,
+				EvidenceRefs:    evidenceRefs,
+			}
+			if err := validateRuleResult(rr); err != nil {
+				return nil, fmt.Errorf("audit engine: invalid rule result for %s: %w", target.ref, err)
+			}
+			results = append(results, rr)
+			continue
+		}
+
 		// 3. Resolve slash and non-slash URL variants
 		slashURL := explicitSlashURL
 		nonSlashURL := explicitNonSlashURL
@@ -272,6 +298,7 @@ func evaluateCANON002(
 			slashHash           string
 			nonSlashHash        string
 			normalizedHash      string
+			hashConflict        bool
 		)
 
 		// Check explicit observations on target subject first
@@ -297,7 +324,11 @@ func evaluateCANON002(
 		}
 		for _, o := range idx.GetObservations(target.st, target.ref, "normalized_content_hash") {
 			addEvidenceRef(o, "normalized_hashes", audit.EvidenceRoleSupporting)
-			normalizedHash = strings.TrimSpace(o.Value)
+			val := strings.TrimSpace(o.Value)
+			if normalizedHash != "" && val != normalizedHash {
+				hashConflict = true
+			}
+			normalizedHash = val
 		}
 
 		// If states not fully resolved from explicit observations, inspect index via urlToRef
@@ -319,11 +350,15 @@ func evaluateCANON002(
 					addEvidenceRef(o, "redirect_paths", audit.EvidenceRoleSupporting)
 				}
 			}
-			if redirStatus == 0 && (status == 301 || status == 308 || status == 302 || status == 307) {
+			if redirStatus == 0 && (status == 301 || status == 308 || status == 302 || status == 303 || status == 307) {
 				redirStatus = status
 			}
 			for _, o := range idx.GetObservations(audit.SubjectURL, ref, "content_fingerprint") {
-				hash = strings.TrimSpace(o.Value)
+				val := strings.TrimSpace(o.Value)
+				if hash != "" && val != hash {
+					hashConflict = true
+				}
+				hash = val
 				addEvidenceRef(o, "normalized_hashes", audit.EvidenceRoleSupporting)
 			}
 			return
@@ -386,19 +421,30 @@ func evaluateCANON002(
 
 		if isSlash2xx && isNonSlash2xx {
 			// Both variants return 2xx!
-			hashesMatch := false
-			if normalizedHash != "" {
-				hashesMatch = true
-			} else if slashHash != "" && nonSlashHash != "" && slashHash == nonSlashHash {
-				hashesMatch = true
+			effectiveSlashHash := slashHash
+			effectiveNonSlashHash := nonSlashHash
+			if effectiveSlashHash == "" && normalizedHash != "" {
+				effectiveSlashHash = normalizedHash
+			}
+			if effectiveNonSlashHash == "" && normalizedHash != "" {
+				effectiveNonSlashHash = normalizedHash
 			}
 
-			if hashesMatch {
-				evalStatus = audit.StatusFail
-				observedSummary = fmt.Sprintf("Both trailing-slash variants return HTTP 2xx with identical content hash (%s and %s), causing duplicate content.", slashURL, nonSlashURL)
+			if hashConflict {
+				evalStatus = audit.StatusUnknown
+				observedSummary = "Conflicting content fingerprint observations recorded for trailing-slash variant."
+			} else if effectiveSlashHash != "" && effectiveNonSlashHash != "" {
+				if effectiveSlashHash == effectiveNonSlashHash {
+					evalStatus = audit.StatusFail
+					observedSummary = fmt.Sprintf("Both trailing-slash variants return HTTP 2xx with identical content hash (%s and %s), causing duplicate content.", slashURL, nonSlashURL)
+				} else {
+					evalStatus = audit.StatusWarning
+					observedSummary = fmt.Sprintf("Both trailing-slash variants return HTTP 2xx (%s and %s) with different content without redirecting to a canonical version.", slashURL, nonSlashURL)
+				}
 			} else {
+				// One or both hashes are unavailable (e.g. truncated/failed HTML extraction)
 				evalStatus = audit.StatusWarning
-				observedSummary = fmt.Sprintf("Both trailing-slash variants return HTTP 2xx (%s and %s) without redirecting to a canonical version.", slashURL, nonSlashURL)
+				observedSummary = fmt.Sprintf("Both trailing-slash variants return HTTP 2xx (%s and %s), but content hashes are unavailable to verify duplication.", slashURL, nonSlashURL)
 			}
 		} else if isSlash2xx && (nonSlashStatus == 301 || nonSlashStatus == 308 || nonSlashRedirStatus == 301 || nonSlashRedirStatus == 308) {
 			// Slash is 2xx, non-slash redirects permanently
@@ -418,10 +464,10 @@ func evaluateCANON002(
 				evalStatus = audit.StatusWarning
 				observedSummary = fmt.Sprintf("Slash variant permanently redirects to %s instead of canonical non-slash variant %s.", slashFinalURL, nonSlashURL)
 			}
-		} else if isSlash2xx && (nonSlashStatus == 302 || nonSlashStatus == 307 || nonSlashRedirStatus == 302 || nonSlashRedirStatus == 307) {
+		} else if isSlash2xx && (nonSlashStatus == 302 || nonSlashStatus == 303 || nonSlashStatus == 307 || nonSlashRedirStatus == 302 || nonSlashRedirStatus == 303 || nonSlashRedirStatus == 307) {
 			evalStatus = audit.StatusWarning
 			observedSummary = fmt.Sprintf("Trailing-slash normalization is inconsistent: non-slash variant %s uses temporary redirect (HTTP %d) to %s.", nonSlashURL, nonSlashStatus, nonSlashFinalURL)
-		} else if isNonSlash2xx && (slashStatus == 302 || slashStatus == 307 || slashRedirectStatus == 302 || slashRedirectStatus == 307) {
+		} else if isNonSlash2xx && (slashStatus == 302 || slashStatus == 303 || slashStatus == 307 || slashRedirectStatus == 302 || slashRedirectStatus == 303 || slashRedirectStatus == 307) {
 			evalStatus = audit.StatusWarning
 			observedSummary = fmt.Sprintf("Trailing-slash normalization is inconsistent: slash variant %s uses temporary redirect (HTTP %d) to %s.", slashURL, slashStatus, slashFinalURL)
 		} else {

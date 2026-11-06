@@ -168,3 +168,87 @@ func TestAR_INDEX_004_Evaluation(t *testing.T) {
 		})
 	}
 }
+
+func TestINDEX004_QA04Remediation(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	obsHelper := func(runID, snapID, id string, st audit.EvaluationSubjectType, ref, field, val string) audit.NormalizedObservation {
+		return audit.NormalizedObservation{
+			ObservationID:      audit.ObservationID(id),
+			AuditRunID:         audit.AuditRunID(runID),
+			SnapshotID:         audit.SnapshotID(snapID),
+			SubjectType:        st,
+			SubjectRef:         ref,
+			Field:              field,
+			Value:              val,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"test"},
+			ObservedAt:         now,
+		}
+	}
+
+	t.Run("Probe fetch not attempted returns UNKNOWN", func(t *testing.T) {
+		runID := "run:test:index004:not-attempted"
+		snapID := "snap:test:index004:not-attempted"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:p:url", audit.SubjectProbe, "probe:1", "missing_probe_url", "https://example.com/probe-404"),
+				obsHelper(runID, snapID, "obs:p:att", audit.SubjectProbe, "probe:1", "fetch_attempted", "false"),
+			},
+		}
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule AR-INDEX-004 failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN when probe not attempted, got %v (summary: %s)", results[0].Status, results[0].ObservedSummary)
+		}
+	})
+
+	t.Run("Conflicting destination URLs on probe returns UNKNOWN", func(t *testing.T) {
+		runID := "run:test:index004:conflict-dest"
+		snapID := "snap:test:index004:conflict-dest"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:p:url", audit.SubjectProbe, "probe:1", "missing_probe_url", "https://example.com/probe-404"),
+				obsHelper(runID, snapID, "obs:p:st", audit.SubjectProbe, "probe:1", "probe_final_status", "301"),
+				obsHelper(runID, snapID, "obs:p:dest:1", audit.SubjectProbe, "probe:1", "probe_final_url", "https://example.com/dest1"),
+				obsHelper(runID, snapID, "obs:p:dest:2", audit.SubjectProbe, "probe:1", "probe_final_url", "https://example.com/dest2"),
+			},
+		}
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-004")
+		if err != nil {
+			t.Fatalf("EvaluateRule AR-INDEX-004 failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for conflicting final URLs, got %v (summary: %s)", results[0].Status, results[0].ObservedSummary)
+		}
+	})
+}

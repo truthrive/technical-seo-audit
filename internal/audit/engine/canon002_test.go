@@ -268,6 +268,25 @@ func TestAR_CANON_002_Evaluation(t *testing.T) {
 			nonSlashState:  200,
 			expectedStatus: audit.StatusUnknown,
 		},
+
+		// NOT_APPLICABLE: URL with query parameters
+		{
+			name:           "NOT_APPLICABLE - url with query parameters",
+			urlStr:         "https://example.com/category?sort=asc",
+			expectedStatus: audit.StatusNotApplicable,
+		},
+
+		// WARNING: temporary redirect 303
+		{
+			name:             "WARNING - non-slash uses temporary 303 redirect",
+			urlStr:           "https://example.com/about/",
+			slashURL:         "https://example.com/about/",
+			nonSlashURL:      "https://example.com/about",
+			slashState:       200,
+			nonSlashState:    303,
+			nonSlashFinalURL: "https://example.com/about/",
+			expectedStatus:   audit.StatusWarning,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -300,4 +319,101 @@ func TestAR_CANON_002_Evaluation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCANON002_QA03Remediation(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	obsHelper := func(runID, snapID, id string, st audit.EvaluationSubjectType, ref, field, val string) audit.NormalizedObservation {
+		return audit.NormalizedObservation{
+			ObservationID:      audit.ObservationID(id),
+			AuditRunID:         audit.AuditRunID(runID),
+			SnapshotID:         audit.SnapshotID(snapID),
+			SubjectType:        st,
+			SubjectRef:         ref,
+			Field:              field,
+			Value:              val,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"test"},
+			ObservedAt:         now,
+		}
+	}
+
+	t.Run("Both 2xx where one counterpart lacks hash (e.g. truncated extraction) returns WARNING not FAIL", func(t *testing.T) {
+		runID := "run:test:canon002:truncated-hash"
+		snapID := "snap:test:canon002:truncated-hash"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:url:slash", audit.SubjectURL, "url:slash", "url_identity", "https://example.com/blog/"),
+				obsHelper(runID, snapID, "obs:st:slash", audit.SubjectURL, "url:slash", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:slash", audit.SubjectURL, "url:slash", "content_fingerprint", "hash-12345"),
+
+				obsHelper(runID, snapID, "obs:url:noslash", audit.SubjectURL, "url:noslash", "url_identity", "https://example.com/blog"),
+				obsHelper(runID, snapID, "obs:st:noslash", audit.SubjectURL, "url:noslash", "http_status", "200"),
+				// noslash has NO content_fingerprint (e.g. extraction failed/truncated)
+			},
+		}
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-CANON-002")
+		if err != nil {
+			t.Fatalf("EvaluateRule AR-CANON-002 failed: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("expected 2 results, got %d", len(results))
+		}
+		for _, r := range results {
+			if r.Status != audit.StatusWarning {
+				t.Errorf("expected WARNING when one hash is missing, got %v (summary: %s)", r.Status, r.ObservedSummary)
+			}
+		}
+	})
+
+	t.Run("Conflicting fingerprints on a variant returns UNKNOWN", func(t *testing.T) {
+		runID := "run:test:canon002:conflict-hash"
+		snapID := "snap:test:canon002:conflict-hash"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:url:slash", audit.SubjectURL, "url:slash", "url_identity", "https://example.com/blog/"),
+				obsHelper(runID, snapID, "obs:st:slash", audit.SubjectURL, "url:slash", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:slash:1", audit.SubjectURL, "url:slash", "content_fingerprint", "hash-aaa"),
+				obsHelper(runID, snapID, "obs:fp:slash:2", audit.SubjectURL, "url:slash", "content_fingerprint", "hash-bbb"),
+
+				obsHelper(runID, snapID, "obs:url:noslash", audit.SubjectURL, "url:noslash", "url_identity", "https://example.com/blog"),
+				obsHelper(runID, snapID, "obs:st:noslash", audit.SubjectURL, "url:noslash", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:noslash", audit.SubjectURL, "url:noslash", "content_fingerprint", "hash-aaa"),
+			},
+		}
+
+		results, err := eng.EvaluateRule(ctx, snap, "AR-CANON-002")
+		if err != nil {
+			t.Fatalf("EvaluateRule AR-CANON-002 failed: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("expected 2 results, got %d", len(results))
+		}
+		for _, r := range results {
+			if r.Status != audit.StatusUnknown {
+				t.Errorf("expected UNKNOWN for conflicting content fingerprint, got %v (summary: %s)", r.Status, r.ObservedSummary)
+			}
+		}
+	})
 }
