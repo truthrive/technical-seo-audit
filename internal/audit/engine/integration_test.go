@@ -972,3 +972,308 @@ func TestEngine_MVP_Batch2_EndToEndIntegration(t *testing.T) {
 		t.Errorf("expected /real-page to PASS for AR-INDEX-006, got %v", r.Status)
 	}
 }
+
+// TestEngine_Batch3_EndToEndIntegration tests Fast-Track MVP Batch 3 rules:
+// - AR-INDEX-005: Snippet restriction conflicts with snippet policy
+// - AR-RENDER-001 through AR-RENDER-006: Render comparison rules
+func TestEngine_Batch3_EndToEndIntegration(t *testing.T) {
+	mux := http.NewServeMux()
+
+	// 1. Unrestricted snippet page
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Unrestricted Home</title>
+<meta name="robots" content="index, follow">
+</head><body><nav><a href="/restricted">Restricted Page</a></nav><h1>Home Page</h1></body></html>`)
+	})
+
+	// 2. Page with nosnippet directive
+	mux.HandleFunc("/restricted", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Restricted Page</title>
+<meta name="robots" content="index, nosnippet">
+</head><body><h1>Restricted Snippet</h1></body></html>`)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	db, err := standalone.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	runner := sitecrawl.NewRunner(db)
+	if err := runner.EnsureSchema(); err != nil {
+		t.Fatalf("failed to ensure schema: %v", err)
+	}
+
+	opts := sitecrawl.Options{
+		Mode:        sitecrawl.ModeSpider,
+		MaxDepth:    2,
+		MaxURLs:     10,
+		Concurrency: 1,
+	}
+
+	started, err := runner.Crawl(context.Background(), []string{srv.URL}, opts)
+	if err != nil {
+		t.Fatalf("crawl execution failed: %v", err)
+	}
+
+	buildReq := adapter.BuildRequest{
+		CrawlRunID: started.ID,
+		AuditRunID: "audit:run:batch3",
+		SnapshotID: "snap:run:batch3",
+	}
+
+	buildRes, err := adapter.Build(context.Background(), db, buildReq)
+	if err != nil {
+		t.Fatalf("adapter.Build failed: %v", err)
+	}
+
+	snap := buildRes.EvidenceSnapshot
+	if snap == nil || snap.SnapshotStatus != audit.SnapshotFrozen {
+		t.Fatalf("expected non-nil FROZEN snapshot")
+	}
+
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	now := time.Now().UTC()
+
+	// Sub-test A: AR-INDEX-005 with unspecified snippet policy -> Home is PASS, /restricted is WARNING
+	resIndex005Unspecified, err := eng.EvaluateRule(context.Background(), snap, "AR-INDEX-005")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-INDEX-005 unspecified failed: %v", err)
+	}
+	mIndex005 := make(map[string]audit.RuleResult)
+	for _, r := range resIndex005Unspecified {
+		for _, ref := range r.EvidenceRefs {
+			if ref.Field == "url" {
+				mIndex005[ref.ObservedValue] = r
+				break
+			}
+		}
+	}
+	if r, ok := mIndex005[srv.URL+"/"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected Home to PASS AR-INDEX-005 with unspecified policy, got %v", r)
+	}
+	if r, ok := mIndex005[srv.URL+"/restricted"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("expected /restricted to WARNING for AR-INDEX-005 with unspecified policy, got %v", r)
+	}
+
+	// Sub-test B: AR-INDEX-005 with policy allow_unrestricted -> /restricted is FAIL
+	polAllow, err := engine.NewPolicyIndex([]audit.ProjectPolicyAssignment{
+		{
+			PolicyAssignmentID: "pol:batch3:allow",
+			AuditRunID:         "audit:run:batch3",
+			PolicyKey:          audit.PolicyKeySnippetPolicy,
+			PolicyValue:        audit.PolicyValueSnippetAllowUnrestricted,
+			Scope:              audit.PolicyScopeSite,
+			TargetRef:          "site",
+			Source:             audit.PolicyProvenanceUserInput,
+			SuppliedAt:         now,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicyIndex failed: %v", err)
+	}
+	resIndex005Allow, err := eng.EvaluateRuleWithContext(context.Background(), engine.EvaluationContext{Snapshot: snap, Policies: polAllow}, "AR-INDEX-005")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-INDEX-005 allow failed: %v", err)
+	}
+	mIndex005Allow := make(map[string]audit.RuleResult)
+	for _, r := range resIndex005Allow {
+		for _, ref := range r.EvidenceRefs {
+			if ref.Field == "url" {
+				mIndex005Allow[ref.ObservedValue] = r
+				break
+			}
+		}
+	}
+	if r, ok := mIndex005Allow[srv.URL+"/restricted"]; !ok || r.Status != audit.StatusFail {
+		t.Errorf("expected /restricted to FAIL for AR-INDEX-005 under allow_unrestricted policy, got %v", r)
+	}
+
+	// Sub-test C: AR-INDEX-005 with policy restrict -> /restricted is PASS
+	polRestrict, err := engine.NewPolicyIndex([]audit.ProjectPolicyAssignment{
+		{
+			PolicyAssignmentID: "pol:batch3:restrict",
+			AuditRunID:         "audit:run:batch3",
+			PolicyKey:          audit.PolicyKeySnippetPolicy,
+			PolicyValue:        audit.PolicyValueSnippetRestrict,
+			Scope:              audit.PolicyScopeSite,
+			TargetRef:          "site",
+			Source:             audit.PolicyProvenanceUserInput,
+			SuppliedAt:         now,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicyIndex failed: %v", err)
+	}
+	resIndex005Restrict, err := eng.EvaluateRuleWithContext(context.Background(), engine.EvaluationContext{Snapshot: snap, Policies: polRestrict}, "AR-INDEX-005")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-INDEX-005 restrict failed: %v", err)
+	}
+	mIndex005Restrict := make(map[string]audit.RuleResult)
+	for _, r := range resIndex005Restrict {
+		for _, ref := range r.EvidenceRefs {
+			if ref.Field == "url" {
+				mIndex005Restrict[ref.ObservedValue] = r
+				break
+			}
+		}
+	}
+	if r, ok := mIndex005Restrict[srv.URL+"/restricted"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected /restricted to PASS for AR-INDEX-005 under restrict policy, got %v", r)
+	}
+
+	// Sub-test D: AR-RENDER-001 through AR-RENDER-006 evaluate to NOT_APPLICABLE for unrendered crawl
+	renderRuleIDs := []string{
+		"AR-RENDER-001",
+		"AR-RENDER-002",
+		"AR-RENDER-003",
+		"AR-RENDER-004",
+		"AR-RENDER-005",
+		"AR-RENDER-006",
+	}
+	for _, ruleID := range renderRuleIDs {
+		renderResults, err := eng.EvaluateRule(context.Background(), snap, ruleID)
+		if err != nil {
+			t.Fatalf("EvaluateRule %s failed: %v", ruleID, err)
+		}
+		if len(renderResults) == 0 {
+			t.Fatalf("expected results for %s, got 0", ruleID)
+		}
+		for _, rr := range renderResults {
+			if rr.Status != audit.StatusNotApplicable {
+				t.Errorf("expected NOT_APPLICABLE for unrendered page under %s, got %s", ruleID, rr.Status)
+			}
+		}
+	}
+
+	// Sub-test E: Synthetic Rendered Snapshot testing comparison logic
+	var renderedObs []audit.NormalizedObservation
+	synthSnapID := audit.SnapshotID("snap:synth:batch3")
+	for _, o := range snap.NormalizedObservations {
+		oCopy := o
+		oCopy.SnapshotID = synthSnapID
+		renderedObs = append(renderedObs, oCopy)
+	}
+
+	// Find URL subject ref for Home
+	homeRef := ""
+	for _, obs := range snap.NormalizedObservations {
+		if obs.Field == "url_identity" && obs.Value == srv.URL+"/" {
+			homeRef = obs.SubjectRef
+			break
+		}
+	}
+	if homeRef == "" {
+		t.Fatalf("could not find home URL subject ref")
+	}
+
+	// Add render signal and comparison observations
+	renderedObs = append(renderedObs,
+		audit.NormalizedObservation{
+			ObservationID:      "obs:render:req",
+			AuditRunID:         "audit:run:batch3",
+			SnapshotID:         synthSnapID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         homeRef,
+			Field:              "render_requested",
+			Value:              "true",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"test"},
+			ObservedAt:         now,
+		},
+		audit.NormalizedObservation{
+			ObservationID:      "obs:title:raw",
+			AuditRunID:         "audit:run:batch3",
+			SnapshotID:         synthSnapID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         homeRef,
+			Field:              "title_raw",
+			Value:              "Unrestricted Home",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"test"},
+			ObservedAt:         now,
+		},
+		audit.NormalizedObservation{
+			ObservationID:      "obs:title:rendered",
+			AuditRunID:         "audit:run:batch3",
+			SnapshotID:         synthSnapID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         homeRef,
+			Field:              "title_rendered",
+			Value:              "Unrestricted Home",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"test"},
+			ObservedAt:         now,
+		},
+		audit.NormalizedObservation{
+			ObservationID:      "obs:canon:raw",
+			AuditRunID:         "audit:run:batch3",
+			SnapshotID:         synthSnapID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         homeRef,
+			Field:              "canonical_raw",
+			Value:              srv.URL + "/",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"test"},
+			ObservedAt:         now,
+		},
+		audit.NormalizedObservation{
+			ObservationID:      "obs:canon:rendered",
+			AuditRunID:         "audit:run:batch3",
+			SnapshotID:         synthSnapID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         homeRef,
+			Field:              "canonical_rendered",
+			Value:              srv.URL + "/client-changed",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"test"},
+			ObservedAt:         now,
+		},
+	)
+
+	synthSnap := &audit.EvidenceSnapshot{
+		SnapshotID:             synthSnapID,
+		AuditRunID:             "audit:run:batch3",
+		SnapshotStatus:         audit.SnapshotFrozen,
+		NormalizationVersion:   "v1.11.0",
+		CrawlComplete:          true,
+		CreatedAt:              now.Add(-1 * time.Minute),
+		FrozenAt:               &now,
+		NormalizedObservations: renderedObs,
+	}
+
+	// AR-RENDER-001 should PASS for Home (equal titles)
+	resR1, err := eng.EvaluateRule(context.Background(), synthSnap, "AR-RENDER-001")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-RENDER-001 failed: %v", err)
+	}
+	for _, r := range resR1 {
+		if r.SubjectRef == homeRef {
+			if r.Status != audit.StatusPass {
+				t.Errorf("expected Home to PASS AR-RENDER-001, got %s", r.Status)
+			}
+		}
+	}
+
+	// AR-RENDER-002 should WARNING for Home (differing canonicals)
+	resR2, err := eng.EvaluateRule(context.Background(), synthSnap, "AR-RENDER-002")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-RENDER-002 failed: %v", err)
+	}
+	for _, r := range resR2 {
+		if r.SubjectRef == homeRef {
+			if r.Status != audit.StatusWarning {
+				t.Errorf("expected Home to WARNING for AR-RENDER-002, got %s", r.Status)
+			}
+		}
+	}
+}

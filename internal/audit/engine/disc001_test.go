@@ -863,8 +863,8 @@ func TestEngine_AR_DISC_001_Unit(t *testing.T) {
 
 		// 40. Other evaluators remain unaffected
 		allIDs := eng.ImplementedRuleIDs()
-		if len(allIDs) != 31 {
-			t.Fatalf("40. expected 31 implemented rules, got %d", len(allIDs))
+		if len(allIDs) != 38 {
+			t.Fatalf("40. expected 38 implemented rules, got %d", len(allIDs))
 		}
 		for _, id := range allIDs {
 			if id == "AR-DISC-001" {
@@ -1179,8 +1179,8 @@ func TestAdapter_Engine_AR_DISC_001_Integration(t *testing.T) {
 		runID := "int:disc001:13_all"
 		_, snap := setupIntegrationRun(t, runID, "COMPLETED", 1, true)
 		allIDs := eng.ImplementedRuleIDs()
-		if len(allIDs) != 31 {
-			t.Fatalf("expected 31 rules, got %d", len(allIDs))
+		if len(allIDs) != 38 {
+			t.Fatalf("expected 38 rules, got %d", len(allIDs))
 		}
 		for _, rID := range allIDs {
 			results, err := eng.EvaluateRule(ctx, snap, rID)

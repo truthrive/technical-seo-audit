@@ -421,12 +421,19 @@ func TestEngine_PolicyIntegration(t *testing.T) {
 			"AR-INDEX-002",
 			"AR-INDEX-003",
 			"AR-INDEX-004",
+			"AR-INDEX-005",
 			"AR-INDEX-006",
 			"AR-LINK-002",
 			"AR-LINK-003",
 			"AR-LINK-004",
 			"AR-LINK-005",
 			"AR-LINK-006",
+			"AR-RENDER-001",
+			"AR-RENDER-002",
+			"AR-RENDER-003",
+			"AR-RENDER-004",
+			"AR-RENDER-005",
+			"AR-RENDER-006",
 		}
 		if len(ids) != len(expected) {
 			t.Fatalf("expected exactly %v, got %v", expected, ids)

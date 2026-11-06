@@ -3778,6 +3778,73 @@ func processPageDirectives(
 				ObservedAt:         obsTime,
 			})
 		}
+
+		// 6. Snippet Directives (AR-INDEX-005, HTML only)
+		hasNosnippet := false
+		maxSnippetVal := -1
+		hasMaxSnippet := false
+
+		for _, d := range directives {
+			if !d.ScopeUnknown && (d.Target == "*" || d.Target == "googlebot") {
+				if containsToken(d.ParsedTokens, "nosnippet") {
+					hasNosnippet = true
+				}
+				for _, tok := range d.ParsedTokens {
+					if strings.HasPrefix(tok, "max-snippet:") {
+						valStr := strings.TrimPrefix(tok, "max-snippet:")
+						if val, err := strconv.Atoi(valStr); err == nil {
+							if !hasMaxSnippet || val < maxSnippetVal {
+								maxSnippetVal = val
+								hasMaxSnippet = true
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if pageMetaTags != nil || robotsMetaExtracted || len(directives) > 0 {
+			normalized = append(normalized, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "nosnippet",
+				Value:              strconv.FormatBool(hasNosnippet),
+				DerivationType:     audit.DerivationNormalized,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+
+			if hasMaxSnippet {
+				normalized = append(normalized, audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "max_snippet",
+					Value:              strconv.Itoa(maxSnippetVal),
+					DerivationType:     audit.DerivationNormalized,
+					SourceEvidenceRefs: []string{pageSrcRef},
+					ObservedAt:         obsTime,
+				})
+			}
+
+			normalized = append(normalized, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "data_nosnippet_count",
+				Value:              "0",
+				DerivationType:     audit.DerivationNormalized,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
 	}
 
 	return directives, normalized, gaps

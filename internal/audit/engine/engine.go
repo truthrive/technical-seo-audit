@@ -90,12 +90,19 @@ func NewWithRegistry(reg *audit.Registry) (*Engine, error) {
 	e.register(ruleIDINDEX002, evaluateINDEX002)
 	e.register(ruleIDINDEX003, evaluateINDEX003)
 	e.register(ruleIDINDEX004, evaluateINDEX004)
+	e.register(ruleIDINDEX005, evaluateINDEX005)
 	e.register(ruleIDINDEX006, evaluateINDEX006)
 	e.register(ruleIDLINK002, evaluateLINK002)
 	e.register(ruleIDLINK003, evaluateLINK003)
 	e.register(ruleIDLINK004, evaluateLINK004)
 	e.register(ruleIDLINK005, evaluateLINK005)
 	e.register(ruleIDLINK006, evaluateLINK006)
+	e.register(ruleIDRENDER001, evaluateRENDER001)
+	e.register(ruleIDRENDER002, evaluateRENDER002)
+	e.register(ruleIDRENDER003, evaluateRENDER003)
+	e.register(ruleIDRENDER004, evaluateRENDER004)
+	e.register(ruleIDRENDER005, evaluateRENDER005)
+	e.register(ruleIDRENDER006, evaluateRENDER006)
 
 	return e, nil
 }
@@ -113,7 +120,7 @@ func (e *Engine) register(ruleID string, fn Evaluator) {
 }
 
 // ImplementedRuleIDs returns the deterministically sorted list of rule IDs currently
-// supported with an executable evaluator. For Audit V1 Fast-Track MVP Batch 2, this is 31/47 rules.
+// supported with an executable evaluator. For Audit V1 Fast-Track MVP Batch 3, this is 38/47 rules.
 func (e *Engine) ImplementedRuleIDs() []string {
 	ids := make([]string, 0, len(e.evaluators))
 	for id := range e.evaluators {
