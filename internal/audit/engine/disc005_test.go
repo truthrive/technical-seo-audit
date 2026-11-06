@@ -366,6 +366,8 @@ func TestAR_DISC_005_MandatoryUnitSuite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("engine.New failed: %v", err)
 	}
+	fixedTime := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	eng.SetClock(func() time.Time { return fixedTime })
 
 	// 1. Direct 200 HTML + effective_noindex=false -> PASS
 	t.Run("1. Direct 200 HTML + effective_noindex=false -> PASS", func(t *testing.T) {
@@ -1698,8 +1700,8 @@ func TestAR_DISC_005_HermeticSQLiteIntegrationSuite(t *testing.T) {
 		}
 
 		implIDs := eng.ImplementedRuleIDs()
-		if len(implIDs) != 20 {
-			t.Fatalf("expected exactly 20 implemented rules, got %d", len(implIDs))
+		if len(implIDs) != 26 {
+			t.Fatalf("expected exactly 26 implemented rules, got %d", len(implIDs))
 		}
 
 		for _, ruleID := range implIDs {

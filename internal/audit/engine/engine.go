@@ -65,6 +65,8 @@ func NewWithRegistry(reg *audit.Registry) (*Engine, error) {
 	}
 
 	// Register implemented V1 evaluators
+	e.register(ruleIDACC002, evaluateACC002)
+	e.register(ruleIDACC003, evaluateACC003)
 	e.register(ruleIDACC004, evaluateACC004)
 	e.register(ruleIDCANON003, evaluateCANON003)
 	e.register(ruleIDCANON004, evaluateCANON004)
@@ -73,6 +75,7 @@ func NewWithRegistry(reg *audit.Registry) (*Engine, error) {
 	e.register(ruleIDCANON007, evaluateCANON007)
 	e.register(ruleIDCANON008, evaluateCANON008)
 	e.register(ruleIDCANON009, evaluateCANON009)
+	e.register(ruleIDCANON010, evaluateCANON010)
 	e.register(ruleIDDISC001, evaluateDISC001)
 	e.register(ruleIDDISC002, evaluateDISC002)
 	e.register(ruleIDDISC003, evaluateDISC003)
@@ -82,9 +85,12 @@ func NewWithRegistry(reg *audit.Registry) (*Engine, error) {
 	e.register(ruleIDENTITY001, evaluateENTITY001)
 	e.register(ruleIDINDEX001, evaluateINDEX001)
 	e.register(ruleIDINDEX002, evaluateINDEX002)
+	e.register(ruleIDINDEX003, evaluateINDEX003)
 	e.register(ruleIDLINK002, evaluateLINK002)
 	e.register(ruleIDLINK003, evaluateLINK003)
 	e.register(ruleIDLINK004, evaluateLINK004)
+	e.register(ruleIDLINK005, evaluateLINK005)
+	e.register(ruleIDLINK006, evaluateLINK006)
 
 	return e, nil
 }

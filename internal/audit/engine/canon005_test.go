@@ -937,16 +937,16 @@ func TestAR_CANON_005_HermeticEndToEndPipeline(t *testing.T) {
 		t.Fatalf("adapter.Build: %v", err)
 	}
 
-	if res.EvidenceSnapshot.NormalizationVersion != "v1.10.0" {
-		t.Errorf("NormalizationVersion = %q, want v1.10.0", res.EvidenceSnapshot.NormalizationVersion)
+	if res.EvidenceSnapshot.NormalizationVersion != "v1.11.0" {
+		t.Errorf("NormalizationVersion = %q, want v1.11.0", res.EvidenceSnapshot.NormalizationVersion)
 	}
 
 	eng, err := engine.New()
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
 	}
-	if got := len(eng.ImplementedRuleIDs()); got != 20 {
-		t.Fatalf("ImplementedRuleIDs count = %d, want 20", got)
+	if got := len(eng.ImplementedRuleIDs()); got != 26 {
+		t.Fatalf("ImplementedRuleIDs count = %d, want 26", got)
 	}
 
 	subjToURL := make(map[string]string)

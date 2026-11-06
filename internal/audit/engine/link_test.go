@@ -1025,6 +1025,8 @@ func TestEngine_Link_Regression_Rules(t *testing.T) {
 
 	implementedIDs := eng.ImplementedRuleIDs()
 	expectedIDs := []string{
+		"AR-ACC-002",
+		"AR-ACC-003",
 		"AR-ACC-004",
 		"AR-CANON-003",
 		"AR-CANON-004",
@@ -1033,6 +1035,7 @@ func TestEngine_Link_Regression_Rules(t *testing.T) {
 		"AR-CANON-007",
 		"AR-CANON-008",
 		"AR-CANON-009",
+		"AR-CANON-010",
 		"AR-DISC-001",
 		"AR-DISC-002",
 		"AR-DISC-003",
@@ -1042,23 +1045,26 @@ func TestEngine_Link_Regression_Rules(t *testing.T) {
 		"AR-ENTITY-001",
 		"AR-INDEX-001",
 		"AR-INDEX-002",
+		"AR-INDEX-003",
 		"AR-LINK-002",
 		"AR-LINK-003",
 		"AR-LINK-004",
+		"AR-LINK-005",
+		"AR-LINK-006",
 	}
 
-	if len(implementedIDs) != 20 {
-		t.Fatalf("expected exactly 20 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
+	if len(implementedIDs) != 26 {
+		t.Fatalf("expected exactly 26 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
 	}
 	if !reflect.DeepEqual(implementedIDs, expectedIDs) {
 		t.Fatalf("expected implemented IDs %v, got %v", expectedIDs, implementedIDs)
 	}
 
-	// Verify that future link rules beyond LINK-002/003/004 are NOT implemented
-	for _, futureRule := range []string{"AR-LINK-001", "AR-LINK-005", "AR-LINK-006"} {
+	// Verify that future link rules beyond LINK-002/003/004/005/006 are NOT implemented
+	for _, futureRule := range []string{"AR-LINK-001"} {
 		for _, id := range implementedIDs {
 			if id == futureRule {
-				t.Errorf("rule %s must NOT be implemented in V1.6c", futureRule)
+				t.Errorf("rule %s must NOT be implemented in MVP Batch 1", futureRule)
 			}
 		}
 	}

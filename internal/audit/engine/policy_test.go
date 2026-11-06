@@ -392,10 +392,12 @@ func TestEngine_PolicyIntegration(t *testing.T) {
 		}
 	})
 
-	// 4e. Implemented rule set is 20 executable rules for V1.9d
-	t.Run("implemented rules are 20 executable rules", func(t *testing.T) {
+	// 4e. Implemented rule set is 26 executable rules for Batch 1
+	t.Run("implemented rules are 26 executable rules", func(t *testing.T) {
 		ids := eng.ImplementedRuleIDs()
 		expected := []string{
+			"AR-ACC-002",
+			"AR-ACC-003",
 			"AR-ACC-004",
 			"AR-CANON-003",
 			"AR-CANON-004",
@@ -404,6 +406,7 @@ func TestEngine_PolicyIntegration(t *testing.T) {
 			"AR-CANON-007",
 			"AR-CANON-008",
 			"AR-CANON-009",
+			"AR-CANON-010",
 			"AR-DISC-001",
 			"AR-DISC-002",
 			"AR-DISC-003",
@@ -413,9 +416,12 @@ func TestEngine_PolicyIntegration(t *testing.T) {
 			"AR-ENTITY-001",
 			"AR-INDEX-001",
 			"AR-INDEX-002",
+			"AR-INDEX-003",
 			"AR-LINK-002",
 			"AR-LINK-003",
 			"AR-LINK-004",
+			"AR-LINK-005",
+			"AR-LINK-006",
 		}
 		if len(ids) != len(expected) {
 			t.Fatalf("expected exactly %v, got %v", expected, ids)

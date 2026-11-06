@@ -436,3 +436,262 @@ func TestEngine_CanonicalBatch_EndToEndIntegration(t *testing.T) {
 		t.Errorf("expected home to PASS AR-CANON-007, got %v", r.Status)
 	}
 }
+
+// TestEngine_Batch1_EndToEndIntegration verifies the entire pipeline:
+// SiteCrawl -> Adapter -> Rule Engine -> Findings across all 6 Batch 1 rules:
+// AR-INDEX-003, AR-ACC-002, AR-ACC-003, AR-CANON-010, AR-LINK-005, AR-LINK-006.
+func TestEngine_Batch1_EndToEndIntegration(t *testing.T) {
+	mux := http.NewServeMux()
+
+	var srvURL string
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Home</title></head>
+<body>
+<nav>
+  <a href="%s/valid-robots">Valid Robots</a>
+  <a href="%s/invalid-robots">Invalid Robots</a>
+  <a href="%s/redirect-start">Redirect Page</a>
+</nav>
+<h1>Home</h1>
+</body></html>`, srvURL, srvURL, srvURL)
+	})
+
+	mux.HandleFunc("/valid-robots", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head>
+<meta name="robots" content="noindex, follow">
+<title>Valid Robots</title></head>
+<body><h1>Valid</h1></body></html>`)
+	})
+
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintf(w, "User-agent: *\nAllow: /\n")
+	})
+
+	mux.HandleFunc("/invalid-robots", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head>
+<meta name="robots" content="max-snippet:invalid">
+<title>Invalid Robots</title></head>
+<body><h1>Invalid</h1></body></html>`)
+	})
+
+	mux.HandleFunc("/redirect-start", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, srvURL+"/redirect-target", http.StatusMovedPermanently)
+	})
+
+	mux.HandleFunc("/redirect-target", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Target</title></head><body>Final Target</body></html>`)
+	})
+
+	mux.HandleFunc("/orphan-page", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Orphan</title></head><body>Orphan</body></html>`)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	srvURL = srv.URL
+
+	// 1. Crawl via SiteCrawl
+	db, err := standalone.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	runner := sitecrawl.NewRunner(db)
+	if err := runner.EnsureSchema(); err != nil {
+		t.Fatalf("failed to ensure schema: %v", err)
+	}
+
+	opts := sitecrawl.Options{
+		Mode:            sitecrawl.ModeSpider,
+		MaxDepth:        3,
+		MaxURLs:         20,
+		Concurrency:     1,
+		FollowRedirects: true,
+		RespectRobots:   true,
+	}
+
+	started, err := runner.Crawl(context.Background(), []string{srv.URL + "/"}, opts)
+	if err != nil {
+		t.Fatalf("crawl execution failed: %v", err)
+	}
+
+	// Insert orphan page record into sitecrawl_urls and sitecrawl_pages
+	orphanURL := srv.URL + "/orphan-page"
+	_, err = db.Exec(`INSERT INTO sitecrawl_urls(run_id, id, url) VALUES (?, 99, ?)`, started.ID, orphanURL)
+	if err != nil {
+		t.Fatalf("failed to insert orphan url: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, discovered_by, status, content_type, inlinks, inlinks_uniq, crawled_at)
+		VALUES (?, 99, ?, '{}', 'sitemap', 200, 'text/html', 0, 0, '2026-11-06T10:00:00Z')`, started.ID, orphanURL)
+	if err != nil {
+		t.Fatalf("failed to insert orphan page: %v", err)
+	}
+
+	// Insert sitemap record for /orphan-page and /valid-robots
+	_, err = db.Exec(`INSERT INTO sitecrawl_sitemaps(run_id, id, url, initial_status, final_status, status, fetch_complete, doc_type, parse_status, entry_count)
+		VALUES (?, 1, 'https://example.com/sitemap.xml', 200, 200, 200, 1, 'urlset', 'parsed', 2)`, started.ID)
+	if err != nil {
+		t.Fatalf("failed to insert sitemap: %v", err)
+	}
+
+	_, err = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc)
+		VALUES (?, 1, 0, 99, ?)`, started.ID, srv.URL+"/orphan-page")
+	if err != nil {
+		t.Fatalf("failed to insert sitemap entry for orphan: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc)
+		VALUES (?, 1, 1, 2, ?)`, started.ID, srv.URL+"/valid-robots")
+	if err != nil {
+		t.Fatalf("failed to insert sitemap entry for valid-robots: %v", err)
+	}
+
+	// 2. Adapt to Frozen EvidenceSnapshot
+	buildReq := adapter.BuildRequest{
+		CrawlRunID: started.ID,
+		AuditRunID: "audit:run:batch1_integration",
+		SnapshotID: "snap:run:batch1_integration",
+	}
+
+	buildRes, err := adapter.Build(context.Background(), db, buildReq)
+	if err != nil {
+		t.Fatalf("adapter.Build failed: %v", err)
+	}
+
+	snap := buildRes.EvidenceSnapshot
+	if snap == nil || snap.SnapshotStatus != audit.SnapshotFrozen {
+		t.Fatalf("expected non-nil FROZEN snapshot")
+	}
+
+	// 3. Construct Policies for ACC-002, ACC-003, and LINK-006
+	validRobotsURL := srv.URL + "/valid-robots"
+	policies, err := engine.NewPolicyIndex([]audit.ProjectPolicyAssignment{
+		{
+			PolicyAssignmentID: "pol:acc002",
+			AuditRunID:         buildReq.AuditRunID,
+			PolicyKey:          audit.PolicyKeyExpectedCrawlable,
+			PolicyValue:        "true",
+			Scope:              audit.PolicyScopeURL,
+			TargetRef:          validRobotsURL,
+			Source:             audit.PolicyProvenanceUserInput,
+		},
+		{
+			PolicyAssignmentID: "pol:acc003",
+			AuditRunID:         buildReq.AuditRunID,
+			PolicyKey:          audit.PolicyKeyExpectedURLState,
+			PolicyValue:        "live",
+			Scope:              audit.PolicyScopeURL,
+			TargetRef:          validRobotsURL,
+			Source:             audit.PolicyProvenanceUserInput,
+		},
+		{
+			PolicyAssignmentID: "pol:link006",
+			AuditRunID:         buildReq.AuditRunID,
+			PolicyKey:          audit.PolicyKeyPriorityPage,
+			PolicyValue:        "true",
+			Scope:              audit.PolicyScopeURL,
+			TargetRef:          validRobotsURL,
+			Source:             audit.PolicyProvenanceUserInput,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicyIndex failed: %v", err)
+	}
+
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	evalCtx := engine.EvaluationContext{
+		Snapshot: snap,
+		Policies: policies,
+	}
+
+	// Helper to index results by URL
+	mapResults := func(res []audit.RuleResult) map[string]audit.RuleResult {
+		m := make(map[string]audit.RuleResult)
+		for _, r := range res {
+			for _, ref := range r.EvidenceRefs {
+				if ref.Field == "url" {
+					m[ref.ObservedValue] = r
+					break
+				}
+			}
+		}
+		return m
+	}
+
+	// 1. Test AR-INDEX-003
+	resIndex003, err := eng.EvaluateRuleWithContext(context.Background(), evalCtx, "AR-INDEX-003")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-INDEX-003 failed: %v", err)
+	}
+	mIndex003 := mapResults(resIndex003)
+	if r, ok := mIndex003[validRobotsURL]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected valid-robots to PASS AR-INDEX-003, got %v", r.Status)
+	}
+	if r, ok := mIndex003[srv.URL+"/invalid-robots"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("expected invalid-robots to WARNING AR-INDEX-003, got %v", r.Status)
+	}
+
+	// 2. Test AR-CANON-010
+	resCanon010, err := eng.EvaluateRuleWithContext(context.Background(), evalCtx, "AR-CANON-010")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-CANON-010 failed: %v", err)
+	}
+	mCanon010 := mapResults(resCanon010)
+	if r, ok := mCanon010[srv.URL+"/redirect-start"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected redirect-start to PASS AR-CANON-010, got %v", r.Status)
+	}
+
+	// 3. Test AR-LINK-005
+	resLink005, err := eng.EvaluateRuleWithContext(context.Background(), evalCtx, "AR-LINK-005")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-LINK-005 failed: %v", err)
+	}
+	mLink005 := mapResults(resLink005)
+	if r, ok := mLink005[validRobotsURL]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected valid-robots (discovered in sitemap + inlinks > 0) to PASS AR-LINK-005, got %v", r.Status)
+	}
+	if r, ok := mLink005[srv.URL+"/orphan-page"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("expected orphan-page (discovered in sitemap + inlinks == 0) to WARNING AR-LINK-005, got %v", r.Status)
+	}
+
+	// 4. Test AR-LINK-006
+	resLink006, err := eng.EvaluateRuleWithContext(context.Background(), evalCtx, "AR-LINK-006")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-LINK-006 failed: %v", err)
+	}
+	mLink006 := mapResults(resLink006)
+	if r, ok := mLink006[validRobotsURL]; !ok || r.Status != audit.StatusManualReview {
+		t.Errorf("expected valid-robots to be MANUAL_REVIEW for AR-LINK-006, got %v", r.Status)
+	}
+
+	// 5. Test AR-ACC-002
+	resAcc002, err := eng.EvaluateRuleWithContext(context.Background(), evalCtx, "AR-ACC-002")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-ACC-002 failed: %v", err)
+	}
+	mAcc002 := mapResults(resAcc002)
+	if r, ok := mAcc002[validRobotsURL]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected valid-robots to PASS AR-ACC-002, got %v", r.Status)
+	}
+
+	// 6. Test AR-ACC-003
+	resAcc003, err := eng.EvaluateRuleWithContext(context.Background(), evalCtx, "AR-ACC-003")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-ACC-003 failed: %v", err)
+	}
+	mAcc003 := mapResults(resAcc003)
+	if r, ok := mAcc003[validRobotsURL]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected valid-robots to PASS AR-ACC-003, got %v", r.Status)
+	}
+}
