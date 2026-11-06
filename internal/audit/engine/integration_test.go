@@ -468,7 +468,16 @@ func TestEngine_Batch1_EndToEndIntegration(t *testing.T) {
 
 	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintf(w, "User-agent: *\nAllow: /\n")
+		fmt.Fprintf(w, "User-agent: *\nAllow: /\nSitemap: %s/sitemap.xml\n", srvURL)
+	})
+
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>%s/valid-robots</loc></url>
+  <url><loc>%s/orphan-page</loc></url>
+</urlset>`, srvURL, srvURL)
 	})
 
 	mux.HandleFunc("/invalid-robots", func(w http.ResponseWriter, r *http.Request) {
@@ -497,7 +506,7 @@ func TestEngine_Batch1_EndToEndIntegration(t *testing.T) {
 	defer srv.Close()
 	srvURL = srv.URL
 
-	// 1. Crawl via SiteCrawl
+	// 1. Crawl via SiteCrawl with native sitemap discovery (production data path)
 	db, err := standalone.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("failed to open memory db: %v", err)
@@ -510,47 +519,18 @@ func TestEngine_Batch1_EndToEndIntegration(t *testing.T) {
 	}
 
 	opts := sitecrawl.Options{
-		Mode:            sitecrawl.ModeSpider,
-		MaxDepth:        3,
-		MaxURLs:         20,
-		Concurrency:     1,
-		FollowRedirects: true,
-		RespectRobots:   true,
+		Mode:             sitecrawl.ModeSpider,
+		MaxDepth:         3,
+		MaxURLs:          20,
+		Concurrency:      1,
+		FollowRedirects:  true,
+		RespectRobots:    true,
+		DiscoverSitemaps: true, // Native sitemap discovery: populates sitemaps and admits frontier
 	}
 
 	started, err := runner.Crawl(context.Background(), []string{srv.URL + "/"}, opts)
 	if err != nil {
 		t.Fatalf("crawl execution failed: %v", err)
-	}
-
-	// Insert orphan page record into sitecrawl_urls and sitecrawl_pages
-	orphanURL := srv.URL + "/orphan-page"
-	_, err = db.Exec(`INSERT INTO sitecrawl_urls(run_id, id, url) VALUES (?, 99, ?)`, started.ID, orphanURL)
-	if err != nil {
-		t.Fatalf("failed to insert orphan url: %v", err)
-	}
-	_, err = db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, discovered_by, status, content_type, inlinks, inlinks_uniq, crawled_at)
-		VALUES (?, 99, ?, '{}', 'sitemap', 200, 'text/html', 0, 0, '2026-11-06T10:00:00Z')`, started.ID, orphanURL)
-	if err != nil {
-		t.Fatalf("failed to insert orphan page: %v", err)
-	}
-
-	// Insert sitemap record for /orphan-page and /valid-robots
-	_, err = db.Exec(`INSERT INTO sitecrawl_sitemaps(run_id, id, url, initial_status, final_status, status, fetch_complete, doc_type, parse_status, entry_count)
-		VALUES (?, 1, 'https://example.com/sitemap.xml', 200, 200, 200, 1, 'urlset', 'parsed', 2)`, started.ID)
-	if err != nil {
-		t.Fatalf("failed to insert sitemap: %v", err)
-	}
-
-	_, err = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc)
-		VALUES (?, 1, 0, 99, ?)`, started.ID, srv.URL+"/orphan-page")
-	if err != nil {
-		t.Fatalf("failed to insert sitemap entry for orphan: %v", err)
-	}
-	_, err = db.Exec(`INSERT INTO sitecrawl_sitemap_entries(run_id, sitemap_id, seq, url_id, loc)
-		VALUES (?, 1, 1, 2, ?)`, started.ID, srv.URL+"/valid-robots")
-	if err != nil {
-		t.Fatalf("failed to insert sitemap entry for valid-robots: %v", err)
 	}
 
 	// 2. Adapt to Frozen EvidenceSnapshot

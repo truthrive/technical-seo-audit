@@ -144,4 +144,64 @@ func TestAR_LINK_005_Evaluation(t *testing.T) {
 			t.Errorf("expected StatusUnknown, got %s", res[0].Status)
 		}
 	})
+
+	t.Run("Conflicting URL identity -> UNKNOWN", func(t *testing.T) {
+		obs := []audit.NormalizedObservation{
+			makeObs("url_identity", "https://example.com/page1"),
+			makeObs("url_identity", "https://example.com/page2"),
+			makeObs("discovery_sources", "sitemap"),
+			makeObs("is_start_url", "false"),
+			makeObs("crawl_inlink_count", "0"),
+		}
+		res, err := eng.EvaluateRule(ctx, newSnapshotForLINK005(true, obs), "AR-LINK-005")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(res) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(res))
+		}
+		if res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected StatusUnknown, got %s", res[0].Status)
+		}
+	})
+
+	t.Run("Conflicting is_start_url -> UNKNOWN", func(t *testing.T) {
+		obs := []audit.NormalizedObservation{
+			makeObs("url_identity", "https://example.com/page"),
+			makeObs("discovery_sources", "sitemap"),
+			makeObs("is_start_url", "false"),
+			makeObs("is_start_url", "true"),
+			makeObs("crawl_inlink_count", "0"),
+		}
+		res, err := eng.EvaluateRule(ctx, newSnapshotForLINK005(true, obs), "AR-LINK-005")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(res) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(res))
+		}
+		if res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected StatusUnknown, got %s", res[0].Status)
+		}
+	})
+
+	t.Run("Conflicting crawl_inlink_count -> UNKNOWN", func(t *testing.T) {
+		obs := []audit.NormalizedObservation{
+			makeObs("url_identity", "https://example.com/page"),
+			makeObs("discovery_sources", "sitemap"),
+			makeObs("is_start_url", "false"),
+			makeObs("crawl_inlink_count", "0"),
+			makeObs("crawl_inlink_count", "5"),
+		}
+		res, err := eng.EvaluateRule(ctx, newSnapshotForLINK005(true, obs), "AR-LINK-005")
+		if err != nil {
+			t.Fatalf("EvaluateRule failed: %v", err)
+		}
+		if len(res) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(res))
+		}
+		if res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected StatusUnknown, got %s", res[0].Status)
+		}
+	})
 }

@@ -1603,6 +1603,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 
 		// 9h. Robots directive observations for all pages (both HTML and non-HTML)
 		isRendered := (pr.rendered == 1 || pr.page.Rendered)
+		isDiscreteHeaders := len(pr.page.RawXRobotsTags) > 0
 		pageDirectives, dirNorms, dirGaps := processPageDirectives(
 			req,
 			urlID,
@@ -1617,6 +1618,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			pr.page.MetaRobots,
 			pr.metaRobots,
 			xRobotsRaw,
+			isDiscreteHeaders,
 			nextObsID,
 		)
 		robotsDirectiveObservations = append(robotsDirectiveObservations, pageDirectives...)
@@ -2755,6 +2757,172 @@ func parseXRobotsSegment(seg string, prevHadPrefix bool) (parsedHeaderSegment, b
 	}, true
 }
 
+func parseDiscreteXRobotsSegment(seg string, prevHadPrefix bool, currentAgent string) (parsedHeaderSegment, bool, string) {
+	colonIdx := strings.Index(seg, ":")
+	if colonIdx == -1 {
+		tokens := parseDirectiveTokens(seg)
+		var pErrs []string
+		var uToks []string
+		for _, tok := range tokens {
+			res := validateDirectiveItem(tok, true)
+			uToks = append(uToks, res.unsupportedTokens...)
+			pErrs = append(pErrs, res.parseErrors...)
+		}
+
+		if prevHadPrefix && currentAgent != "" {
+			return parsedHeaderSegment{
+				target:            currentAgent,
+				scopeUnknown:      false,
+				rawValue:          seg,
+				tokens:            tokens,
+				unsupportedTokens: uToks,
+				parseErrors:       pErrs,
+			}, true, currentAgent
+		}
+
+		return parsedHeaderSegment{
+			target:            "*",
+			scopeUnknown:      false,
+			rawValue:          seg,
+			tokens:            tokens,
+			unsupportedTokens: uToks,
+			parseErrors:       pErrs,
+		}, false, ""
+	}
+
+	firstPart := strings.TrimSpace(seg[:colonIdx])
+	firstPartLower := strings.ToLower(firstPart)
+	rest := strings.TrimSpace(seg[colonIdx+1:])
+
+	if isParameterizedDirective(firstPartLower) {
+		res := validateDirectiveItem(seg, true)
+		tokens := []string{strings.ToLower(seg)}
+		target := "*"
+		scopeUnknown := false
+		if prevHadPrefix && currentAgent != "" {
+			target = currentAgent
+		}
+		return parsedHeaderSegment{
+			target:            target,
+			scopeUnknown:      scopeUnknown,
+			rawValue:          seg,
+			tokens:            tokens,
+			unsupportedTokens: res.unsupportedTokens,
+			parseErrors:       res.parseErrors,
+		}, prevHadPrefix, currentAgent
+	}
+
+	if isStandaloneSupportedDirective(firstPartLower) || reNearMissParam.MatchString(firstPartLower) {
+		res := validateDirectiveItem(seg, true)
+		tokens := []string{strings.ToLower(seg)}
+		return parsedHeaderSegment{
+			target:            "*",
+			scopeUnknown:      false,
+			rawValue:          seg,
+			tokens:            tokens,
+			unsupportedTokens: res.unsupportedTokens,
+			parseErrors:       res.parseErrors,
+		}, false, ""
+	}
+
+	var agentName string
+	var isCrawler bool
+	if supportedName, ok := isSupportedAgentToken(firstPartLower); ok {
+		agentName = supportedName
+		isCrawler = true
+	} else if isRecognizedCrawlerAgent(firstPartLower) {
+		agentName = firstPartLower
+		isCrawler = true
+	}
+
+	if isCrawler {
+		if prevHadPrefix && currentAgent != "" && currentAgent != agentName {
+			tokens := parseDirectiveTokens(rest)
+			var uToks []string
+			var pErrs []string
+			for _, tok := range tokens {
+				res := validateDirectiveItem(tok, true)
+				uToks = append(uToks, res.unsupportedTokens...)
+				pErrs = append(pErrs, res.parseErrors...)
+			}
+			hasViolation := false
+			for _, err := range pErrs {
+				if strings.HasPrefix(err, "parse_error:") || strings.HasPrefix(err, "unsupported_directive:") {
+					hasViolation = true
+					break
+				}
+			}
+			if !hasViolation {
+				pErrs = []string{"ambiguous:multiple_agent_prefixes"}
+			}
+			return parsedHeaderSegment{
+				target:            "",
+				scopeUnknown:      true,
+				rawValue:          seg,
+				tokens:            tokens,
+				unsupportedTokens: uToks,
+				parseErrors:       pErrs,
+			}, true, agentName
+		}
+
+		if rest == "" {
+			return parsedHeaderSegment{
+				target:       agentName,
+				scopeUnknown: false,
+				rawValue:     seg,
+				parseErrors:  []string{"parse_error:missing_directive_after_prefix:" + firstPartLower + ":"},
+			}, true, agentName
+		}
+
+		tokens := parseDirectiveTokens(rest)
+		var uToks []string
+		var pErrs []string
+		for _, tok := range tokens {
+			res := validateDirectiveItem(tok, true)
+			uToks = append(uToks, res.unsupportedTokens...)
+			pErrs = append(pErrs, res.parseErrors...)
+		}
+		return parsedHeaderSegment{
+			target:            agentName,
+			scopeUnknown:      false,
+			rawValue:          seg,
+			tokens:            tokens,
+			unsupportedTokens: uToks,
+			parseErrors:       pErrs,
+		}, true, agentName
+	}
+
+	tokens := parseDirectiveTokens(seg)
+	var pErrs []string
+	if reValidIdentifier.MatchString(firstPart) {
+		restTokens := parseDirectiveTokens(rest)
+		allValidV1 := len(restTokens) > 0
+		for _, tok := range restTokens {
+			if !isStandaloneSupportedDirective(tok) {
+				allValidV1 = false
+				break
+			}
+		}
+		if allValidV1 {
+			pErrs = []string{"ambiguous:unverified_agent_prefix:" + firstPartLower}
+		} else if len(restTokens) == 1 && reValidIdentifier.MatchString(restTokens[0]) {
+			pErrs = []string{"ambiguous:unrecognized_colon_pair:" + firstPart + ": " + rest}
+		} else {
+			pErrs = []string{"ambiguous:unverified_agent_prefix:" + firstPartLower}
+		}
+	} else {
+		pErrs = []string{"parse_error:invalid_syntax:" + seg}
+	}
+
+	return parsedHeaderSegment{
+		target:       "",
+		scopeUnknown: true,
+		rawValue:     seg,
+		tokens:       tokens,
+		parseErrors:  pErrs,
+	}, true, ""
+}
+
 func processPageDirectives(
 	req BuildRequest,
 	urlID int,
@@ -2769,6 +2937,7 @@ func processPageDirectives(
 	pageMetaRobots string,
 	columnMetaRobots string,
 	xRobotsRaw []string,
+	isDiscreteHeaders bool,
 	nextObsID func() audit.ObservationID,
 ) (
 	directives []audit.RobotsDirectiveObservation,
@@ -3089,56 +3258,114 @@ func processPageDirectives(
 		agentHeaderRawSegments   = make(map[string][]string)
 	)
 
-	for _, headerStr := range xRobotsRaw {
-		trimmedHeader := strings.TrimSpace(headerStr)
-		if trimmedHeader == "" {
-			continue
-		}
-		segments := splitDirectiveItems(trimmedHeader)
-		hadPrefix := false
-		for _, seg := range segments {
-			s := strings.TrimSpace(seg)
-			if s == "" {
+	if isDiscreteHeaders {
+		for _, headerStr := range xRobotsRaw {
+			trimmedHeader := strings.TrimSpace(headerStr)
+			if trimmedHeader == "" {
 				continue
 			}
-			parsed, nextHadPrefix := parseXRobotsSegment(s, hadPrefix)
-			hadPrefix = nextHadPrefix
+			segments := splitDirectiveItems(trimmedHeader)
+			hadPrefix := false
+			currentAgent := ""
+			for _, seg := range segments {
+				s := strings.TrimSpace(seg)
+				if s == "" {
+					continue
+				}
+				parsed, nextHadPrefix, nextAgent := parseDiscreteXRobotsSegment(s, hadPrefix, currentAgent)
+				hadPrefix = nextHadPrefix
+				currentAgent = nextAgent
 
-			if parsed.target == "*" && !parsed.scopeUnknown {
-				genericHeaderRawSegments = append(genericHeaderRawSegments, parsed.rawValue)
-			} else if parsed.target != "" && !parsed.scopeUnknown {
-				agentHeaderRawSegments[parsed.target] = append(agentHeaderRawSegments[parsed.target], parsed.rawValue)
-			}
+				if parsed.target == "*" && !parsed.scopeUnknown {
+					genericHeaderRawSegments = append(genericHeaderRawSegments, parsed.rawValue)
+				} else if parsed.target != "" && !parsed.scopeUnknown {
+					agentHeaderRawSegments[parsed.target] = append(agentHeaderRawSegments[parsed.target], parsed.rawValue)
+				}
 
-			isNoindex := false
-			if (parsed.target == "*" || parsed.target == "googlebot") && !parsed.scopeUnknown && (containsToken(parsed.tokens, "noindex") || containsToken(parsed.tokens, "none")) {
-				isNoindex = true
-			}
+				isNoindex := false
+				if (parsed.target == "*" || parsed.target == "googlebot") && !parsed.scopeUnknown && (containsToken(parsed.tokens, "noindex") || containsToken(parsed.tokens, "none")) {
+					isNoindex = true
+				}
 
-			directives = append(directives, audit.RobotsDirectiveObservation{
-				RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:header:%d", req.AuditRunID, urlID, headerDirIdx)),
-				AuditRunID:                   req.AuditRunID,
-				URLID:                        urlIDStr,
-				Source:                       audit.DirectiveSourceHTTPHeader,
-				Target:                       parsed.target,
-				ScopeUnknown:                 parsed.scopeUnknown,
-				RawValue:                     parsed.rawValue,
-				ParsedTokens:                 parsed.tokens,
-				UnsupportedTokens:            parsed.unsupportedTokens,
-				ParseErrors:                  parsed.parseErrors,
-				EffectiveNoindex:             isNoindex,
-				ObservedAt:                   obsTime,
-			})
-			headerDirIdx++
-
-			if parsed.scopeUnknown {
-				gaps = append(gaps, EvidenceGap{
-					GapCode:         GapDirectiveScopeAmbiguous,
-					SubjectRef:      string(urlIDStr),
-					Field:           "x_robots_tag",
-					Reason:          fmt.Sprintf("X-Robots-Tag directive segment %q has ambiguous applicability scope due to joined header boundaries.", s),
-					SourceComponent: "sitecrawl_pages",
+				directives = append(directives, audit.RobotsDirectiveObservation{
+					RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:header:%d", req.AuditRunID, urlID, headerDirIdx)),
+					AuditRunID:                   req.AuditRunID,
+					URLID:                        urlIDStr,
+					Source:                       audit.DirectiveSourceHTTPHeader,
+					Target:                       parsed.target,
+					ScopeUnknown:                 parsed.scopeUnknown,
+					RawValue:                     parsed.rawValue,
+					ParsedTokens:                 parsed.tokens,
+					UnsupportedTokens:            parsed.unsupportedTokens,
+					ParseErrors:                  parsed.parseErrors,
+					EffectiveNoindex:             isNoindex,
+					ObservedAt:                   obsTime,
 				})
+				headerDirIdx++
+
+				if parsed.scopeUnknown {
+					gaps = append(gaps, EvidenceGap{
+						GapCode:         GapDirectiveScopeAmbiguous,
+						SubjectRef:      string(urlIDStr),
+						Field:           "x_robots_tag",
+						Reason:          fmt.Sprintf("X-Robots-Tag directive segment %q has ambiguous applicability scope due to multi-agent or unrecognized prefix.", s),
+						SourceComponent: "sitecrawl_pages",
+					})
+				}
+			}
+		}
+	} else {
+		for _, headerStr := range xRobotsRaw {
+			trimmedHeader := strings.TrimSpace(headerStr)
+			if trimmedHeader == "" {
+				continue
+			}
+			segments := splitDirectiveItems(trimmedHeader)
+			hadPrefix := false
+			for _, seg := range segments {
+				s := strings.TrimSpace(seg)
+				if s == "" {
+					continue
+				}
+				parsed, nextHadPrefix := parseXRobotsSegment(s, hadPrefix)
+				hadPrefix = nextHadPrefix
+
+				if parsed.target == "*" && !parsed.scopeUnknown {
+					genericHeaderRawSegments = append(genericHeaderRawSegments, parsed.rawValue)
+				} else if parsed.target != "" && !parsed.scopeUnknown {
+					agentHeaderRawSegments[parsed.target] = append(agentHeaderRawSegments[parsed.target], parsed.rawValue)
+				}
+
+				isNoindex := false
+				if (parsed.target == "*" || parsed.target == "googlebot") && !parsed.scopeUnknown && (containsToken(parsed.tokens, "noindex") || containsToken(parsed.tokens, "none")) {
+					isNoindex = true
+				}
+
+				directives = append(directives, audit.RobotsDirectiveObservation{
+					RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:header:%d", req.AuditRunID, urlID, headerDirIdx)),
+					AuditRunID:                   req.AuditRunID,
+					URLID:                        urlIDStr,
+					Source:                       audit.DirectiveSourceHTTPHeader,
+					Target:                       parsed.target,
+					ScopeUnknown:                 parsed.scopeUnknown,
+					RawValue:                     parsed.rawValue,
+					ParsedTokens:                 parsed.tokens,
+					UnsupportedTokens:            parsed.unsupportedTokens,
+					ParseErrors:                  parsed.parseErrors,
+					EffectiveNoindex:             isNoindex,
+					ObservedAt:                   obsTime,
+				})
+				headerDirIdx++
+
+				if parsed.scopeUnknown {
+					gaps = append(gaps, EvidenceGap{
+						GapCode:         GapDirectiveScopeAmbiguous,
+						SubjectRef:      string(urlIDStr),
+						Field:           "x_robots_tag",
+						Reason:          fmt.Sprintf("X-Robots-Tag directive segment %q has ambiguous applicability scope due to joined header boundaries.", s),
+						SourceComponent: "sitecrawl_pages",
+					})
+				}
 			}
 		}
 	}

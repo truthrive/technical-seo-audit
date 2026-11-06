@@ -13,6 +13,7 @@ import (
 
 	"github.com/truthrive/technical-seo-audit/internal/audit"
 	"github.com/truthrive/technical-seo-audit/internal/audit/adapter"
+	"github.com/truthrive/technical-seo-audit/internal/audit/engine"
 	"github.com/truthrive/technical-seo-audit/internal/sitecrawl"
 )
 
@@ -2095,4 +2096,152 @@ func TestAdapter_RobotsDirectiveObservation_EffectiveNoindex_Alignment(t *testin
 	if _, exists := effBySubj["url:audit:align:eff:6"]; exists {
 		t.Errorf("URL 6: expected URL-level effective_noindex to be absent, got %q", effBySubj["url:audit:align:eff:6"])
 	}
+}
+
+// 20. Discrete X-Robots-Tag contract verification for Cases 1 through 6
+func TestAdapter_Directives_DiscreteXRobots_Cases1Through6(t *testing.T) {
+	db := newTestDB(t)
+	runID := "run:discrete:cases"
+	seed := "https://example.com/1"
+	setupTestRun(t, db, runID, seed)
+
+	for i := 1; i <= 11; i++ {
+		insertURL(t, db, runID, i, fmt.Sprintf("https://example.com/%d", i))
+	}
+
+	auditRunID := audit.AuditRunID("audit:discrete:cases")
+	snapID := audit.SnapshotID("snap:discrete:cases")
+
+	// Helper to insert a crawled page
+	insertPage := func(id int, u string, status int, ct string, rawXRobots []string, metaRobotsExtracted bool) {
+		page := sitecrawl.Page{
+			URL:                  u,
+			Status:               status,
+			ContentType:          ct,
+			RawXRobotsTags:       rawXRobots,
+			XRobotsTagTotalCount: len(rawXRobots),
+			RobotsMetaExtracted:  metaRobotsExtracted,
+			ExtractionStatus:     "complete",
+			CrawledAt:            "2026-10-01T00:00:10Z",
+		}
+		if metaRobotsExtracted {
+			page.ExtractionStatus = "complete"
+		}
+		data, _ := json.Marshal(page)
+		_, err := db.Exec(`INSERT INTO sitecrawl_pages(run_id, url_id, url, data, kind, status, content_type, crawled_at)
+			VALUES(?, ?, ?, ?, 'html', ?, ?, '2026-10-01T00:00:10Z')`, runID, id, u, string(data), status, ct)
+		if err != nil {
+			t.Fatalf("insert page %d failed: %v", id, err)
+		}
+	}
+
+	// 1. Case 1: Recognized agent + valid directives in single discrete header -> PASS
+	insertPage(1, "https://example.com/1", 200, "text/html", []string{"googlebot: noindex, nofollow"}, true)
+
+	// 2. Case 2: Separate discrete headers -> PASS
+	insertPage(2, "https://example.com/2", 200, "text/html", []string{"googlebot: noindex", "nofollow"}, true)
+
+	// 3. Case 3: Multiple agent prefixes in single discrete header -> UNKNOWN
+	insertPage(3, "https://example.com/3", 200, "text/html", []string{"googlebot: noindex, bingbot: nofollow"}, true)
+
+	// 4. Case 5: Unverified agent prefix + valid directives -> UNKNOWN
+	insertPage(4, "https://example.com/4", 200, "text/html", []string{"custombot: noindex"}, true)
+
+	// 5. Case 6: Unrecognized colon pair -> UNKNOWN
+	insertPage(5, "https://example.com/5", 200, "text/html", []string{"foo: bar"}, true)
+
+	// 6. Case 6 Exception: Recognized agent + unsupported token -> WARNING
+	insertPage(6, "https://example.com/6", 200, "text/html", []string{"googlebot: bar"}, true)
+
+	// 7. Case 4: Near-miss parameterized directive typo -> WARNING
+	insertPage(7, "https://example.com/7", 200, "text/html", []string{"max-snipet: 50"}, true)
+
+	// 8. RFC 1123 date with comma -> PASS
+	insertPage(8, "https://example.com/8", 200, "text/html", []string{"unavailable_after: Tue, 31 Dec 2026 23:59:59 GMT"}, true)
+
+	// 9. Non-2xx 404 confirmed non-HTML (application/pdf) with valid header -> PASS
+	insertPage(9, "https://example.com/9", 404, "application/pdf", []string{"noindex"}, false)
+
+	// 10. Non-2xx 404 HTML (missing html extraction) with valid header -> UNKNOWN
+	insertPage(10, "https://example.com/10", 404, "text/html", []string{"noindex"}, false)
+
+	// 11. Non-2xx 404 HTML with proven malformed header -> WARNING (P2 short-circuit)
+	insertPage(11, "https://example.com/11", 404, "text/html", []string{"max-snipet: 50"}, false)
+
+	res, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: auditRunID,
+		SnapshotID: snapID,
+	})
+	if err != nil {
+		t.Fatalf("adapter build failed: %v", err)
+	}
+
+	snap := res.EvidenceSnapshot
+	if snap == nil {
+		t.Fatalf("expected non-nil snapshot")
+	}
+
+	// 1. Verify URL 1 (Case 1) directives
+	var u1Directives []audit.RobotsDirectiveObservation
+	for _, d := range res.RobotsDirectiveObservations {
+		if d.URLID == "url:audit:discrete:cases:1" {
+			u1Directives = append(u1Directives, d)
+		}
+	}
+	if len(u1Directives) != 2 {
+		t.Fatalf("URL 1: expected 2 directives, got %d", len(u1Directives))
+	}
+	for _, d := range u1Directives {
+		if d.Target != "googlebot" {
+			t.Errorf("URL 1: expected Target 'googlebot', got %q", d.Target)
+		}
+		if d.ScopeUnknown {
+			t.Errorf("URL 1: expected ScopeUnknown false")
+		}
+		if len(d.ParseErrors) > 0 {
+			t.Errorf("URL 1: expected zero parse errors, got %v", d.ParseErrors)
+		}
+	}
+
+	// 2. Evaluate all URLs via Rule Engine for AR-INDEX-003
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	ruleResults, err := eng.EvaluateRule(context.Background(), snap, "AR-INDEX-003")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-INDEX-003 failed: %v", err)
+	}
+
+	resBySubj := make(map[string]audit.RuleResult)
+	for _, r := range ruleResults {
+		resBySubj[r.SubjectRef] = r
+	}
+
+	expectStatus := func(id int, expected audit.RuleResultStatus, label string) {
+		subj := fmt.Sprintf("url:audit:discrete:cases:%d", id)
+		r, ok := resBySubj[subj]
+		if !ok {
+			t.Errorf("%s: missing rule result for %s", label, subj)
+			return
+		}
+		if r.Status != expected {
+			t.Errorf("%s: expected %s, got %s (summary: %q)", label, expected, r.Status, r.ObservedSummary)
+		}
+	}
+
+	// Verify all expected verdicts from contract
+	expectStatus(1, audit.StatusPass, "URL 1 (Case 1: googlebot: noindex, nofollow)")
+	expectStatus(2, audit.StatusPass, "URL 2 (Case 2: googlebot: noindex + nofollow)")
+	expectStatus(3, audit.StatusUnknown, "URL 3 (Case 3: googlebot: noindex, bingbot: nofollow)")
+	expectStatus(4, audit.StatusUnknown, "URL 4 (Case 5: custombot: noindex)")
+	expectStatus(5, audit.StatusUnknown, "URL 5 (Case 6: foo: bar)")
+	expectStatus(6, audit.StatusWarning, "URL 6 (Case 6 Exception: googlebot: bar)")
+	expectStatus(7, audit.StatusWarning, "URL 7 (Case 4: max-snipet: 50)")
+	expectStatus(8, audit.StatusPass, "URL 8 (RFC 1123 date with comma)")
+	expectStatus(9, audit.StatusPass, "URL 9 (404 Non-HTML with valid header)")
+	expectStatus(10, audit.StatusUnknown, "URL 10 (404 HTML with missing meta extraction)")
+	expectStatus(11, audit.StatusWarning, "URL 11 (404 HTML with proven malformed header P2)")
 }
