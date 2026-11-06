@@ -403,3 +403,335 @@ func TestINDEX006_ProbeProvenanceAndConflict(t *testing.T) {
 		}
 	})
 }
+
+func TestINDEX006_URLOverridesAndProbeCorrelation(t *testing.T) {
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	obsHelper := func(runID, snapID, id string, st audit.EvaluationSubjectType, ref, field, val string, srcRefs ...string) audit.NormalizedObservation {
+		if len(srcRefs) == 0 {
+			srcRefs = []string{"test"}
+		}
+		return audit.NormalizedObservation{
+			ObservationID:      audit.ObservationID(id),
+			AuditRunID:         audit.AuditRunID(runID),
+			SnapshotID:         audit.SnapshotID(snapID),
+			SubjectType:        st,
+			SubjectRef:         ref,
+			Field:              field,
+			Value:              val,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: srcRefs,
+			ObservedAt:         now,
+		}
+	}
+
+	// Fixture 1: Valid site-level probe evidence with no URL overrides
+	t.Run("Fixture 1 - Valid site-level probe evidence with no URL overrides", func(t *testing.T) {
+		runID := "run:f1"
+		snapID := "snap:f1"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:site:fp", audit.SubjectSite, "site", "known_404_content_fingerprint", "site-404-fp"),
+				obsHelper(runID, snapID, "obs:site:st", audit.SubjectSite, "site", "known_404_probe_status", "404"),
+				obsHelper(runID, snapID, "obs:url:1", audit.SubjectURL, "url:1", "url_identity", "https://example.com/p1"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectURL, "url:1", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:1", audit.SubjectURL, "url:1", "content_fingerprint", "site-404-fp"),
+			},
+		}
+		res, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-006")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("unexpected error %v, count %d", err, len(res))
+		}
+		if res[0].Status != audit.StatusWarning {
+			t.Errorf("expected WARNING, got %v", res[0].Status)
+		}
+	})
+
+	// Fixture 2: URL-level fingerprint override only (lacks coupled status)
+	t.Run("Fixture 2 - URL-level fingerprint override only", func(t *testing.T) {
+		runID := "run:f2"
+		snapID := "snap:f2"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:site:fp", audit.SubjectSite, "site", "known_404_content_fingerprint", "site-404-fp"),
+				obsHelper(runID, snapID, "obs:site:st", audit.SubjectSite, "site", "known_404_probe_status", "404"),
+				obsHelper(runID, snapID, "obs:url:1", audit.SubjectURL, "url:1", "url_identity", "https://example.com/p1"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectURL, "url:1", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:1", audit.SubjectURL, "url:1", "content_fingerprint", "url-override-fp"),
+				// URL-level fingerprint override ONLY
+				obsHelper(runID, snapID, "obs:url:override:fp", audit.SubjectURL, "url:1", "known_404_content_fingerprint", "url-override-fp"),
+			},
+		}
+		res, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-006")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("unexpected error %v, count %d", err, len(res))
+		}
+		if res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for uncoupled URL-level fingerprint override, got %v (summary: %s)", res[0].Status, res[0].ObservedSummary)
+		}
+	})
+
+	// Fixture 3: URL-level status override only (lacks coupled fingerprint)
+	t.Run("Fixture 3 - URL-level status override only", func(t *testing.T) {
+		runID := "run:f3"
+		snapID := "snap:f3"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:site:fp", audit.SubjectSite, "site", "known_404_content_fingerprint", "site-404-fp"),
+				obsHelper(runID, snapID, "obs:site:st", audit.SubjectSite, "site", "known_404_probe_status", "404"),
+				obsHelper(runID, snapID, "obs:url:1", audit.SubjectURL, "url:1", "url_identity", "https://example.com/p1"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectURL, "url:1", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:1", audit.SubjectURL, "url:1", "content_fingerprint", "site-404-fp"),
+				// URL-level status override ONLY
+				obsHelper(runID, snapID, "obs:url:override:st", audit.SubjectURL, "url:1", "known_404_probe_status", "404"),
+			},
+		}
+		res, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-006")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("unexpected error %v, count %d", err, len(res))
+		}
+		if res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for uncoupled URL-level status override, got %v (summary: %s)", res[0].Status, res[0].ObservedSummary)
+		}
+	})
+
+	// Fixture 4: URL-level fingerprint and status from the same verified probe
+	t.Run("Fixture 4 - URL-level fingerprint and status from same verified probe", func(t *testing.T) {
+		runID := "run:f4"
+		snapID := "snap:f4"
+		probeSrc := "probe:custom:1"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:url:1", audit.SubjectURL, "url:1", "url_identity", "https://example.com/p1"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectURL, "url:1", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:1", audit.SubjectURL, "url:1", "content_fingerprint", "custom-404-fp"),
+				// Both from the same verified probe probe:custom:1
+				obsHelper(runID, snapID, "obs:url:override:fp", audit.SubjectURL, "url:1", "known_404_content_fingerprint", "custom-404-fp", probeSrc),
+				obsHelper(runID, snapID, "obs:url:override:st", audit.SubjectURL, "url:1", "known_404_probe_status", "404", probeSrc),
+			},
+		}
+		res, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-006")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("unexpected error %v, count %d", err, len(res))
+		}
+		if res[0].Status != audit.StatusWarning {
+			t.Errorf("expected WARNING for matching custom template, got %v (summary: %s)", res[0].Status, res[0].ObservedSummary)
+		}
+	})
+
+	// Fixture 5: URL-level fingerprint and status from different probes
+	t.Run("Fixture 5 - URL-level fingerprint and status from different probes", func(t *testing.T) {
+		runID := "run:f5"
+		snapID := "snap:f5"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:url:1", audit.SubjectURL, "url:1", "url_identity", "https://example.com/p1"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectURL, "url:1", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:1", audit.SubjectURL, "url:1", "content_fingerprint", "custom-404-fp"),
+				// From probe:A
+				obsHelper(runID, snapID, "obs:url:override:fp", audit.SubjectURL, "url:1", "known_404_content_fingerprint", "custom-404-fp", "probe:A"),
+				// From probe:B
+				obsHelper(runID, snapID, "obs:url:override:st", audit.SubjectURL, "url:1", "known_404_probe_status", "404", "probe:B"),
+			},
+		}
+		res, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-006")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("unexpected error %v, count %d", err, len(res))
+		}
+		if res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for URL overrides from different probes, got %v (summary: %s)", res[0].Status, res[0].ObservedSummary)
+		}
+	})
+
+	// Fixture 6: Conflicting duplicate URL-level observations
+	t.Run("Fixture 6 - Conflicting duplicate URL-level observations", func(t *testing.T) {
+		runID := "run:f6"
+		snapID := "snap:f6"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:url:1", audit.SubjectURL, "url:1", "url_identity", "https://example.com/p1"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectURL, "url:1", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:1", audit.SubjectURL, "url:1", "content_fingerprint", "custom-404-fp"),
+				// Two conflicting fingerprints on the same URL
+				obsHelper(runID, snapID, "obs:url:fp:1", audit.SubjectURL, "url:1", "known_404_content_fingerprint", "custom-404-fp"),
+				obsHelper(runID, snapID, "obs:url:fp:2", audit.SubjectURL, "url:1", "known_404_content_fingerprint", "other-404-fp"),
+				obsHelper(runID, snapID, "obs:url:st:1", audit.SubjectURL, "url:1", "known_404_probe_status", "404"),
+			},
+		}
+		res, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-006")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("unexpected error %v, count %d", err, len(res))
+		}
+		if res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for conflicting duplicate URL observations, got %v (summary: %s)", res[0].Status, res[0].ObservedSummary)
+		}
+	})
+
+	// Fixture 7: URL-level override conflicting with site-level evidence
+	t.Run("Fixture 7 - URL-level override conflicting with site-level evidence", func(t *testing.T) {
+		runID := "run:f7"
+		snapID := "snap:f7"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				// Site-level template: site-404-fp
+				obsHelper(runID, snapID, "obs:site:fp", audit.SubjectSite, "site", "known_404_content_fingerprint", "site-404-fp"),
+				obsHelper(runID, snapID, "obs:site:st", audit.SubjectSite, "site", "known_404_probe_status", "404"),
+
+				obsHelper(runID, snapID, "obs:url:1", audit.SubjectURL, "url:1", "url_identity", "https://example.com/p1"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectURL, "url:1", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:1", audit.SubjectURL, "url:1", "content_fingerprint", "site-404-fp"),
+
+				// URL override conflicting with site template: diff-404-fp
+				obsHelper(runID, snapID, "obs:url:override:fp", audit.SubjectURL, "url:1", "known_404_content_fingerprint", "diff-404-fp"),
+				obsHelper(runID, snapID, "obs:url:override:st", audit.SubjectURL, "url:1", "known_404_probe_status", "404"),
+			},
+		}
+		res, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-006")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("unexpected error %v, count %d", err, len(res))
+		}
+		if res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for URL override conflicting with site template, got %v (summary: %s)", res[0].Status, res[0].ObservedSummary)
+		}
+	})
+
+	// Fixture 8: Missing probe identity or provenance
+	t.Run("Fixture 8 - Missing probe identity or provenance", func(t *testing.T) {
+		runID := "run:f8"
+		snapID := "snap:f8"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:url:1", audit.SubjectURL, "url:1", "url_identity", "https://example.com/p1"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectURL, "url:1", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:1", audit.SubjectURL, "url:1", "content_fingerprint", "fp-1"),
+				// No probe observations anywhere
+			},
+		}
+		res, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-006")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("unexpected error %v, count %d", err, len(res))
+		}
+		if res[0].Status != audit.StatusUnknown {
+			t.Errorf("expected UNKNOWN for missing probe template, got %v", res[0].Status)
+		}
+	})
+
+	// Fixture 9: Target HTTP 200 matching the verified template
+	t.Run("Fixture 9 - Target HTTP 200 matching the verified template", func(t *testing.T) {
+		runID := "run:f9"
+		snapID := "snap:f9"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:site:fp", audit.SubjectSite, "site", "known_404_content_fingerprint", "matching-fp"),
+				obsHelper(runID, snapID, "obs:site:st", audit.SubjectSite, "site", "known_404_probe_status", "404"),
+				obsHelper(runID, snapID, "obs:url:1", audit.SubjectURL, "url:1", "url_identity", "https://example.com/soft404"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectURL, "url:1", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:1", audit.SubjectURL, "url:1", "content_fingerprint", "matching-fp"),
+			},
+		}
+		res, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-006")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("unexpected error %v, count %d", err, len(res))
+		}
+		if res[0].Status != audit.StatusWarning {
+			t.Errorf("expected WARNING, got %v", res[0].Status)
+		}
+	})
+
+	// Fixture 10: Target HTTP 200 differing from the verified template
+	t.Run("Fixture 10 - Target HTTP 200 differing from the verified template", func(t *testing.T) {
+		runID := "run:f10"
+		snapID := "snap:f10"
+		snap := &audit.EvidenceSnapshot{
+			SnapshotID:           audit.SnapshotID(snapID),
+			AuditRunID:           audit.AuditRunID(runID),
+			SnapshotStatus:       audit.SnapshotFrozen,
+			NormalizationVersion: "v1.11.0",
+			CrawlComplete:        true,
+			CreatedAt:            now.Add(-1 * time.Minute),
+			FrozenAt:             &now,
+			NormalizedObservations: []audit.NormalizedObservation{
+				obsHelper(runID, snapID, "obs:site:fp", audit.SubjectSite, "site", "known_404_content_fingerprint", "verified-404-fp"),
+				obsHelper(runID, snapID, "obs:site:st", audit.SubjectSite, "site", "known_404_probe_status", "404"),
+				obsHelper(runID, snapID, "obs:url:1", audit.SubjectURL, "url:1", "url_identity", "https://example.com/valid-article"),
+				obsHelper(runID, snapID, "obs:st:1", audit.SubjectURL, "url:1", "http_status", "200"),
+				obsHelper(runID, snapID, "obs:fp:1", audit.SubjectURL, "url:1", "content_fingerprint", "distinct-article-fp"),
+			},
+		}
+		res, err := eng.EvaluateRule(ctx, snap, "AR-INDEX-006")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("unexpected error %v, count %d", err, len(res))
+		}
+		if res[0].Status != audit.StatusPass {
+			t.Errorf("expected PASS, got %v", res[0].Status)
+		}
+	})
+}

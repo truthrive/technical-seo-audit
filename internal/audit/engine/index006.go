@@ -371,36 +371,100 @@ func evaluateINDEX006(
 			continue
 		}
 
-		// Check local overrides on subject if present
-		subject404FP := known404Fingerprint
-		subject404Status := known404ProbeStatus
-		subject404URL := known404ProbeURL
-		for _, o := range idx.GetObservations(audit.SubjectURL, subjectRef, "known_404_content_fingerprint") {
-			subject404FP = strings.TrimSpace(o.Value)
-			addEvidenceRef(o, "known_404_content_fingerprint", audit.EvidenceRoleSupporting)
-		}
-		for _, o := range idx.GetObservations(audit.SubjectURL, subjectRef, "known_404_probe_status") {
-			if s, err := strconv.Atoi(strings.TrimSpace(o.Value)); err == nil {
-				subject404Status = s
+		// Resolve 404 template for this subject (site/probe template vs validated URL override)
+		urlFPObs := idx.GetObservations(audit.SubjectURL, subjectRef, "known_404_content_fingerprint")
+		urlStatusObs := idx.GetObservations(audit.SubjectURL, subjectRef, "known_404_probe_status")
+		hasURLOverride := len(urlFPObs) > 0 || len(urlStatusObs) > 0
+
+		var (
+			subject404FP     string
+			subject404Status int
+			subject404URL    string
+			overrideConflict bool
+			overrideSummary  string
+		)
+
+		if hasURLOverride {
+			// A URL-level override is valid ONLY if BOTH fingerprint and status are explicitly present on this URL,
+			// internally non-conflicting, correlated to the same probe provenance, and non-conflicting with site evidence.
+			var (
+				urlFP      string
+				urlStatus  int
+				fpConflict bool
+				stConflict bool
+				fpSrcs     []string
+				stSrcs     []string
+			)
+
+			if len(urlFPObs) > 0 {
+				urlFP = strings.TrimSpace(urlFPObs[0].Value)
+				for _, o := range urlFPObs {
+					addEvidenceRef(o, "known_404_content_fingerprint", audit.EvidenceRoleSupporting)
+					fpSrcs = append(fpSrcs, o.SourceEvidenceRefs...)
+					if strings.TrimSpace(o.Value) != urlFP {
+						fpConflict = true
+					}
+				}
 			}
-			addEvidenceRef(o, "probe_status", audit.EvidenceRoleSupporting)
+
+			if len(urlStatusObs) > 0 {
+				if s, err := strconv.Atoi(strings.TrimSpace(urlStatusObs[0].Value)); err == nil {
+					urlStatus = s
+				}
+				for _, o := range urlStatusObs {
+					addEvidenceRef(o, "probe_status", audit.EvidenceRoleSupporting)
+					stSrcs = append(stSrcs, o.SourceEvidenceRefs...)
+					if s, err := strconv.Atoi(strings.TrimSpace(o.Value)); err != nil || s != urlStatus {
+						stConflict = true
+					}
+				}
+			}
+
+			// Check for conflicting duplicate observations on URL
+			if fpConflict || stConflict {
+				overrideConflict = true
+				overrideSummary = "Reliable soft-404 comparison unavailable: conflicting duplicate URL-level template observations recorded."
+			} else if len(urlFPObs) == 0 || len(urlStatusObs) == 0 {
+				// Uncoupled override: cannot mix URL fingerprint with site status, or URL status with site fingerprint
+				overrideConflict = true
+				overrideSummary = "Reliable soft-404 comparison unavailable: URL-level template override lacks coupled status and fingerprint evidence."
+			} else if !hasSharedProvenance(fpSrcs, stSrcs) {
+				// Provenance indicates different probes
+				overrideConflict = true
+				overrideSummary = "Reliable soft-404 comparison unavailable: URL-level template status and fingerprint belong to different probes."
+			} else if known404Fingerprint != "" && (urlFP != known404Fingerprint || urlStatus != known404ProbeStatus) {
+				// Conflicts with verified site-level probe template
+				overrideConflict = true
+				overrideSummary = "Reliable soft-404 comparison unavailable: URL-level template override conflicts with verified site probe template."
+			} else {
+				subject404FP = urlFP
+				subject404Status = urlStatus
+				subject404URL = known404ProbeURL
+			}
+		} else {
+			// No URL override: use verified site/probe level template
+			if probeConflict {
+				overrideConflict = true
+				overrideSummary = "Reliable soft-404 comparison unavailable: conflicting probe template fingerprints or statuses recorded across probes."
+			} else {
+				subject404FP = known404Fingerprint
+				subject404Status = known404ProbeStatus
+				subject404URL = known404ProbeURL
+
+				for _, o := range known404Evidence {
+					field := o.Field
+					if field == "known_404_content_fingerprint" || field == "content_fingerprint" {
+						addEvidenceRef(o, "known_404_content_fingerprint", audit.EvidenceRoleSupporting)
+					} else if field == "known_404_probe_status" || field == "probe_final_status" || field == "http_status" {
+						addEvidenceRef(o, "probe_status", audit.EvidenceRoleSupporting)
+					} else if field == "known_404_probe_url" || field == "missing_probe_url" {
+						addEvidenceRef(o, "probe_url", audit.EvidenceRoleContext)
+					}
+				}
+			}
 		}
 
-		// Add global probe evidence refs if used
-		for _, o := range known404Evidence {
-			field := o.Field
-			if field == "known_404_content_fingerprint" || field == "content_fingerprint" {
-				addEvidenceRef(o, "known_404_content_fingerprint", audit.EvidenceRoleSupporting)
-			} else if field == "known_404_probe_status" || field == "probe_final_status" || field == "http_status" {
-				addEvidenceRef(o, "probe_status", audit.EvidenceRoleSupporting)
-			} else if field == "known_404_probe_url" || field == "missing_probe_url" {
-				addEvidenceRef(o, "probe_url", audit.EvidenceRoleContext)
-			}
-		}
-
-		// Precondition: Known-missing probe must have returned 404/410 with fingerprint
-		if probeConflict {
-			obsSummary := "Reliable soft-404 comparison unavailable: conflicting probe template fingerprints or statuses recorded across probes."
+		if overrideConflict {
 			rr := audit.RuleResult{
 				RuleResultID:    ruleResultID,
 				AuditRunID:      snapshot.AuditRunID,
@@ -413,7 +477,7 @@ func evaluateINDEX006(
 				Status:          audit.StatusUnknown,
 				Severity:        rule.DefaultSeverity,
 				Scope:           audit.ScopeURL,
-				ObservedSummary: obsSummary,
+				ObservedSummary: overrideSummary,
 				ExpectedSummary: expectedSummaryINDEX006,
 				EvaluatedAt:     evalTime,
 				EvidenceRefs:    evidenceRefs,
@@ -537,4 +601,48 @@ func evaluateINDEX006(
 	}
 
 	return results, nil
+}
+
+// hasSharedProvenance verifies whether two sets of source evidence references share at least one probe identifier
+// or are both unconstrained by explicit conflicting probe tags.
+func hasSharedProvenance(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return true // No explicit conflicting source tags indicated
+	}
+	for _, x := range a {
+		xTrim := strings.TrimSpace(x)
+		if xTrim == "" || xTrim == "test" {
+			continue
+		}
+		for _, y := range b {
+			yTrim := strings.TrimSpace(y)
+			if yTrim == "" || yTrim == "test" {
+				continue
+			}
+			if xTrim == yTrim {
+				return true
+			}
+		}
+	}
+	// If both had non-empty non-generic probe tags (e.g. "probe:A" vs "probe:B") and none matched:
+	hasNonGenericA := false
+	for _, x := range a {
+		t := strings.TrimSpace(x)
+		if t != "" && t != "test" {
+			hasNonGenericA = true
+			break
+		}
+	}
+	hasNonGenericB := false
+	for _, y := range b {
+		t := strings.TrimSpace(y)
+		if t != "" && t != "test" {
+			hasNonGenericB = true
+			break
+		}
+	}
+	if hasNonGenericA && hasNonGenericB {
+		return false
+	}
+	return true
 }
