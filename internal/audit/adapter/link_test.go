@@ -83,8 +83,8 @@ func TestAdapter_Link_HappyPaths_Internal200(t *testing.T) {
 	}
 
 	snap := res.EvidenceSnapshot
-	if snap.NormalizationVersion != "v1.10.0" {
-		t.Fatalf("expected NormalizationVersion v1.10.0, got %s", snap.NormalizationVersion)
+	if snap.NormalizationVersion != "v1.11.0" {
+		t.Fatalf("expected NormalizationVersion v1.11.0, got %s", snap.NormalizationVersion)
 	}
 
 	linkSubjectRef := fmt.Sprintf("link:%s:1:0", auditRunID)
@@ -968,8 +968,8 @@ func TestAdapter_Link_Regression_CanonicalAndRedirect(t *testing.T) {
 	}
 
 	snap := res.EvidenceSnapshot
-	if snap.NormalizationVersion != "v1.10.0" {
-		t.Errorf("expected NormalizationVersion v1.10.0, got %s", snap.NormalizationVersion)
+	if snap.NormalizationVersion != "v1.11.0" {
+		t.Errorf("expected NormalizationVersion v1.11.0, got %s", snap.NormalizationVersion)
 	}
 
 	// Verify Canonical evidence
@@ -1012,6 +1012,8 @@ func TestAdapter_Link_Regression_ExecutableRules(t *testing.T) {
 
 	implementedIDs := eng.ImplementedRuleIDs()
 	expectedIDs := []string{
+		"AR-ACC-002",
+		"AR-ACC-003",
 		"AR-ACC-004",
 		"AR-CANON-003",
 		"AR-CANON-004",
@@ -1020,6 +1022,7 @@ func TestAdapter_Link_Regression_ExecutableRules(t *testing.T) {
 		"AR-CANON-007",
 		"AR-CANON-008",
 		"AR-CANON-009",
+		"AR-CANON-010",
 		"AR-DISC-001",
 		"AR-DISC-002",
 		"AR-DISC-003",
@@ -1029,13 +1032,16 @@ func TestAdapter_Link_Regression_ExecutableRules(t *testing.T) {
 		"AR-ENTITY-001",
 		"AR-INDEX-001",
 		"AR-INDEX-002",
+		"AR-INDEX-003",
 		"AR-LINK-002",
 		"AR-LINK-003",
 		"AR-LINK-004",
+		"AR-LINK-005",
+		"AR-LINK-006",
 	}
 
-	if len(implementedIDs) != 20 {
-		t.Fatalf("expected exactly 20 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
+	if len(implementedIDs) != 26 {
+		t.Fatalf("expected exactly 26 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
 	}
 	if !reflect.DeepEqual(implementedIDs, expectedIDs) {
 		t.Fatalf("expected implemented IDs %v, got %v", expectedIDs, implementedIDs)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -347,13 +348,23 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		return nil, fmt.Errorf("audit adapter: commit read tx: %w", err)
 	}
 
+	// Index sitemap entry URLs for discovery sources mapping
+	sitemapEntryURLs := make(map[string]bool)
+	if sitemapRaw != nil {
+		for _, e := range sitemapRaw.entries {
+			if norm, _, err := normalizeURL(e.loc); err == nil && norm != "" {
+				sitemapEntryURLs[norm] = true
+			}
+		}
+	}
+
 	// 6. Initialize EvidenceSnapshot in BUILDING state
 	snapshot := &audit.EvidenceSnapshot{
 		SnapshotID:               req.SnapshotID,
 		AuditRunID:               req.AuditRunID,
 		CreatedAt:                time.Now().UTC(),
 		SnapshotStatus:           audit.SnapshotBuilding,
-		NormalizationVersion:     "v1.10.0",
+		NormalizationVersion:     "v1.11.0",
 		CrawlComplete:            crawlComplete,
 		SitemapDiscoveryComplete: false,
 		RenderSelectionComplete:  false,
@@ -662,6 +673,78 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			},
 		)
 
+		// AR-LINK-005 & AR-LINK-006: is_start_url, crawl_inlink_count, discovery_sources
+		isStartURL := (pr.url == seedURL || pr.page.Source == sitecrawl.SourceSeed)
+		startURLVal := "false"
+		if isStartURL {
+			startURLVal = "true"
+		}
+		normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "is_start_url",
+			Value:              startURLVal,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{pageSrcRef},
+			ObservedAt:         obsTime,
+		})
+
+		inlinkCount := pr.page.Inlinks
+		if inlinkCount == 0 && len(incomingAnchorEdges[urlID]) > 0 {
+			inlinkCount = len(incomingAnchorEdges[urlID])
+		}
+		normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "crawl_inlink_count",
+			Value:              strconv.Itoa(inlinkCount),
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{pageSrcRef},
+			ObservedAt:         obsTime,
+		})
+
+		normPageURL, _, _ := normalizeURL(pr.url)
+		if sitemapEntryURLs[normPageURL] || pr.discoveredBy == sitecrawl.SourceSitemap || pr.page.Source == sitecrawl.SourceSitemap {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "discovery_sources",
+				Value:              "sitemap",
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+
+		// AR-ACC-002: robots_allowed_default
+		robotsAllowedVal := "unknown"
+		if pr.robotsState == sitecrawl.RobotsAllowed || pr.page.RobotsState == sitecrawl.RobotsAllowed {
+			robotsAllowedVal = "true"
+		} else if pr.robotsState == sitecrawl.RobotsBlocked || pr.page.RobotsState == sitecrawl.RobotsBlocked {
+			robotsAllowedVal = "false"
+		}
+		normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "robots_allowed_default",
+			Value:              robotsAllowedVal,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{pageSrcRef},
+			ObservedAt:         obsTime,
+		})
+
 		if fetchAttempted || pr.status > 0 {
 			normalizedObservations = append(normalizedObservations,
 				audit.NormalizedObservation{
@@ -896,6 +979,84 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				SourceEvidenceRefs: []string{pageSrcRef},
 				ObservedAt:         obsTime,
 			})
+			matchingSubjects := normURLToSubjectRefs[normFinalURL]
+			if len(matchingSubjects) == 1 {
+				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "redirect_final_target_subject_ref",
+					Value:              matchingSubjects[0],
+					DerivationType:     audit.DerivationNormalized,
+					SourceEvidenceRefs: []string{pageSrcRef},
+					ObservedAt:         obsTime,
+				})
+			}
+		}
+
+		// Channel 1: HTTP Header X-Robots-Tag acquisition completeness
+		var xRobotsRaw []string
+		if len(pr.page.RawXRobotsTags) > 0 {
+			xRobotsRaw = append(xRobotsRaw, pr.page.RawXRobotsTags...)
+		} else if pr.page.XRobotsTag != "" {
+			xRobotsRaw = append(xRobotsRaw, pr.page.XRobotsTag)
+		} else if pr.xRobots != "" {
+			xRobotsRaw = append(xRobotsRaw, pr.xRobots)
+		}
+
+		xRobotsSampleTruncated := false
+		if pr.page.XRobotsTagTotalCount > len(pr.page.RawXRobotsTags) && len(pr.page.RawXRobotsTags) > 0 {
+			xRobotsSampleTruncated = true
+		}
+
+		httpHeaderStatus := "unavailable"
+		if pr.status >= 300 && pr.status < 400 || len(pr.page.Redirects) > 0 {
+			httpHeaderStatus = "redirect_intermediate"
+		} else if pr.status <= 0 || (pr.errorType != "" && pr.errorType != sitecrawl.ErrTooLarge) {
+			httpHeaderStatus = "unavailable"
+		} else if xRobotsSampleTruncated {
+			httpHeaderStatus = "truncated_sample_cap"
+		} else if pr.status >= 200 && pr.status < 600 {
+			httpHeaderStatus = "complete"
+		}
+
+		normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "http_header_status",
+			Value:              httpHeaderStatus,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{pageSrcRef},
+			ObservedAt:         obsTime,
+		})
+
+		if httpHeaderStatus == "complete" || httpHeaderStatus == "truncated_sample_cap" || httpHeaderStatus == "redirect_intermediate" {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "x_robots_sample_truncated",
+				Value:              strconv.FormatBool(xRobotsSampleTruncated),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+			if xRobotsSampleTruncated {
+				evidenceGaps = append(evidenceGaps, EvidenceGap{
+					GapCode:         GapXRobotsSampleCapped,
+					SubjectRef:      string(urlIDStr),
+					Field:           "x_robots_tag",
+					Reason:          "HTTP X-Robots-Tag headers exceeded sample cap (10); subsequent headers were not retained.",
+					SourceComponent: "sitecrawl_pages",
+				})
+			}
 		}
 
 		// 9c. HTML Observations
@@ -915,6 +1076,31 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				SourceEvidenceRefs: []string{pageSrcRef},
 				ObservedAt:         obsTime,
 			})
+
+			if pr.page.RobotsMetaExtracted {
+				metaTruncated := pr.page.RobotsMetaTotalCount > len(pr.page.RawRobotsMeta)
+				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectURL,
+					SubjectRef:         string(urlIDStr),
+					Field:              "robots_meta_sample_truncated",
+					Value:              strconv.FormatBool(metaTruncated),
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{pageSrcRef},
+					ObservedAt:         obsTime,
+				})
+				if metaTruncated {
+					evidenceGaps = append(evidenceGaps, EvidenceGap{
+						GapCode:         GapRobotsMetaSampleCapped,
+						SubjectRef:      string(urlIDStr),
+						Field:           "meta_robots",
+						Reason:          "HTML robots meta tags exceeded sample cap (10); subsequent tags were not retained.",
+						SourceComponent: "sitecrawl_pages",
+					})
+				}
+			}
 
 			if isRendered {
 				evidenceGaps = append(evidenceGaps, EvidenceGap{
@@ -937,16 +1123,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					SourceEvidenceRefs: []string{pageSrcRef},
 					ObservedAt:         obsTime,
 				})
-			}
 
-			var xRobotsRaw []string
-			if pr.page.XRobotsTag != "" {
-				xRobotsRaw = append(xRobotsRaw, pr.page.XRobotsTag)
-			} else if pr.xRobots != "" {
-				xRobotsRaw = append(xRobotsRaw, pr.xRobots)
-			}
-
-			if isRendered {
 				// Rendered page: DO NOT emit raw-style title, meta description, H1, meta robots, or canonicals.
 				// Preserved: X-Robots-Tag (HTTP response header) and rendered = true fact.
 				htmlObs := audit.HtmlObservation{
@@ -966,23 +1143,6 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					ObservedAt:          obsTime,
 				}
 				htmlObservations = append(htmlObservations, htmlObs)
-
-				pageDirectives, dirNorms, dirGaps := processPageDirectives(
-					req,
-					urlID,
-					urlIDStr,
-					pageSrcRef,
-					obsTime,
-					true,
-					nil,
-					"",
-					"",
-					xRobotsRaw,
-					nextObsID,
-				)
-				robotsDirectiveObservations = append(robotsDirectiveObservations, pageDirectives...)
-				normalizedObservations = append(normalizedObservations, dirNorms...)
-				evidenceGaps = append(evidenceGaps, dirGaps...)
 			} else {
 				// Non-rendered page: extract verified raw HTML fields
 				h1Values := pr.page.H1
@@ -1072,23 +1232,6 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 						ObservedAt:         obsTime,
 					})
 				}
-
-				pageDirectives, dirNorms, dirGaps := processPageDirectives(
-					req,
-					urlID,
-					urlIDStr,
-					pageSrcRef,
-					obsTime,
-					false,
-					pr.page.MetaTags,
-					pr.page.MetaRobots,
-					pr.metaRobots,
-					xRobotsRaw,
-					nextObsID,
-				)
-				robotsDirectiveObservations = append(robotsDirectiveObservations, pageDirectives...)
-				normalizedObservations = append(normalizedObservations, dirNorms...)
-				evidenceGaps = append(evidenceGaps, dirGaps...)
 
 				// Canonical observations
 				canonicals := pr.page.Canonicals
@@ -1457,6 +1600,28 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		structuredDataBlocks = append(structuredDataBlocks, sdBlocks...)
 		normalizedObservations = append(normalizedObservations, sdObs...)
 		evidenceGaps = append(evidenceGaps, sdGaps...)
+
+		// 9h. Robots directive observations for all pages (both HTML and non-HTML)
+		isRendered := (pr.rendered == 1 || pr.page.Rendered)
+		pageDirectives, dirNorms, dirGaps := processPageDirectives(
+			req,
+			urlID,
+			urlIDStr,
+			pageSrcRef,
+			obsTime,
+			isHTML,
+			isRendered,
+			pr.page.RobotsMetaExtracted,
+			pr.page.RawRobotsMeta,
+			pr.page.MetaTags,
+			pr.page.MetaRobots,
+			pr.metaRobots,
+			xRobotsRaw,
+			nextObsID,
+		)
+		robotsDirectiveObservations = append(robotsDirectiveObservations, pageDirectives...)
+		normalizedObservations = append(normalizedObservations, dirNorms...)
+		evidenceGaps = append(evidenceGaps, dirGaps...)
 	}
 
 	// 10. Add normalized observations for links
@@ -2093,8 +2258,52 @@ func mapRequestProfile(userAgentPreset string) audit.RequestProfile {
 	}
 }
 
+var (
+	reValidIdentifier     = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
+	reNearMissParam       = regexp.MustCompile(`^(?i)(max[-_]|unavailable[-_]?|no[-_])`)
+	reUnavailableAfterDay = regexp.MustCompile(`(?i)^unavailable_after\s*:\s*(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$`)
+)
+
+var unavailableAfterLayouts = []string{
+	time.RFC3339,
+	"2006-01-02T15:04:05Z",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05Z07:00",
+	"2006-01-02 15:04:05 MST",
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+	time.RFC1123,
+	time.RFC1123Z,
+	time.RFC822,
+	time.RFC822Z,
+	"02 Jan 2006 15:04:05 MST",
+	"2 Jan 2006 15:04:05 MST",
+	"02 Jan 2006 15:04:05 -0700",
+	"2 Jan 2006 15:04:05 -0700",
+	"02-Jan-2006 15:04:05 MST",
+	"2-Jan-2006 15:04:05 MST",
+	"02-Jan-2006",
+	"02 Jan 2006",
+	time.RFC850,
+	"Monday, 02-Jan-2006 15:04:05 MST",
+	"Monday, 2-Jan-2006 15:04:05 MST",
+}
+
+func isValidUnavailableAfterDate(val string) bool {
+	v := strings.TrimSpace(val)
+	if v == "" {
+		return false
+	}
+	for _, layout := range unavailableAfterLayouts {
+		if _, err := time.Parse(layout, v); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func parseDirectiveTokens(raw string) []string {
-	parts := strings.Split(raw, ",")
+	parts := splitDirectiveItems(raw)
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		token := strings.TrimSpace(strings.ToLower(p))
@@ -2123,9 +2332,30 @@ func isParameterizedDirective(name string) bool {
 	}
 }
 
+func isStandaloneSupportedDirective(tok string) bool {
+	switch strings.ToLower(strings.TrimSpace(tok)) {
+	case "all", "none", "index", "noindex", "follow", "nofollow",
+		"nosnippet", "notranslate", "noimageindex", "indexifembedded",
+		"noarchive":
+		return true
+	default:
+		return false
+	}
+}
+
+func isKnownUnsupportedDirective(tok string) bool {
+	switch strings.ToLower(strings.TrimSpace(tok)) {
+	case "noodp", "noydir", "nocache", "nopagereadaloud", "nositelinkssearchbox",
+		"nopreview", "noav", "no-index", "no_index", "nofollows", "dofollow",
+		"archive", "snippet":
+		return true
+	default:
+		return false
+	}
+}
+
 // isSupportedAgentToken returns the normalized agent name and true if the token is an
 // explicit agent prefix recognized by the current frozen V1 vocabulary.
-// Minimal supported vocabulary: googlebot, oai-searchbot, gptbot, bingbot.
 func isSupportedAgentToken(token string) (string, bool) {
 	t := strings.ToLower(strings.TrimSpace(token))
 	switch t {
@@ -2145,30 +2375,227 @@ func isSupportedAgentToken(token string) (string, bool) {
 	}
 }
 
+func isRecognizedCrawlerAgent(name string) bool {
+	t := strings.ToLower(strings.TrimSpace(name))
+	switch t {
+	case "robots", "googlebot", "googlebot-news", "googlebot-image", "googlebot-video",
+		"adsbot-google", "adsbot-google-mobile", "mediapartners-google", "apis-google",
+		"google-extended", "bingbot", "adidxbot", "msnbot", "oai-searchbot", "oaisearchbot",
+		"gptbot", "chatgpt-user", "claudebot", "anthropic-ai", "perplexitybot",
+		"applebot", "applebot-extended", "slurp", "duckduckbot", "baiduspider",
+		"yandex", "facebookexternalhit", "meta-externalagent", "twitterbot",
+		"linkedinbot", "bytespider", "ccbot":
+		return true
+	default:
+		if strings.HasPrefix(t, "googlebot-") || strings.HasPrefix(t, "googlebot_") {
+			return true
+		}
+		return false
+	}
+}
+
+func splitDirectiveItems(raw string) []string {
+	parts := strings.Split(raw, ",")
+	var out []string
+	for i := 0; i < len(parts); i++ {
+		p := strings.TrimSpace(parts[i])
+		if reUnavailableAfterDay.MatchString(p) && i+1 < len(parts) {
+			merged := p + ", " + strings.TrimSpace(parts[i+1])
+			out = append(out, merged)
+			i++
+		} else {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+type itemValidationResult struct {
+	token             string
+	unsupportedTokens []string
+	parseErrors       []string
+}
+
+func validateDirectiveItem(rawItem string, isHeader bool) itemValidationResult {
+	item := strings.TrimSpace(rawItem)
+	if item == "" {
+		return itemValidationResult{
+			parseErrors: []string{"parse_error:empty_token_segment"},
+		}
+	}
+
+	if strings.Contains(item, ";") || strings.Contains(item, "|") {
+		return itemValidationResult{
+			parseErrors: []string{"parse_error:invalid_delimiter:" + item},
+		}
+	}
+
+	colonIdx := strings.Index(item, ":")
+	if colonIdx == -1 {
+		if strings.Contains(item, " ") {
+			return itemValidationResult{
+				parseErrors: []string{"parse_error:invalid_delimiter:" + item},
+			}
+		}
+
+		itemLower := strings.ToLower(item)
+		if isStandaloneSupportedDirective(itemLower) {
+			return itemValidationResult{
+				token: itemLower,
+			}
+		}
+		if isKnownUnsupportedDirective(itemLower) {
+			return itemValidationResult{
+				token:             itemLower,
+				unsupportedTokens: []string{itemLower},
+				parseErrors:       []string{"unsupported_directive:" + itemLower},
+			}
+		}
+		if reValidIdentifier.MatchString(item) {
+			return itemValidationResult{
+				token:             itemLower,
+				unsupportedTokens: []string{itemLower},
+				parseErrors:       []string{"unsupported_directive:" + itemLower},
+			}
+		}
+
+		return itemValidationResult{
+			parseErrors: []string{"parse_error:invalid_syntax:" + item},
+		}
+	}
+
+	lhs := strings.TrimSpace(item[:colonIdx])
+	lhsLower := strings.ToLower(lhs)
+	rhs := strings.TrimSpace(item[colonIdx+1:])
+	rhsLower := strings.ToLower(rhs)
+
+	if !isHeader && isRecognizedCrawlerAgent(lhsLower) && lhsLower != "robots" {
+		return itemValidationResult{
+			parseErrors: []string{"parse_error:meta_agent_prefix:" + item},
+		}
+	}
+
+	if isStandaloneSupportedDirective(lhsLower) {
+		return itemValidationResult{
+			parseErrors: []string{"parse_error:unexpected_parameter:" + item},
+		}
+	}
+
+	switch lhsLower {
+	case "max-snippet":
+		if rhs == "" {
+			return itemValidationResult{
+				parseErrors: []string{"parse_error:missing_parameter:max-snippet"},
+			}
+		}
+		n, err := strconv.Atoi(rhs)
+		if err != nil || n < -1 {
+			return itemValidationResult{
+				parseErrors: []string{"parse_error:invalid_parameter_value:max-snippet:" + rhs},
+			}
+		}
+		return itemValidationResult{
+			token: "max-snippet:" + rhs,
+		}
+	case "max-image-preview":
+		if rhs == "" {
+			return itemValidationResult{
+				parseErrors: []string{"parse_error:missing_parameter:max-image-preview"},
+			}
+		}
+		if rhsLower == "none" || rhsLower == "standard" || rhsLower == "large" {
+			return itemValidationResult{
+				token: "max-image-preview:" + rhsLower,
+			}
+		}
+		return itemValidationResult{
+			parseErrors: []string{"parse_error:invalid_parameter_value:max-image-preview:" + rhs},
+		}
+	case "max-video-preview":
+		if rhs == "" {
+			return itemValidationResult{
+				parseErrors: []string{"parse_error:missing_parameter:max-video-preview"},
+			}
+		}
+		n, err := strconv.Atoi(rhs)
+		if err != nil || n < -1 {
+			return itemValidationResult{
+				parseErrors: []string{"parse_error:invalid_parameter_value:max-video-preview:" + rhs},
+			}
+		}
+		return itemValidationResult{
+			token: "max-video-preview:" + rhs,
+		}
+	case "unavailable_after":
+		if rhs == "" {
+			return itemValidationResult{
+				parseErrors: []string{"parse_error:missing_parameter:unavailable_after"},
+			}
+		}
+		if isValidUnavailableAfterDate(rhs) {
+			return itemValidationResult{
+				token: "unavailable_after:" + rhs,
+			}
+		}
+		return itemValidationResult{
+			parseErrors: []string{"parse_error:invalid_parameter_value:unavailable_after:" + rhs},
+		}
+	}
+
+	if reNearMissParam.MatchString(lhsLower) {
+		return itemValidationResult{
+			token:             item,
+			unsupportedTokens: []string{item},
+			parseErrors:       []string{"unsupported_directive:" + item},
+		}
+	}
+
+	return itemValidationResult{
+		parseErrors: []string{"parse_error:unexpected_parameter:" + item},
+	}
+}
+
 type parsedHeaderSegment struct {
-	target       string
-	scopeUnknown bool
-	rawValue     string
-	tokens       []string
+	target            string
+	scopeUnknown      bool
+	rawValue          string
+	tokens            []string
+	unsupportedTokens []string
+	parseErrors       []string
 }
 
 func parseXRobotsSegment(seg string, prevHadPrefix bool) (parsedHeaderSegment, bool) {
 	colonIdx := strings.Index(seg, ":")
 	if colonIdx == -1 {
 		tokens := parseDirectiveTokens(seg)
+		var pErrs []string
+		var uToks []string
+		for _, tok := range tokens {
+			res := validateDirectiveItem(tok, true)
+			uToks = append(uToks, res.unsupportedTokens...)
+			pErrs = append(pErrs, res.parseErrors...)
+		}
+
 		if prevHadPrefix {
+			if len(pErrs) == 0 {
+				pErrs = []string{"ambiguous:joined_header_continuation"}
+			}
 			return parsedHeaderSegment{
-				target:       "",
-				scopeUnknown: true,
-				rawValue:     seg,
-				tokens:       tokens,
+				target:            "",
+				scopeUnknown:      true,
+				rawValue:          seg,
+				tokens:            tokens,
+				unsupportedTokens: uToks,
+				parseErrors:       pErrs,
 			}, true
 		}
 		return parsedHeaderSegment{
-			target:       "*",
-			scopeUnknown: false,
-			rawValue:     seg,
-			tokens:       tokens,
+			target:            "*",
+			scopeUnknown:      false,
+			rawValue:          seg,
+			tokens:            tokens,
+			unsupportedTokens: uToks,
+			parseErrors:       pErrs,
 		}, false
 	}
 
@@ -2177,50 +2604,154 @@ func parseXRobotsSegment(seg string, prevHadPrefix bool) (parsedHeaderSegment, b
 	rest := strings.TrimSpace(seg[colonIdx+1:])
 
 	if isParameterizedDirective(firstPartLower) {
+		res := validateDirectiveItem(seg, true)
 		tokens := []string{strings.ToLower(seg)}
 		if prevHadPrefix {
+			pErrs := res.parseErrors
+			if len(pErrs) == 0 {
+				pErrs = []string{"ambiguous:joined_header_continuation"}
+			}
 			return parsedHeaderSegment{
-				target:       "",
-				scopeUnknown: true,
-				rawValue:     seg,
-				tokens:       tokens,
+				target:            "",
+				scopeUnknown:      true,
+				rawValue:          seg,
+				tokens:            tokens,
+				unsupportedTokens: res.unsupportedTokens,
+				parseErrors:       pErrs,
 			}, true
 		}
 		return parsedHeaderSegment{
-			target:       "*",
-			scopeUnknown: false,
-			rawValue:     seg,
-			tokens:       tokens,
+			target:            "*",
+			scopeUnknown:      false,
+			rawValue:          seg,
+			tokens:            tokens,
+			unsupportedTokens: res.unsupportedTokens,
+			parseErrors:       res.parseErrors,
 		}, false
 	}
 
-	if agentName, ok := isSupportedAgentToken(firstPartLower); ok && rest != "" {
+	if isStandaloneSupportedDirective(firstPartLower) || reNearMissParam.MatchString(firstPartLower) {
+		res := validateDirectiveItem(seg, true)
+		tokens := []string{strings.ToLower(seg)}
+		if prevHadPrefix {
+			pErrs := res.parseErrors
+			if len(pErrs) == 0 {
+				pErrs = []string{"ambiguous:joined_header_continuation"}
+			}
+			return parsedHeaderSegment{
+				target:            "",
+				scopeUnknown:      true,
+				rawValue:          seg,
+				tokens:            tokens,
+				unsupportedTokens: res.unsupportedTokens,
+				parseErrors:       pErrs,
+			}, true
+		}
+		return parsedHeaderSegment{
+			target:            "*",
+			scopeUnknown:      false,
+			rawValue:          seg,
+			tokens:            tokens,
+			unsupportedTokens: res.unsupportedTokens,
+			parseErrors:       res.parseErrors,
+		}, false
+	}
+
+	if agentName, ok := isSupportedAgentToken(firstPartLower); ok {
+		if rest == "" {
+			return parsedHeaderSegment{
+				target:       agentName,
+				scopeUnknown: false,
+				rawValue:     seg,
+				parseErrors:  []string{"parse_error:missing_directive_after_prefix:" + firstPartLower + ":"},
+			}, true
+		}
 		var tokens []string
+		var uToks []string
+		var pErrs []string
 		restColonIdx := strings.Index(rest, ":")
 		if restColonIdx != -1 {
 			restFirst := strings.TrimSpace(rest[:restColonIdx])
-			if isParameterizedDirective(restFirst) {
+			if isParameterizedDirective(restFirst) || isStandaloneSupportedDirective(restFirst) || reNearMissParam.MatchString(restFirst) {
+				res := validateDirectiveItem(rest, true)
 				tokens = []string{strings.ToLower(rest)}
+				uToks = res.unsupportedTokens
+				pErrs = res.parseErrors
 			} else {
 				tokens = parseDirectiveTokens(rest)
+				for _, tok := range tokens {
+					res := validateDirectiveItem(tok, true)
+					uToks = append(uToks, res.unsupportedTokens...)
+					pErrs = append(pErrs, res.parseErrors...)
+				}
 			}
 		} else {
 			tokens = parseDirectiveTokens(rest)
+			for _, tok := range tokens {
+				res := validateDirectiveItem(tok, true)
+				uToks = append(uToks, res.unsupportedTokens...)
+				pErrs = append(pErrs, res.parseErrors...)
+			}
 		}
 		return parsedHeaderSegment{
-			target:       agentName,
-			scopeUnknown: false,
-			rawValue:     seg,
-			tokens:       tokens,
+			target:            agentName,
+			scopeUnknown:      false,
+			rawValue:          seg,
+			tokens:            tokens,
+			unsupportedTokens: uToks,
+			parseErrors:       pErrs,
 		}, true
 	}
 
-	// Unknown prefix-like syntax (e.g. foo: bar) must remain conservative / unknown scope.
+	if isRecognizedCrawlerAgent(firstPartLower) {
+		agentName := firstPartLower
+		tokens := parseDirectiveTokens(rest)
+		var uToks []string
+		var pErrs []string
+		for _, tok := range tokens {
+			res := validateDirectiveItem(tok, true)
+			uToks = append(uToks, res.unsupportedTokens...)
+			pErrs = append(pErrs, res.parseErrors...)
+		}
+		return parsedHeaderSegment{
+			target:            agentName,
+			scopeUnknown:      false,
+			rawValue:          seg,
+			tokens:            tokens,
+			unsupportedTokens: uToks,
+			parseErrors:       pErrs,
+		}, true
+	}
+
+	// Unknown prefix-like syntax (e.g. foo: bar)
+	tokens := parseDirectiveTokens(seg)
+	var pErrs []string
+	if reValidIdentifier.MatchString(firstPart) {
+		restTokens := parseDirectiveTokens(rest)
+		allValidV1 := len(restTokens) > 0
+		for _, tok := range restTokens {
+			if !isStandaloneSupportedDirective(tok) {
+				allValidV1 = false
+				break
+			}
+		}
+		if allValidV1 {
+			pErrs = []string{"ambiguous:unverified_agent_prefix:" + firstPartLower}
+		} else if len(restTokens) == 1 && reValidIdentifier.MatchString(restTokens[0]) {
+			pErrs = []string{"ambiguous:unrecognized_colon_pair:" + firstPart + ": " + rest}
+		} else {
+			pErrs = []string{"ambiguous:unverified_agent_prefix:" + firstPartLower}
+		}
+	} else {
+		pErrs = []string{"parse_error:invalid_syntax:" + seg}
+	}
+
 	return parsedHeaderSegment{
 		target:       "",
 		scopeUnknown: true,
 		rawValue:     seg,
-		tokens:       parseDirectiveTokens(seg),
+		tokens:       tokens,
+		parseErrors:  pErrs,
 	}, true
 }
 
@@ -2230,7 +2761,10 @@ func processPageDirectives(
 	urlIDStr audit.URLID,
 	pageSrcRef string,
 	obsTime time.Time,
+	isHTML bool,
 	isRendered bool,
+	robotsMetaExtracted bool,
+	rawRobotsMeta []sitecrawl.RawMetaDirective,
 	pageMetaTags map[string]string,
 	pageMetaRobots string,
 	columnMetaRobots string,
@@ -2242,199 +2776,325 @@ func processPageDirectives(
 	gaps []EvidenceGap,
 ) {
 	metaDirIdx := 0
-
-	// 1. Meta directives (suppressed on rendered pages where raw server HTML was replaced)
-	metaRobotsRawStr := ""
 	var (
 		genericMetaRaw string
 		agentMetaRaw   = make(map[string]string)
 	)
-	if !isRendered {
-		if pageMetaRobots != "" {
-			metaRobotsRawStr = pageMetaRobots
-		} else if columnMetaRobots != "" {
-			metaRobotsRawStr = columnMetaRobots
-		}
-		metaRobotsRawStr = strings.TrimSpace(metaRobotsRawStr)
 
-		var (
-			robotsVal string
-			hasRobots bool
-		)
-		if pageMetaTags != nil {
-			for k, v := range pageMetaTags {
-				val := strings.TrimSpace(v)
-				if val == "" {
+	// 1. Meta directives (suppressed on rendered pages or non-HTML)
+	if isHTML && !isRendered {
+		if robotsMetaExtracted {
+			// V1.10b+ encounter-order extraction
+			for _, rm := range rawRobotsMeta {
+				agentName := strings.TrimSpace(rm.Name)
+				if !isRecognizedCrawlerAgent(agentName) {
 					continue
 				}
-				kLower := strings.ToLower(strings.TrimSpace(k))
-				switch kLower {
-				case "robots":
-					robotsVal = val
-					hasRobots = true
-				default:
-					if agent, ok := isSupportedAgentToken(kLower); ok {
-						agentMetaRaw[agent] = val
+				target := strings.ToLower(agentName)
+				if target == "robots" {
+					target = "*"
+				}
+
+				if !rm.HasContentAttr {
+					// Case 2A: Missing content attribute
+					parseErrs := []string{"parse_error:missing_content_attribute"}
+					directives = append(directives, audit.RobotsDirectiveObservation{
+						RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+						AuditRunID:                   req.AuditRunID,
+						URLID:                        urlIDStr,
+						Source:                       audit.DirectiveSourceMeta,
+						Target:                       target,
+						ScopeUnknown:                 false,
+						RawValue:                     "",
+						ParsedTokens:                 nil,
+						UnsupportedTokens:            nil,
+						ParseErrors:                  parseErrs,
+						EffectiveNoindex:             false,
+						ObservedAt:                   obsTime,
+					})
+					metaDirIdx++
+					continue
+				}
+
+				trimmedContent := strings.TrimSpace(rm.ContentRaw)
+				if trimmedContent == "" {
+					// Case 2B/2C: Vacuous 0-token declaration; do not emit bundle
+					continue
+				}
+
+				// Check for meta agent prefix violation
+				var (
+					parsedTokens      []string
+					unsupportedTokens []string
+					parseErrors       []string
+				)
+
+				colonIdx := strings.Index(trimmedContent, ":")
+				if colonIdx != -1 {
+					lhs := strings.ToLower(strings.TrimSpace(trimmedContent[:colonIdx]))
+					if isRecognizedCrawlerAgent(lhs) && lhs != "robots" {
+						parseErrors = append(parseErrors, "parse_error:meta_agent_prefix:"+trimmedContent)
 					}
 				}
-			}
-		}
 
-		if hasRobots || len(agentMetaRaw) > 0 {
-			if hasRobots {
-				tokens := parseDirectiveTokens(robotsVal)
-				isNoindex := containsToken(tokens, "noindex") || containsToken(tokens, "none")
-				directives = append(directives, audit.RobotsDirectiveObservation{
-					RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
-					AuditRunID:                   req.AuditRunID,
-					URLID:                        urlIDStr,
-					Source:                       audit.DirectiveSourceMeta,
-					Target:                       "*",
-					ScopeUnknown:                 false,
-					RawValue:                     robotsVal,
-					ParsedTokens:                 tokens,
-					EffectiveNoindex:             isNoindex,
-					ObservedAt:                   obsTime,
-				})
-				metaDirIdx++
-			}
+				if len(parseErrors) == 0 {
+					items := splitDirectiveItems(rm.ContentRaw)
+					for _, item := range items {
+						res := validateDirectiveItem(item, false)
+						if res.token != "" {
+							parsedTokens = append(parsedTokens, res.token)
+						}
+						unsupportedTokens = append(unsupportedTokens, res.unsupportedTokens...)
+						parseErrors = append(parseErrors, res.parseErrors...)
+					}
+				}
 
-			// Emit agent meta directives in deterministic order
-			var agentKeys []string
-			for k := range agentMetaRaw {
-				agentKeys = append(agentKeys, k)
-			}
-			sort.Strings(agentKeys)
-			for _, agent := range agentKeys {
-				val := agentMetaRaw[agent]
-				tokens := parseDirectiveTokens(val)
 				isNoindex := false
-				if agent == "googlebot" && (containsToken(tokens, "noindex") || containsToken(tokens, "none")) {
+				if (target == "*" || target == "googlebot") && (containsToken(parsedTokens, "noindex") || containsToken(parsedTokens, "none")) {
 					isNoindex = true
 				}
+
 				directives = append(directives, audit.RobotsDirectiveObservation{
 					RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
 					AuditRunID:                   req.AuditRunID,
 					URLID:                        urlIDStr,
 					Source:                       audit.DirectiveSourceMeta,
-					Target:                       agent,
+					Target:                       target,
 					ScopeUnknown:                 false,
-					RawValue:                     val,
-					ParsedTokens:                 tokens,
+					RawValue:                     rm.ContentRaw,
+					ParsedTokens:                 parsedTokens,
+					UnsupportedTokens:            unsupportedTokens,
+					ParseErrors:                  parseErrors,
 					EffectiveNoindex:             isNoindex,
 					ObservedAt:                   obsTime,
 				})
 				metaDirIdx++
-			}
 
-			// Check for unrecovered extra content in flattened MetaRobots
-			if metaRobotsRawStr != "" {
-				allTokens := parseDirectiveTokens(metaRobotsRawStr)
-				rTokens := parseDirectiveTokens(robotsVal)
-				var agentTokens []string
-				for _, val := range agentMetaRaw {
-					agentTokens = append(agentTokens, parseDirectiveTokens(val)...)
-				}
-				var extraTokens []string
-				for _, t := range allTokens {
-					if !containsToken(rTokens, t) && !containsToken(agentTokens, t) {
-						extraTokens = append(extraTokens, t)
-					}
-				}
-				if len(extraTokens) > 0 {
-					extraRaw := strings.Join(extraTokens, ", ")
-					if hasRobots && len(agentMetaRaw) == 0 {
-						// Fix 2: If robots is the ONLY relevant meta directive scope present,
-						// extra flattened meta content remains generic scope.
-						// Do not mark it unknown merely because repeated generic tags were collapsed.
-						isNoindex := containsToken(extraTokens, "noindex") || containsToken(extraTokens, "none")
-						directives = append(directives, audit.RobotsDirectiveObservation{
-							RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
-							AuditRunID:                   req.AuditRunID,
-							URLID:                        urlIDStr,
-							Source:                       audit.DirectiveSourceMeta,
-							Target:                       "*",
-							ScopeUnknown:                 false,
-							RawValue:                     extraRaw,
-							ParsedTokens:                 extraTokens,
-							EffectiveNoindex:             isNoindex,
-							ObservedAt:                   obsTime,
-						})
-						metaDirIdx++
+				if target == "*" {
+					if genericMetaRaw == "" {
+						genericMetaRaw = rm.ContentRaw
 					} else {
-						// Both generic and agent scopes exist (or extra content cannot be assigned);
-						// extra content cannot be assigned, keep it unknown.
-						directives = append(directives, audit.RobotsDirectiveObservation{
-							RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
-							AuditRunID:                   req.AuditRunID,
-							URLID:                        urlIDStr,
-							Source:                       audit.DirectiveSourceMeta,
-							Target:                       "",
-							ScopeUnknown:                 true,
-							RawValue:                     extraRaw,
-							ParsedTokens:                 extraTokens,
-							EffectiveNoindex:             false,
-							ObservedAt:                   obsTime,
-						})
-						metaDirIdx++
-						gaps = append(gaps, EvidenceGap{
-							GapCode:         GapDirectiveScopeAmbiguous,
-							SubjectRef:      string(urlIDStr),
-							Field:           "meta_robots",
-							Reason:          fmt.Sprintf("Flattened MetaRobots contains unrecovered extra tokens: %s", extraRaw),
-							SourceComponent: "sitecrawl_pages",
-						})
+						genericMetaRaw += ", " + rm.ContentRaw
+					}
+				} else {
+					if agentMetaRaw[target] == "" {
+						agentMetaRaw[target] = rm.ContentRaw
+					} else {
+						agentMetaRaw[target] += ", " + rm.ContentRaw
+					}
+				}
+			}
+		} else {
+			// Legacy SQLite fallback
+			metaRobotsRawStr := ""
+			if pageMetaRobots != "" {
+				metaRobotsRawStr = pageMetaRobots
+			} else if columnMetaRobots != "" {
+				metaRobotsRawStr = columnMetaRobots
+			}
+			metaRobotsRawStr = strings.TrimSpace(metaRobotsRawStr)
+
+			var (
+				robotsVal string
+				hasRobots bool
+			)
+			if pageMetaTags != nil {
+				for k, v := range pageMetaTags {
+					val := strings.TrimSpace(v)
+					if val == "" {
+						continue
+					}
+					kLower := strings.ToLower(strings.TrimSpace(k))
+					switch kLower {
+					case "robots":
+						robotsVal = val
+						hasRobots = true
+					default:
+						if agent, ok := isSupportedAgentToken(kLower); ok {
+							agentMetaRaw[agent] = val
+						}
 					}
 				}
 			}
 
-			// Proven generic meta raw evidence determination (Fix 4):
-			if hasRobots && len(agentMetaRaw) == 0 {
-				genericMetaRaw = metaRobotsRawStr
-				if genericMetaRaw == "" {
+			if hasRobots || len(agentMetaRaw) > 0 {
+				if hasRobots {
+					var (
+						parsedTokens      []string
+						unsupportedTokens []string
+						parseErrors       []string
+					)
+					items := splitDirectiveItems(robotsVal)
+					for _, item := range items {
+						res := validateDirectiveItem(item, false)
+						if res.token != "" {
+							parsedTokens = append(parsedTokens, res.token)
+						}
+						unsupportedTokens = append(unsupportedTokens, res.unsupportedTokens...)
+						parseErrors = append(parseErrors, res.parseErrors...)
+					}
+					isNoindex := containsToken(parsedTokens, "noindex") || containsToken(parsedTokens, "none")
+					directives = append(directives, audit.RobotsDirectiveObservation{
+						RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+						AuditRunID:                   req.AuditRunID,
+						URLID:                        urlIDStr,
+						Source:                       audit.DirectiveSourceMeta,
+						Target:                       "*",
+						ScopeUnknown:                 false,
+						RawValue:                     robotsVal,
+						ParsedTokens:                 parsedTokens,
+						UnsupportedTokens:            unsupportedTokens,
+						ParseErrors:                  parseErrors,
+						EffectiveNoindex:             isNoindex,
+						ObservedAt:                   obsTime,
+					})
+					metaDirIdx++
+				}
+
+				var agentKeys []string
+				for k := range agentMetaRaw {
+					agentKeys = append(agentKeys, k)
+				}
+				sort.Strings(agentKeys)
+				for _, agent := range agentKeys {
+					val := agentMetaRaw[agent]
+					var (
+						parsedTokens      []string
+						unsupportedTokens []string
+						parseErrors       []string
+					)
+					items := splitDirectiveItems(val)
+					for _, item := range items {
+						res := validateDirectiveItem(item, false)
+						if res.token != "" {
+							parsedTokens = append(parsedTokens, res.token)
+						}
+						unsupportedTokens = append(unsupportedTokens, res.unsupportedTokens...)
+						parseErrors = append(parseErrors, res.parseErrors...)
+					}
+					isNoindex := false
+					if agent == "googlebot" && (containsToken(parsedTokens, "noindex") || containsToken(parsedTokens, "none")) {
+						isNoindex = true
+					}
+					directives = append(directives, audit.RobotsDirectiveObservation{
+						RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+						AuditRunID:                   req.AuditRunID,
+						URLID:                        urlIDStr,
+						Source:                       audit.DirectiveSourceMeta,
+						Target:                       agent,
+						ScopeUnknown:                 false,
+						RawValue:                     val,
+						ParsedTokens:                 parsedTokens,
+						UnsupportedTokens:            unsupportedTokens,
+						ParseErrors:                  parseErrors,
+						EffectiveNoindex:             isNoindex,
+						ObservedAt:                   obsTime,
+					})
+					metaDirIdx++
+				}
+
+				if metaRobotsRawStr != "" {
+					allTokens := parseDirectiveTokens(metaRobotsRawStr)
+					rTokens := parseDirectiveTokens(robotsVal)
+					var agentTokens []string
+					for _, val := range agentMetaRaw {
+						agentTokens = append(agentTokens, parseDirectiveTokens(val)...)
+					}
+					var extraTokens []string
+					for _, t := range allTokens {
+						if !containsToken(rTokens, t) && !containsToken(agentTokens, t) {
+							extraTokens = append(extraTokens, t)
+						}
+					}
+					if len(extraTokens) > 0 {
+						extraRaw := strings.Join(extraTokens, ", ")
+						if hasRobots && len(agentMetaRaw) == 0 {
+							isNoindex := containsToken(extraTokens, "noindex") || containsToken(extraTokens, "none")
+							directives = append(directives, audit.RobotsDirectiveObservation{
+								RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+								AuditRunID:                   req.AuditRunID,
+								URLID:                        urlIDStr,
+								Source:                       audit.DirectiveSourceMeta,
+								Target:                       "*",
+								ScopeUnknown:                 false,
+								RawValue:                     extraRaw,
+								ParsedTokens:                 extraTokens,
+								EffectiveNoindex:             isNoindex,
+								ObservedAt:                   obsTime,
+							})
+							metaDirIdx++
+						} else {
+							directives = append(directives, audit.RobotsDirectiveObservation{
+								RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+								AuditRunID:                   req.AuditRunID,
+								URLID:                        urlIDStr,
+								Source:                       audit.DirectiveSourceMeta,
+								Target:                       "",
+								ScopeUnknown:                 true,
+								RawValue:                     extraRaw,
+								ParsedTokens:                 extraTokens,
+								EffectiveNoindex:             false,
+								ObservedAt:                   obsTime,
+							})
+							metaDirIdx++
+							gaps = append(gaps, EvidenceGap{
+								GapCode:         GapDirectiveScopeAmbiguous,
+								SubjectRef:      string(urlIDStr),
+								Field:           "meta_robots",
+								Reason:          fmt.Sprintf("Flattened MetaRobots contains unrecovered extra tokens: %s", extraRaw),
+								SourceComponent: "sitecrawl_pages",
+							})
+						}
+					}
+				}
+
+				if hasRobots && len(agentMetaRaw) == 0 {
+					genericMetaRaw = metaRobotsRawStr
+					if genericMetaRaw == "" {
+						genericMetaRaw = robotsVal
+					}
+				} else if hasRobots {
 					genericMetaRaw = robotsVal
 				}
-			} else if hasRobots {
-				genericMetaRaw = robotsVal
+			} else if metaRobotsRawStr != "" {
+				tokens := parseDirectiveTokens(metaRobotsRawStr)
+				directives = append(directives, audit.RobotsDirectiveObservation{
+					RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
+					AuditRunID:                   req.AuditRunID,
+					URLID:                        urlIDStr,
+					Source:                       audit.DirectiveSourceMeta,
+					Target:                       "",
+					ScopeUnknown:                 true,
+					RawValue:                     metaRobotsRawStr,
+					ParsedTokens:                 tokens,
+					EffectiveNoindex:             false,
+					ObservedAt:                   obsTime,
+				})
+				metaDirIdx++
+				gaps = append(gaps, EvidenceGap{
+					GapCode:         GapDirectiveScopeAmbiguous,
+					SubjectRef:      string(urlIDStr),
+					Field:           "meta_robots",
+					Reason:          "Meta robots directive scope cannot be recovered from legacy evidence without scoped MetaTags.",
+					SourceComponent: "sitecrawl_pages",
+				})
 			}
-		} else if metaRobotsRawStr != "" {
-			// Legacy Page JSON with only MetaRobots: scope cannot be recovered, remain unknown
-			tokens := parseDirectiveTokens(metaRobotsRawStr)
-			directives = append(directives, audit.RobotsDirectiveObservation{
-				RobotsDirectiveObservationID: audit.RobotsDirectiveID(fmt.Sprintf("directive:%s:%d:meta:%d", req.AuditRunID, urlID, metaDirIdx)),
-				AuditRunID:                   req.AuditRunID,
-				URLID:                        urlIDStr,
-				Source:                       audit.DirectiveSourceMeta,
-				Target:                       "",
-				ScopeUnknown:                 true,
-				RawValue:                     metaRobotsRawStr,
-				ParsedTokens:                 tokens,
-				EffectiveNoindex:             false,
-				ObservedAt:                   obsTime,
-			})
-			metaDirIdx++
-			gaps = append(gaps, EvidenceGap{
-				GapCode:         GapDirectiveScopeAmbiguous,
-				SubjectRef:      string(urlIDStr),
-				Field:           "meta_robots",
-				Reason:          "Meta robots directive scope cannot be recovered from legacy evidence without scoped MetaTags.",
-				SourceComponent: "sitecrawl_pages",
-			})
 		}
 	}
 
-	// 2. HTTP Header X-Robots-Tag directives (preserved for both rendered and non-rendered)
+	// 2. HTTP Header X-Robots-Tag directives
 	headerDirIdx := 0
 	var (
 		genericHeaderRawSegments []string
 		agentHeaderRawSegments   = make(map[string][]string)
 	)
+
 	for _, headerStr := range xRobotsRaw {
 		trimmedHeader := strings.TrimSpace(headerStr)
 		if trimmedHeader == "" {
 			continue
 		}
-		segments := strings.Split(trimmedHeader, ",")
+		segments := splitDirectiveItems(trimmedHeader)
 		hadPrefix := false
 		for _, seg := range segments {
 			s := strings.TrimSpace(seg)
@@ -2464,6 +3124,8 @@ func processPageDirectives(
 				ScopeUnknown:                 parsed.scopeUnknown,
 				RawValue:                     parsed.rawValue,
 				ParsedTokens:                 parsed.tokens,
+				UnsupportedTokens:            parsed.unsupportedTokens,
+				ParseErrors:                  parsed.parseErrors,
 				EffectiveNoindex:             isNoindex,
 				ObservedAt:                   obsTime,
 			})
@@ -2568,6 +3230,40 @@ func processPageDirectives(
 			ObservedAt:         obsTime,
 		})
 
+		// AR-INDEX-003: robots_parse_errors
+		parseErrsVal := "none"
+		if len(d.ParseErrors) > 0 {
+			parseErrsVal = strings.Join(d.ParseErrors, ", ")
+		}
+		normalized = append(normalized, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "robots_parse_errors",
+			Value:              parseErrsVal,
+			DerivationType:     audit.DerivationNormalized,
+			SourceEvidenceRefs: refs,
+			ObservedAt:         obsTime,
+		})
+
+		// AR-INDEX-003: directive_unsupported_tokens
+		if len(d.UnsupportedTokens) > 0 {
+			normalized = append(normalized, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "directive_unsupported_tokens",
+				Value:              strings.Join(d.UnsupportedTokens, ", "),
+				DerivationType:     audit.DerivationNormalized,
+				SourceEvidenceRefs: refs,
+				ObservedAt:         obsTime,
+			})
+		}
+
 		// AR-INDEX-002: robots_meta_tokens and x_robots_tokens for applicable generic scope
 		if d.Target == "*" && !d.ScopeUnknown {
 			if d.Source == audit.DirectiveSourceMeta {
@@ -2583,7 +3279,7 @@ func processPageDirectives(
 					SourceEvidenceRefs: refs,
 					ObservedAt:         obsTime,
 				})
-			} else if d.Source == audit.DirectiveSourceHTTPHeader {
+			} else if d.Source == audit.DirectiveSourceHTTPHeader && isHTML {
 				normalized = append(normalized, audit.NormalizedObservation{
 					ObservationID:      nextObsID(),
 					AuditRunID:         req.AuditRunID,
@@ -2600,7 +3296,7 @@ func processPageDirectives(
 		}
 	}
 
-	// 4. URL-level Raw Observations (Fix 4: separated scoped raw fields)
+	// 4. URL-level Raw Observations
 	if genericMetaRaw != "" && !isRendered {
 		normalized = append(normalized, audit.NormalizedObservation{
 			ObservationID:      nextObsID(),
@@ -2673,50 +3369,44 @@ func processPageDirectives(
 		})
 	}
 
-	// 5. Effective Noindex (V1.3d: Googlebot-effective page-level noindex normalization)
-	// Applicable directive scopes are generic (*) and explicit googlebot.
-	// Other agent scopes (e.g. gptbot, oai-searchbot, bingbot, googlebot-news) do not affect Googlebot text search.
-	// Google applies restrictive rules cumulatively: noindex/none cannot be cancelled by index.
-	// A known applicable noindex remains TRUE even if unrelated ambiguous evidence exists.
-	// FALSE is emitted only when:
-	// - Googlebot-applicable directive acquisition is complete enough (raw server HTML observable, not rendered);
-	// - no relevant unknown-scope evidence exists (!hasAmbiguousDirective);
-	// - no applicable generic/googlebot directive contains noindex or none.
-	hasGooglebotApplicableDirective := false
-	hasGooglebotNoindex := false
-	hasAmbiguousDirective := false
+	// 5. Effective Noindex (Googlebot-effective page-level noindex normalization, HTML only)
+	if isHTML {
+		hasGooglebotApplicableDirective := false
+		hasGooglebotNoindex := false
+		hasAmbiguousDirective := false
 
-	for _, d := range directives {
-		if d.ScopeUnknown {
-			hasAmbiguousDirective = true
-		} else if d.Target == "*" || d.Target == "googlebot" {
-			hasGooglebotApplicableDirective = true
-			if containsToken(d.ParsedTokens, "noindex") || containsToken(d.ParsedTokens, "none") {
-				hasGooglebotNoindex = true
+		for _, d := range directives {
+			if d.ScopeUnknown {
+				hasAmbiguousDirective = true
+			} else if d.Target == "*" || d.Target == "googlebot" {
+				hasGooglebotApplicableDirective = true
+				if containsToken(d.ParsedTokens, "noindex") || containsToken(d.ParsedTokens, "none") {
+					hasGooglebotNoindex = true
+				}
 			}
 		}
-	}
 
-	canProveNoindex := hasGooglebotNoindex
-	canProveIndexable := !isRendered && !hasAmbiguousDirective && !hasGooglebotNoindex && (hasGooglebotApplicableDirective || pageMetaTags != nil)
+		canProveNoindex := hasGooglebotNoindex
+		canProveIndexable := !isRendered && !hasAmbiguousDirective && !hasGooglebotNoindex && (hasGooglebotApplicableDirective || pageMetaTags != nil || robotsMetaExtracted)
 
-	if canProveNoindex || canProveIndexable {
-		noindexVal := "false"
-		if canProveNoindex {
-			noindexVal = "true"
+		if canProveNoindex || canProveIndexable {
+			noindexVal := "false"
+			if canProveNoindex {
+				noindexVal = "true"
+			}
+			normalized = append(normalized, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "effective_noindex",
+				Value:              noindexVal,
+				DerivationType:     audit.DerivationNormalized,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
 		}
-		normalized = append(normalized, audit.NormalizedObservation{
-			ObservationID:      nextObsID(),
-			AuditRunID:         req.AuditRunID,
-			SnapshotID:         req.SnapshotID,
-			SubjectType:        audit.SubjectURL,
-			SubjectRef:         string(urlIDStr),
-			Field:              "effective_noindex",
-			Value:              noindexVal,
-			DerivationType:     audit.DerivationNormalized,
-			SourceEvidenceRefs: []string{pageSrcRef},
-			ObservedAt:         obsTime,
-		})
 	}
 
 	return directives, normalized, gaps

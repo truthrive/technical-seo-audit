@@ -1233,8 +1233,8 @@ func TestAdapter_StructuredData_EvidenceIntegrity(t *testing.T) {
 		if res1.EvidenceSnapshot.FrozenAt == nil {
 			t.Errorf("expected non-nil FrozenAt")
 		}
-		if res1.EvidenceSnapshot.NormalizationVersion != "v1.10.0" {
-			t.Errorf("expected NormalizationVersion v1.10.0, got %s", res1.EvidenceSnapshot.NormalizationVersion)
+		if res1.EvidenceSnapshot.NormalizationVersion != "v1.11.0" {
+			t.Errorf("expected NormalizationVersion v1.11.0, got %s", res1.EvidenceSnapshot.NormalizationVersion)
 		}
 
 		// Verify index construction succeeds without any error
@@ -1323,8 +1323,8 @@ func TestAdapter_StructuredData_Regression(t *testing.T) {
 			t.Fatalf("engine.New failed: %v", err)
 		}
 		ruleIDs := eng.ImplementedRuleIDs()
-		if len(ruleIDs) != 20 {
-			t.Fatalf("expected exactly 20 implemented rules, got %d", len(ruleIDs))
+		if len(ruleIDs) != 26 {
+			t.Fatalf("expected exactly 26 implemented rules, got %d", len(ruleIDs))
 		}
 
 		for _, ruleID := range ruleIDs {

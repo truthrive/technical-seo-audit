@@ -1230,9 +1230,9 @@ func TestAdapter_Sitemap_ExistingRuleRegression(t *testing.T) {
 		t.Fatalf("build failed: %v", err)
 	}
 
-	// 1. Verify NormalizationVersion is v1.10.0
-	if res.EvidenceSnapshot.NormalizationVersion != "v1.10.0" {
-		t.Errorf("expected NormalizationVersion v1.10.0, got %s", res.EvidenceSnapshot.NormalizationVersion)
+	// 1. Verify NormalizationVersion is v1.11.0
+	if res.EvidenceSnapshot.NormalizationVersion != "v1.11.0" {
+		t.Errorf("expected NormalizationVersion v1.11.0, got %s", res.EvidenceSnapshot.NormalizationVersion)
 	}
 
 	// 2. Run rule engine against the snapshot
@@ -1241,13 +1241,13 @@ func TestAdapter_Sitemap_ExistingRuleRegression(t *testing.T) {
 		t.Fatalf("engine.New failed: %v", err)
 	}
 
-	// Verify exactly 20 evaluators implemented
+	// Verify exactly 26 evaluators implemented
 	implIDs := eng.ImplementedRuleIDs()
-	if len(implIDs) != 20 {
-		t.Errorf("expected exactly 20 implemented rules, got %d: %v", len(implIDs), implIDs)
+	if len(implIDs) != 26 {
+		t.Errorf("expected exactly 26 implemented rules, got %d: %v", len(implIDs), implIDs)
 	}
 
-	// Execute all 19 evaluators
+	// Execute all 26 evaluators
 	for _, ruleID := range implIDs {
 		results, err := eng.EvaluateRule(context.Background(), res.EvidenceSnapshot, ruleID)
 		if err != nil {
@@ -1691,9 +1691,9 @@ func TestAdapter_Sitemap_V1_8c_MandatoryRegressions(t *testing.T) {
 			t.Fatalf("build 2 failed: %v", err2)
 		}
 
-		// NormalizationVersion is v1.10.0
-		if res1.EvidenceSnapshot.NormalizationVersion != "v1.10.0" {
-			t.Errorf("expected NormalizationVersion v1.10.0, got %s", res1.EvidenceSnapshot.NormalizationVersion)
+		// NormalizationVersion is v1.11.0
+		if res1.EvidenceSnapshot.NormalizationVersion != "v1.11.0" {
+			t.Errorf("expected NormalizationVersion v1.11.0, got %s", res1.EvidenceSnapshot.NormalizationVersion)
 		}
 
 		// Observation counts and ordering match

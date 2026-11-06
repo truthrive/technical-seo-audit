@@ -789,8 +789,8 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 			t.Fatalf("build failed: %v", err)
 		}
 
-		if res.EvidenceSnapshot.NormalizationVersion != "v1.10.0" {
-			t.Errorf("NormalizationVersion = %q, want v1.10.0", res.EvidenceSnapshot.NormalizationVersion)
+		if res.EvidenceSnapshot.NormalizationVersion != "v1.11.0" {
+			t.Errorf("NormalizationVersion = %q, want v1.11.0", res.EvidenceSnapshot.NormalizationVersion)
 		}
 
 		statusBySubj := make(map[string]string)
@@ -1180,8 +1180,8 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("engine.New failed: %v", err)
 		}
-		if gotImpl := len(eng.ImplementedRuleIDs()); gotImpl != 20 {
-			t.Fatalf("expected executable rule count to be 20 in V1.9d, got %d", gotImpl)
+		if gotImpl := len(eng.ImplementedRuleIDs()); gotImpl != 26 {
+			t.Fatalf("expected executable rule count to be 26 in MVP Batch 1, got %d", gotImpl)
 		}
 
 		evalStatusMap := func(ruleID string) map[string]audit.RuleResultStatus {
