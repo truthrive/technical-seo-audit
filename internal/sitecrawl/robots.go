@@ -29,6 +29,14 @@ type robotsVerdict struct {
 	State string
 	// Rule is the matched directive, for display only ("Disallow: /admin").
 	Rule string
+
+	RobotsTxtURL      string
+	GooglebotState    string
+	GooglebotRule     string
+	OAISearchBotState string
+	OAISearchBotRule  string
+	GPTBotState       string
+	GPTBotRule        string
 }
 
 // robotsCache fetches each host's robots.txt exactly once per run.
@@ -113,15 +121,34 @@ func (c *robotsCache) load(ctx context.Context, origin string) *robotsEntry {
 func (c *robotsCache) Check(ctx context.Context, rawURL string) robotsVerdict {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {
-		return robotsVerdict{State: RobotsUnknown}
+		return robotsVerdict{
+			State:             RobotsUnknown,
+			GooglebotState:    RobotsUnknown,
+			OAISearchBotState: RobotsUnknown,
+			GPTBotState:       RobotsUnknown,
+		}
 	}
-	e := c.load(ctx, strings.ToLower(u.Scheme)+"://"+strings.ToLower(u.Host))
+	origin := strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+	robotsTxtURL := origin + "/robots.txt"
+	e := c.load(ctx, origin)
 
 	if e.state != "" {
-		return robotsVerdict{State: e.state}
+		return robotsVerdict{
+			State:             e.state,
+			RobotsTxtURL:      robotsTxtURL,
+			GooglebotState:    e.state,
+			OAISearchBotState: e.state,
+			GPTBotState:       e.state,
+		}
 	}
 	if e.data == nil {
-		return robotsVerdict{State: RobotsUnknown}
+		return robotsVerdict{
+			State:             RobotsUnknown,
+			RobotsTxtURL:      robotsTxtURL,
+			GooglebotState:    RobotsUnknown,
+			OAISearchBotState: RobotsUnknown,
+			GPTBotState:       RobotsUnknown,
+		}
 	}
 
 	p := u.EscapedPath()
@@ -132,12 +159,39 @@ func (c *robotsCache) Check(ctx context.Context, rawURL string) robotsVerdict {
 		p += "?" + u.RawQuery
 	}
 
-	for _, token := range c.tokens {
-		if !e.data.TestAgent(p, token) {
-			return robotsVerdict{State: RobotsBlocked, Rule: matchedDisallow(e.lines, token, p)}
+	defaultState, defaultRule := evaluateAgentVerdict(e, c.tokens, p)
+	googlebotState, googlebotRule := evaluateAgentVerdict(e, []string{"googlebot"}, p)
+	oaiState, oaiRule := evaluateAgentVerdict(e, []string{"oai-searchbot"}, p)
+	gptState, gptRule := evaluateAgentVerdict(e, []string{"gptbot"}, p)
+
+	return robotsVerdict{
+		State:             defaultState,
+		Rule:              defaultRule,
+		RobotsTxtURL:      robotsTxtURL,
+		GooglebotState:    googlebotState,
+		GooglebotRule:     googlebotRule,
+		OAISearchBotState: oaiState,
+		OAISearchBotRule:  oaiRule,
+		GPTBotState:       gptState,
+		GPTBotRule:        gptRule,
+	}
+}
+
+func evaluateAgentVerdict(e *robotsEntry, tokens []string, path string) (string, string) {
+	for _, token := range tokens {
+		if !e.data.TestAgent(path, token) {
+			rule := matchedDisallow(e.lines, token, path)
+			if rule == "" {
+				rule = matchedRuleDirective(e.lines, token, path)
+			}
+			return RobotsBlocked, rule
 		}
 	}
-	return robotsVerdict{State: RobotsAllowed}
+	var winningRule string
+	if len(tokens) > 0 {
+		winningRule = matchedRuleDirective(e.lines, tokens[0], path)
+	}
+	return RobotsAllowed, winningRule
 }
 
 // Delay returns the capped Crawl-delay for a host, and what the file asked for
@@ -348,6 +402,87 @@ func matchedDisallow(lines []string, token, path string) string {
 		return ""
 	}
 	return "Disallow: " + best
+}
+
+// matchedRuleDirective finds the most specific Allow or Disallow line that
+// matched path for token (or wildcard "*"), with Allow winning equal-length ties.
+func matchedRuleDirective(lines []string, token, path string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	token = strings.ToLower(token)
+
+	var (
+		bestKind     string
+		bestVal      string
+		bestLen      = -1
+		bestSpecific bool
+		inGroup      bool
+		groupStar    bool
+		hadRules     bool
+	)
+
+	for _, line := range lines {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		colon := strings.IndexByte(line, ':')
+		if colon < 0 {
+			continue
+		}
+		field := strings.ToLower(strings.TrimSpace(line[:colon]))
+		value := strings.TrimSpace(line[colon+1:])
+
+		switch field {
+		case "user-agent":
+			agent := strings.ToLower(value)
+			matchAgent := agent == "*" || (token != "" && strings.HasPrefix(token, agent))
+			if hadRules {
+				inGroup = matchAgent
+				groupStar = agent == "*"
+				hadRules = false
+			} else {
+				if matchAgent {
+					if !inGroup {
+						inGroup = true
+						groupStar = agent == "*"
+					} else if agent != "*" {
+						groupStar = false
+					}
+				}
+			}
+		case "allow", "disallow":
+			hadRules = true
+			if !inGroup || value == "" {
+				continue
+			}
+			if !robotsPatternMatches(value, path) {
+				continue
+			}
+			specific := !groupStar
+			kind := "Disallow"
+			if field == "allow" {
+				kind = "Allow"
+			}
+			if (specific && !bestSpecific) ||
+				(specific == bestSpecific && len(value) > bestLen) ||
+				(specific == bestSpecific && len(value) == bestLen && kind == "Allow" && bestKind == "Disallow") {
+				bestKind, bestVal, bestLen, bestSpecific = kind, value, len(value), specific
+			}
+		default:
+			if inGroup {
+				hadRules = true
+			}
+		}
+	}
+	if bestVal == "" {
+		return ""
+	}
+	return bestKind + ": " + bestVal
 }
 
 // robotsPatternMatches implements the robots.txt path pattern rules: prefix

@@ -92,6 +92,11 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 	p.MetaRefresh = d.MetaRefresh
 	p.RelNext = d.RelNext
 	p.RelPrev = d.RelPrev
+	p.PaginationDetected = d.PaginationDetected
+	p.HasNextPage = d.HasNextPage
+	p.NextPageURL = d.NextPageURL
+	p.NextPageElementTag = d.NextPageElementTag
+	p.NextPageHref = d.NextPageHref
 	p.Author = d.Author
 	p.Keywords = d.Keywords
 	p.Generator = d.Generator
@@ -111,6 +116,37 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 		} else {
 			p.OutlinksExternal++
 		}
+	}
+
+	if res.RenderRequested {
+		rc := &RenderComparisonData{
+			RenderRequested: true,
+			RenderStatus:    res.RenderStatus,
+		}
+		if res.RenderStatus == "complete" && res.RawDoc != nil {
+			rawDoc := res.RawDoc
+			rc.TitleRaw = first(rawDoc.Titles)
+			rc.TitleRendered = first(d.Titles)
+			rc.CanonicalRaw = first(rawDoc.Canonicals)
+			rc.CanonicalRendered = first(d.Canonicals)
+			rc.MetaRobotsRaw = rawDoc.MetaRobots
+			rc.MetaRobotsRendered = d.MetaRobots
+			rc.H1Raw = append([]string(nil), rawDoc.H1...)
+			rc.H1Rendered = append([]string(nil), d.H1...)
+			rc.MainTextPresentRaw = rawDoc.WordCount > 0
+			rc.MainTextPresentRend = d.WordCount > 0
+			for _, l := range rawDoc.Links {
+				if u, err := url.Parse(l.Href); err == nil && sameSite(seedHost, u.Hostname(), opts.crawlSubdomains()) {
+					rc.InternalLinksRaw = append(rc.InternalLinksRaw, l.Href)
+				}
+			}
+			for _, l := range d.Links {
+				if u, err := url.Parse(l.Href); err == nil && sameSite(seedHost, u.Hostname(), opts.crawlSubdomains()) {
+					rc.InternalLinksRend = append(rc.InternalLinksRend, l.Href)
+				}
+			}
+		}
+		p.RenderComparison = rc
 	}
 	return p
 }

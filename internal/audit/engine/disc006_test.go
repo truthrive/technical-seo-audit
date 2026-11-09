@@ -1621,8 +1621,8 @@ func TestEngine_DISC006_HermeticSQLiteIntegration(t *testing.T) {
 		}
 
 		implIDs := eng.ImplementedRuleIDs()
-		if len(implIDs) != 38 {
-			t.Fatalf("expected exactly 38 implemented rules, got %d", len(implIDs))
+		if len(implIDs) != 47 {
+			t.Fatalf("expected exactly 47 implemented rules, got %d", len(implIDs))
 		}
 
 		for _, ruleID := range implIDs {

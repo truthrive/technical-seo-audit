@@ -60,6 +60,11 @@ type document struct {
 	RawRobotsMeta        []RawMetaDirective
 	RelNext             string
 	RelPrev             string
+	PaginationDetected  bool
+	HasNextPage         bool
+	NextPageURL         string
+	NextPageElementTag  string
+	NextPageHref        string
 
 	TokenizerErr error
 
@@ -283,7 +288,10 @@ func extractDocument(r io.Reader, base *url.URL) *document {
 						Target:    strings.TrimSpace(attrs["target"]),
 						Placement: placementOf(stack),
 					}
+					d.checkPaginationElement("a", attrs)
 				}
+			case "button", "span", "div":
+				d.checkPaginationElement(name, attrs)
 			case "img":
 				img := Image{
 					Src:    strings.TrimSpace(attrs["src"]),
@@ -614,10 +622,13 @@ func (d *document) readLink(attrs map[string]string) {
 			if d.RelNext == "" {
 				d.RelNext = href
 			}
+			d.PaginationDetected = true
+			d.HasNextPage = true
 		case "prev", "previous":
 			if d.RelPrev == "" {
 				d.RelPrev = href
 			}
+			d.PaginationDetected = true
 		case "alternate":
 			if lang := strings.TrimSpace(attrs["hreflang"]); lang != "" {
 				d.Hreflang = append(d.Hreflang, Hreflang{Lang: lang, URL: href})
@@ -683,6 +694,16 @@ func (d *document) resolve(base *url.URL) {
 	}
 	d.RelNext = absolutize(effective, d.RelNext)
 	d.RelPrev = absolutize(effective, d.RelPrev)
+	if d.NextPageHref != "" {
+		trimmedHref := strings.TrimSpace(d.NextPageHref)
+		lowerHref := strings.ToLower(trimmedHref)
+		if !strings.HasPrefix(lowerHref, "#") && !strings.HasPrefix(lowerHref, "javascript:") {
+			d.NextPageURL = absolutize(effective, trimmedHref)
+		}
+	} else if d.NextPageURL == "" && d.RelNext != "" && d.NextPageElementTag == "" {
+		// Only <link rel="next"> was present without a body next-page element
+		d.NextPageURL = d.RelNext
+	}
 
 	out := d.Links[:0]
 	for _, l := range d.Links {
@@ -766,4 +787,40 @@ func first(list []string) string {
 		return ""
 	}
 	return list[0]
+}
+
+// checkPaginationElement inspects an element in the body (such as <a>, <button>, <span>, <div>)
+// for explicit next-page/prev-page pagination attributes.
+func (d *document) checkPaginationElement(tag string, attrs map[string]string) {
+	relTokens := strings.Fields(strings.ToLower(strings.TrimSpace(attrs["rel"])))
+	hasRelNext := false
+	hasRelPrev := false
+	for _, t := range relTokens {
+		switch t {
+		case "next":
+			hasRelNext = true
+		case "prev", "previous":
+			hasRelPrev = true
+		}
+	}
+	if hasRelPrev {
+		d.PaginationDetected = true
+	}
+	_, hasDataNext := attrs["data-next-page"]
+	ariaLabel := strings.ToLower(strings.TrimSpace(attrs["aria-label"]))
+	hasAriaNext := ariaLabel == "next" || ariaLabel == "next page" || strings.HasPrefix(ariaLabel, "next page")
+
+	if !hasRelNext && !hasDataNext && !hasAriaNext {
+		return
+	}
+
+	d.PaginationDetected = true
+	d.HasNextPage = true
+
+	// Prefer a crawlable <a href> if multiple next-page elements exist, otherwise record first observed
+	rawHref := strings.TrimSpace(attrs["href"])
+	if d.NextPageElementTag == "" || (d.NextPageElementTag != "a" && tag == "a") {
+		d.NextPageElementTag = tag
+		d.NextPageHref = rawHref
+	}
 }

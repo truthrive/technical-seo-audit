@@ -410,6 +410,25 @@ type RawMetaDirective struct {
 	HasContentAttr bool   `json:"has_content_attr"`  // true iff the "content" attribute key existed on the <meta> token
 }
 
+// RenderComparisonData preserves dual raw-HTML and post-JS rendered-DOM signals
+// when a page undergoes JavaScript rendering.
+type RenderComparisonData struct {
+	RenderRequested      bool     `json:"render_requested"`
+	RenderStatus         string   `json:"render_status"` // "complete" or "failed"
+	TitleRaw             string   `json:"title_raw"`
+	TitleRendered        string   `json:"title_rendered"`
+	CanonicalRaw         string   `json:"canonical_raw"`
+	CanonicalRendered    string   `json:"canonical_rendered"`
+	MetaRobotsRaw        string   `json:"meta_robots_raw"`
+	MetaRobotsRendered   string   `json:"meta_robots_rendered"`
+	H1Raw                []string `json:"h1_raw"`
+	H1Rendered           []string `json:"h1_rendered"`
+	MainTextPresentRaw   bool     `json:"main_text_present_raw"`
+	MainTextPresentRend  bool     `json:"main_text_present_rendered"`
+	InternalLinksRaw     []string `json:"internal_links_raw"`
+	InternalLinksRend    []string `json:"internal_links_rendered"`
+}
+
 // Page is everything known about one crawled URL. It is stored as a JSON blob;
 // the columns SQL needs to filter or sort on are promoted alongside it (see
 // schemaStmts) and derived from this struct by pageRow.
@@ -487,12 +506,26 @@ type Page struct {
 	InlinksUnique    int `json:"inlinksUnique"`
 
 	// verdicts
-	Indexable    bool     `json:"indexable"`
-	Indexability string   `json:"indexability,omitempty"`
-	RobotsState  string   `json:"robotsState"`
-	Rendered     bool     `json:"rendered"`
-	Issues       []string `json:"issues"` // issue codes, for the detail pane
-	CrawledAt    string   `json:"crawledAt"`
+	Indexable               bool                  `json:"indexable"`
+	Indexability            string                `json:"indexability,omitempty"`
+	RobotsState             string                `json:"robotsState"`
+	RobotsTxtURL            string                `json:"robots_txt_url,omitempty"`
+	RobotsMatchedRule       string                `json:"robots_matched_rule,omitempty"`
+	RobotsGooglebotState    string                `json:"robots_googlebot_state,omitempty"`
+	RobotsGooglebotRule     string                `json:"robots_googlebot_rule,omitempty"`
+	RobotsOAISearchBotState string                `json:"robots_oai_searchbot_state,omitempty"`
+	RobotsOAISearchBotRule  string                `json:"robots_oai_searchbot_rule,omitempty"`
+	RobotsGPTBotState       string                `json:"robots_gptbot_state,omitempty"`
+	RobotsGPTBotRule        string                `json:"robots_gptbot_rule,omitempty"`
+	PaginationDetected      bool                  `json:"pagination_detected,omitempty"`
+	HasNextPage             bool                  `json:"has_next_page,omitempty"`
+	NextPageURL             string                `json:"next_page_url,omitempty"`
+	NextPageElementTag      string                `json:"next_page_element_tag,omitempty"`
+	NextPageHref            string                `json:"next_page_href,omitempty"`
+	Rendered                bool                  `json:"rendered"`
+	RenderComparison        *RenderComparisonData `json:"render_comparison,omitempty"`
+	Issues                  []string              `json:"issues"` // issue codes, for the detail pane
+	CrawledAt               string                `json:"crawledAt"`
 }
 
 // Row is the grid's projection of a page: exactly the columns the current tab

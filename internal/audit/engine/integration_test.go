@@ -1342,3 +1342,383 @@ func TestEngine_Batch3_EndToEndIntegration(t *testing.T) {
 		}
 	}
 }
+
+// TestEngine_Batch4_EndToEndIntegration verifies the end-to-end pipeline:
+// SiteCrawl -> Adapter -> Rule Engine -> Findings across all 9 Batch 4 rules
+// (AR-ACC-005, AR-AI-001, AR-AI-003, AR-CANON-011, AR-LINK-001, AR-ACC-006,
+// AR-ACC-007, AR-ACC-008, AR-AI-002) and verifies dual raw/rendered HTML comparison
+// persistence and adapter normalization for AR-RENDER-001..006.
+func TestEngine_Batch4_EndToEndIntegration(t *testing.T) {
+	mux := http.NewServeMux()
+	var srvURL string
+
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintf(w, `User-agent: Googlebot
+Disallow: /google-blocked
+
+User-agent: OAI-SearchBot
+Disallow: /oai-blocked
+
+User-agent: GPTBot
+Disallow: /
+Allow: /public-ai
+
+User-agent: *
+Allow: /
+`)
+	})
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Home</title></head>
+<body>
+<nav>
+  <a href="%s/blog?page=1">Blog Page 1</a>
+  <a href="%s/google-blocked">Google Blocked</a>
+  <a href="%s/oai-blocked">OAI Blocked</a>
+  <a href="%s/public-ai">Public AI</a>
+</nav>
+<main><h1>Welcome Home</h1><p>Main content on home page.</p></main>
+</body></html>`, srvURL, srvURL, srvURL, srvURL)
+	})
+
+	// Paginated page 1: crawlable <a rel="next" href="..."> -> AR-CANON-011 PASS
+	mux.HandleFunc("/blog", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		page := r.URL.Query().Get("page")
+		switch page {
+		case "1":
+			fmt.Fprintf(w, `<!doctype html><html><head><title>Blog Page 1</title></head>
+<body>
+<h1>Blog Page 1</h1>
+<a rel="next" href="%s/blog?page=2">Next Page</a>
+<a href="%s/blog?page=3">Jump to Page 3</a>
+</body></html>`, srvURL, srvURL)
+		case "2":
+			// Paginated page 2: non-anchor <button rel="next"> without crawlable href -> AR-CANON-011 WARNING
+			fmt.Fprintf(w, `<!doctype html><html><head><title>Blog Page 2</title></head>
+<body>
+<h1>Blog Page 2</h1>
+<a rel="prev" href="%s/blog?page=1">Prev Page</a>
+<button rel="next" data-next-page="3">Next Page</button>
+</body></html>`, srvURL)
+		case "3":
+			// Paginated page 3 (last page): only rel="prev", no next page -> AR-CANON-011 NOT_APPLICABLE
+			fmt.Fprintf(w, `<!doctype html><html><head><title>Blog Page 3</title></head>
+<body>
+<h1>Blog Page 3</h1>
+<a rel="prev" href="%s/blog?page=2">Prev Page</a>
+</body></html>`, srvURL)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	mux.HandleFunc("/google-blocked", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Google Blocked</title></head><body><h1>Blocked for Googlebot</h1></body></html>`)
+	})
+
+	mux.HandleFunc("/oai-blocked", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>OAI Blocked</title></head><body><h1>Blocked for OAI-SearchBot</h1></body></html>`)
+	})
+
+	mux.HandleFunc("/public-ai", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Public AI</title></head><body><h1>Allowed for GPTBot</h1></body></html>`)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	srvURL = srv.URL
+
+	// 1. Crawl via SiteCrawl
+	db, err := standalone.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	runner := sitecrawl.NewRunner(db)
+	if err := runner.EnsureSchema(); err != nil {
+		t.Fatalf("failed to ensure schema: %v", err)
+	}
+
+	opts := sitecrawl.Options{
+		Mode:            sitecrawl.ModeSpider,
+		MaxDepth:        3,
+		MaxURLs:         20,
+		Concurrency:     1,
+		FollowRedirects: true,
+		RespectRobots:   true,
+	}
+
+	started, err := runner.Crawl(context.Background(), []string{srv.URL + "/"}, opts)
+	if err != nil {
+		t.Fatalf("crawl execution failed: %v", err)
+	}
+
+	// Simulate a page with dual raw/rendered HTML comparison persisted via sitecrawl.RenderComparisonData
+	renderedCompJSON := `{
+		"render_requested": true,
+		"render_status": "complete",
+		"title_raw": "SSR Title",
+		"title_rendered": "SSR Title",
+		"canonical_raw": "` + srv.URL + `/public-ai",
+		"canonical_rendered": "` + srv.URL + `/public-ai-changed",
+		"meta_robots_raw": "index,follow",
+		"meta_robots_rendered": "noindex,follow",
+		"h1_raw": ["Initial Heading"],
+		"h1_rendered": ["Initial Heading"],
+		"main_text_present_raw": false,
+		"main_text_present_rendered": true,
+		"internal_links_raw": ["` + srv.URL + `/"],
+		"internal_links_rendered": ["` + srv.URL + `/", "` + srv.URL + `/blog?page=1"]
+	}`
+	_, err = db.Exec(`UPDATE sitecrawl_pages
+		SET rendered = 1,
+		    data = json_set(data, '$.rendered', json('true'), '$.render_comparison', json(?))
+		WHERE run_id = ? AND url = ?`,
+		renderedCompJSON, started.ID, srv.URL+"/public-ai")
+	if err != nil {
+		t.Fatalf("failed to update /public-ai with RenderComparisonData: %v", err)
+	}
+
+	// 2. Adapt to Frozen EvidenceSnapshot
+	auditRunID := audit.AuditRunID("audit:run:batch4_integration")
+	snapID := audit.SnapshotID("snap:run:batch4_integration")
+	buildRes, err := adapter.Build(context.Background(), db, adapter.BuildRequest{
+		CrawlRunID: started.ID,
+		AuditRunID: auditRunID,
+		SnapshotID: snapID,
+	})
+	if err != nil {
+		t.Fatalf("adapter.Build failed: %v", err)
+	}
+	snap := buildRes.EvidenceSnapshot
+
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	// Verify 47/47 rules registered
+	if got := len(eng.ImplementedRuleIDs()); got != 47 {
+		t.Fatalf("expected 47 implemented rules, got %d", got)
+	}
+
+	mapByURL := func(res []audit.RuleResult) map[string]audit.RuleResult {
+		m := make(map[string]audit.RuleResult)
+		for _, r := range res {
+			for _, ref := range r.EvidenceRefs {
+				if ref.Field == "url" {
+					m[ref.ObservedValue] = r
+					break
+				}
+			}
+		}
+		return m
+	}
+
+	// 3. Test Priority A: Robots & AI Crawler Policy Rules (AR-ACC-005, AR-AI-001, AR-AI-003)
+	// Without policy:
+	// - AR-ACC-005: PASS when allowed, WARNING when disallowed (/google-blocked)
+	// - AR-AI-001: PASS when allowed, WARNING when disallowed (/oai-blocked)
+	// - AR-AI-003: MANUAL_REVIEW when policy is unspecified
+	resAcc005NoPol, err := eng.EvaluateRule(context.Background(), snap, "AR-ACC-005")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-ACC-005 (no policy) failed: %v", err)
+	}
+	mAcc005NoPol := mapByURL(resAcc005NoPol)
+	if r, ok := mAcc005NoPol[srv.URL+"/"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("AR-ACC-005 without policy on Home expected PASS, got %v", r)
+	}
+	if r, ok := mAcc005NoPol[srv.URL+"/google-blocked"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("AR-ACC-005 without policy on /google-blocked expected WARNING, got %v", r)
+	}
+
+	resAI001NoPol, err := eng.EvaluateRule(context.Background(), snap, "AR-AI-001")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-AI-001 (no policy) failed: %v", err)
+	}
+	mAI001NoPol := mapByURL(resAI001NoPol)
+	if r, ok := mAI001NoPol[srv.URL+"/"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("AR-AI-001 without policy on Home expected PASS, got %v", r)
+	}
+	if r, ok := mAI001NoPol[srv.URL+"/oai-blocked"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("AR-AI-001 without policy on /oai-blocked expected WARNING, got %v", r)
+	}
+
+	resAI003NoPol, err := eng.EvaluateRule(context.Background(), snap, "AR-AI-003")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-AI-003 (no policy) failed: %v", err)
+	}
+	for _, r := range resAI003NoPol {
+		if r.Status != audit.StatusManualReview {
+			t.Errorf("AR-AI-003 without policy expected MANUAL_REVIEW, got %s", r.Status)
+		}
+	}
+
+	// With explicit policy:
+	// - Googlebot expected allow -> / PASS, /google-blocked FAIL
+	// - OAI-SearchBot expected allow -> / PASS, /oai-blocked WARNING
+	// - GPTBot expected block -> /google-blocked PASS (disallowed by /), /public-ai WARNING (allowed by /public-ai)
+	policies, err := engine.NewPolicyIndex([]audit.ProjectPolicyAssignment{
+		{
+			PolicyAssignmentID: "pol:googlebot",
+			AuditRunID:         auditRunID,
+			PolicyKey:          audit.PolicyKeyGooglebotAccessPolicy,
+			PolicyValue:        audit.PolicyValueAccessAllow,
+			Scope:              audit.PolicyScopeSite,
+			TargetRef:          string(audit.ScopeSitewide),
+			Source:             audit.PolicyProvenanceUserInput,
+		},
+		{
+			PolicyAssignmentID: "pol:oai",
+			AuditRunID:         auditRunID,
+			PolicyKey:          audit.PolicyKeyOAISearchbotAccessPolicy,
+			PolicyValue:        audit.PolicyValueAccessAllow,
+			Scope:              audit.PolicyScopeSite,
+			TargetRef:          string(audit.ScopeSitewide),
+			Source:             audit.PolicyProvenanceUserInput,
+		},
+		{
+			PolicyAssignmentID: "pol:gptbot",
+			AuditRunID:         auditRunID,
+			PolicyKey:          audit.PolicyKeyGPTBotTrainingPolicy,
+			PolicyValue:        audit.PolicyValueAccessBlock,
+			Scope:              audit.PolicyScopeSite,
+			TargetRef:          string(audit.ScopeSitewide),
+			Source:             audit.PolicyProvenanceUserInput,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicyIndex failed: %v", err)
+	}
+
+	evalCtx := engine.EvaluationContext{
+		Snapshot: snap,
+		Policies: policies,
+	}
+
+	resAcc005, err := eng.EvaluateRuleWithContext(context.Background(), evalCtx, "AR-ACC-005")
+	if err != nil {
+		t.Fatalf("EvaluateRuleWithContext AR-ACC-005 failed: %v", err)
+	}
+	mAcc005 := mapByURL(resAcc005)
+	if r, ok := mAcc005[srv.URL+"/"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected Home to PASS AR-ACC-005, got %v", r)
+	}
+	if r, ok := mAcc005[srv.URL+"/google-blocked"]; !ok || r.Status != audit.StatusFail {
+		t.Errorf("expected /google-blocked to FAIL AR-ACC-005, got %v", r)
+	}
+
+	resAI001, err := eng.EvaluateRuleWithContext(context.Background(), evalCtx, "AR-AI-001")
+	if err != nil {
+		t.Fatalf("EvaluateRuleWithContext AR-AI-001 failed: %v", err)
+	}
+	mAI001 := mapByURL(resAI001)
+	if r, ok := mAI001[srv.URL+"/"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected Home to PASS AR-AI-001, got %v", r)
+	}
+	if r, ok := mAI001[srv.URL+"/oai-blocked"]; !ok || r.Status != audit.StatusFail {
+		t.Errorf("expected /oai-blocked to FAIL AR-AI-001 under allow policy, got %v", r)
+	}
+
+	resAI003, err := eng.EvaluateRuleWithContext(context.Background(), evalCtx, "AR-AI-003")
+	if err != nil {
+		t.Fatalf("EvaluateRuleWithContext AR-AI-003 failed: %v", err)
+	}
+	mAI003 := mapByURL(resAI003)
+	if r, ok := mAI003[srv.URL+"/google-blocked"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected /google-blocked (disallowed for GPTBot) to PASS AR-AI-003, got %v", r)
+	}
+	if r, ok := mAI003[srv.URL+"/public-ai"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("expected /public-ai (allowed for GPTBot when policy=block) to WARNING AR-AI-003, got %v", r)
+	}
+
+	// 4. Test Priority B: AR-CANON-011 & AR-LINK-001
+	resCanon011, err := eng.EvaluateRule(context.Background(), snap, "AR-CANON-011")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-CANON-011 failed: %v", err)
+	}
+	mCanon011 := mapByURL(resCanon011)
+	if r, ok := mCanon011[srv.URL+"/"]; !ok || r.Status != audit.StatusNotApplicable {
+		t.Errorf("expected unpaginated Home to be NOT_APPLICABLE under AR-CANON-011, got %v", r)
+	}
+	if r, ok := mCanon011[srv.URL+"/blog?page=1"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected /blog?page=1 to PASS AR-CANON-011, got %v", r)
+	}
+	if r, ok := mCanon011[srv.URL+"/blog?page=2"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("expected /blog?page=2 (<button rel=next>) to WARNING AR-CANON-011, got %v", r)
+	}
+	if r, ok := mCanon011[srv.URL+"/blog?page=3"]; !ok || r.Status != audit.StatusNotApplicable {
+		t.Errorf("expected /blog?page=3 (last page, only rel=prev) to be NOT_APPLICABLE under AR-CANON-011, got %v", r)
+	}
+
+	resLink001, err := eng.EvaluateRule(context.Background(), snap, "AR-LINK-001")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-LINK-001 failed: %v", err)
+	}
+	passedNavCount := 0
+	for _, r := range resLink001 {
+		if r.Status == audit.StatusPass {
+			passedNavCount++
+		}
+	}
+	if passedNavCount < 4 {
+		t.Errorf("expected at least 4 internal <nav> links on Home to PASS AR-LINK-001, got %d", passedNavCount)
+	}
+
+	// 5. Test End-to-End Dual Raw/Rendered HTML Comparison for AR-RENDER-001..006
+	// On /public-ai:
+	// - AR-RENDER-001 (title equal): PASS
+	// - AR-RENDER-002 (canonical changed): WARNING
+	// - AR-RENDER-003 (meta robots changed to noindex): WARNING
+	// - AR-RENDER-004 (h1 equal): PASS
+	// - AR-RENDER-005 (main text absent in raw, present in rendered): WARNING
+	// - AR-RENDER-006 (internal links added in rendered): WARNING
+	renderExpectations := map[string]audit.RuleResultStatus{
+		"AR-RENDER-001": audit.StatusPass,
+		"AR-RENDER-002": audit.StatusWarning,
+		"AR-RENDER-003": audit.StatusWarning,
+		"AR-RENDER-004": audit.StatusPass,
+		"AR-RENDER-005": audit.StatusWarning,
+		"AR-RENDER-006": audit.StatusWarning,
+	}
+	for ruleID, wantStatus := range renderExpectations {
+		resR, err := eng.EvaluateRule(context.Background(), snap, ruleID)
+		if err != nil {
+			t.Fatalf("EvaluateRule %s failed: %v", ruleID, err)
+		}
+		mR := mapByURL(resR)
+		if r, ok := mR[srv.URL+"/public-ai"]; !ok || r.Status != wantStatus {
+			t.Errorf("expected /public-ai under %s to be %s, got %v", ruleID, wantStatus, r)
+		}
+	}
+
+	// 6. Verify all 47 registered rules evaluate without error on the Batch 4 snapshot
+	emptyAllowed := map[string]bool{
+		"AR-ACC-007":    true, // requires SubjectResource
+		"AR-CANON-001":  true, // requires SubjectSiteConfiguration
+		"AR-INDEX-004":  true, // requires SubjectProbe
+		"AR-DISC-001":   true, // requires SubjectSitemap
+		"AR-DISC-002":   true, // requires SubjectSitemap
+		"AR-DISC-003":   true, // requires SubjectSitemap
+		"AR-DISC-004":   true, // requires SubjectSitemapEntry
+		"AR-DISC-005":   true, // requires SubjectSitemapEntry
+		"AR-DISC-006":   true, // requires SubjectSitemapEntry
+		"AR-ENTITY-001": true, // requires SubjectSchemaEntity
+	}
+	for _, ruleID := range eng.ImplementedRuleIDs() {
+		results, err := eng.EvaluateRuleWithContext(context.Background(), evalCtx, ruleID)
+		if err != nil {
+			t.Fatalf("EvaluateRuleWithContext %s failed: %v", ruleID, err)
+		}
+		if len(results) == 0 && !emptyAllowed[ruleID] {
+			t.Errorf("expected non-empty results for %s on Batch 4 crawl", ruleID)
+		}
+	}
+}

@@ -746,6 +746,138 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			ObservedAt:         obsTime,
 		})
 
+		if strings.TrimSpace(pr.page.RobotsTxtURL) != "" {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "robots_txt_url",
+				Value:              strings.TrimSpace(pr.page.RobotsTxtURL),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+
+		if strings.TrimSpace(pr.page.RobotsMatchedRule) != "" {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "matched_robots_rule",
+				Value:              strings.TrimSpace(pr.page.RobotsMatchedRule),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+
+		// AR-ACC-005: Googlebot robots evaluation
+		googlebotAllowedVal := "unknown"
+		if pr.page.RobotsGooglebotState == sitecrawl.RobotsAllowed {
+			googlebotAllowedVal = "true"
+		} else if pr.page.RobotsGooglebotState == sitecrawl.RobotsBlocked {
+			googlebotAllowedVal = "false"
+		}
+		normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "robots_allowed_googlebot",
+			Value:              googlebotAllowedVal,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{pageSrcRef},
+			ObservedAt:         obsTime,
+		})
+		if strings.TrimSpace(pr.page.RobotsGooglebotRule) != "" {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "matched_robots_rule_googlebot",
+				Value:              strings.TrimSpace(pr.page.RobotsGooglebotRule),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+
+		// AR-AI-001: OAI-SearchBot robots evaluation
+		oaiAllowedVal := "unknown"
+		if pr.page.RobotsOAISearchBotState == sitecrawl.RobotsAllowed {
+			oaiAllowedVal = "true"
+		} else if pr.page.RobotsOAISearchBotState == sitecrawl.RobotsBlocked {
+			oaiAllowedVal = "false"
+		}
+		normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "robots_allowed_oai_searchbot",
+			Value:              oaiAllowedVal,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{pageSrcRef},
+			ObservedAt:         obsTime,
+		})
+		if strings.TrimSpace(pr.page.RobotsOAISearchBotRule) != "" {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "matched_robots_rule_oai_searchbot",
+				Value:              strings.TrimSpace(pr.page.RobotsOAISearchBotRule),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+
+		// AR-AI-003: GPTBot robots evaluation
+		gptAllowedVal := "unknown"
+		if pr.page.RobotsGPTBotState == sitecrawl.RobotsAllowed {
+			gptAllowedVal = "true"
+		} else if pr.page.RobotsGPTBotState == sitecrawl.RobotsBlocked {
+			gptAllowedVal = "false"
+		}
+		normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+			ObservationID:      nextObsID(),
+			AuditRunID:         req.AuditRunID,
+			SnapshotID:         req.SnapshotID,
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         string(urlIDStr),
+			Field:              "robots_allowed_gptbot",
+			Value:              gptAllowedVal,
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{pageSrcRef},
+			ObservedAt:         obsTime,
+		})
+		if strings.TrimSpace(pr.page.RobotsGPTBotRule) != "" {
+			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "matched_robots_rule_gptbot",
+				Value:              strings.TrimSpace(pr.page.RobotsGPTBotRule),
+				DerivationType:     audit.DerivationDirect,
+				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+
 		if fetchAttempted || pr.status > 0 {
 			normalizedObservations = append(normalizedObservations,
 				audit.NormalizedObservation{
@@ -1105,7 +1237,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				}
 			}
 
-			if isRendered {
+			if isRendered && pr.page.RenderComparison == nil {
 				evidenceGaps = append(evidenceGaps, EvidenceGap{
 					GapCode:         GapRenderedRawSourceUnavailable,
 					SubjectRef:      string(urlIDStr),
@@ -1127,7 +1259,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					ObservedAt:         obsTime,
 				})
 
-				// Rendered page: DO NOT emit raw-style title, meta description, H1, meta robots, or canonicals.
+				// Rendered page without RenderComparison: DO NOT emit raw-style title, meta description, H1, meta robots, or canonicals.
 				// Preserved: X-Robots-Tag (HTTP response header) and rendered = true fact.
 				htmlObs := audit.HtmlObservation{
 					HTMLObservationID:   audit.HtmlObservationID(fmt.Sprintf("html:%s:%d", req.AuditRunID, urlID)),
@@ -1141,6 +1273,217 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 					XRobotsRaw:          xRobotsRaw,
 					CanonicalRawValues:  nil,
 					MainTextPresent:     nil,
+					MainTextFingerprint: "",
+					ContentFingerprint:  "",
+					ObservedAt:          obsTime,
+				}
+				htmlObservations = append(htmlObservations, htmlObs)
+			} else if isRendered && pr.page.RenderComparison != nil {
+				rc := pr.page.RenderComparison
+				normalizedObservations = append(normalizedObservations,
+					audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "render_requested",
+						Value:              strconv.FormatBool(rc.RenderRequested),
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					},
+					audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "rendered",
+						Value:              "true",
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					},
+				)
+				if rc.RenderStatus != "" {
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "render_status",
+						Value:              rc.RenderStatus,
+						DerivationType:     audit.DerivationDirect,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+				}
+				if rc.RenderStatus == "complete" {
+					h1RawJoined := strings.Join(rc.H1Raw, "\n")
+					h1RendJoined := strings.Join(rc.H1Rendered, "\n")
+					linksRawJoined := strings.Join(rc.InternalLinksRaw, "\n")
+					linksRendJoined := strings.Join(rc.InternalLinksRend, "\n")
+					normalizedObservations = append(normalizedObservations,
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "title_raw",
+							Value:              rc.TitleRaw,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "title_rendered",
+							Value:              rc.TitleRendered,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "canonical_raw",
+							Value:              rc.CanonicalRaw,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "canonical_rendered",
+							Value:              rc.CanonicalRendered,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "meta_robots_raw",
+							Value:              rc.MetaRobotsRaw,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "meta_robots_rendered",
+							Value:              rc.MetaRobotsRendered,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "h1_raw",
+							Value:              h1RawJoined,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "h1_rendered",
+							Value:              h1RendJoined,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "main_text_present_raw",
+							Value:              strconv.FormatBool(rc.MainTextPresentRaw),
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "main_text_present_rendered",
+							Value:              strconv.FormatBool(rc.MainTextPresentRend),
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "internal_links_raw",
+							Value:              linksRawJoined,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "internal_links_rendered",
+							Value:              linksRendJoined,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+					)
+				}
+				htmlObs := audit.HtmlObservation{
+					HTMLObservationID:   audit.HtmlObservationID(fmt.Sprintf("html:%s:%d", req.AuditRunID, urlID)),
+					AuditRunID:          req.AuditRunID,
+					URLID:               urlIDStr,
+					FetchID:             fetchID,
+					Title:               rc.TitleRaw,
+					MetaDescription:     "",
+					H1Values:            rc.H1Raw,
+					MetaRobotsRaw:       nil,
+					XRobotsRaw:          xRobotsRaw,
+					CanonicalRawValues:  nil,
+					MainTextPresent:     &rc.MainTextPresentRaw,
 					MainTextFingerprint: "",
 					ContentFingerprint:  "",
 					ObservedAt:          obsTime,
@@ -1614,6 +1957,122 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 						}
 					}
 				}
+
+				if pr.page.RenderComparison != nil && pr.page.RenderComparison.RenderRequested {
+					rc := pr.page.RenderComparison
+					normalizedObservations = append(normalizedObservations,
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "render_requested",
+							Value:              "true",
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "rendered",
+							Value:              "false",
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+					)
+					if rc.RenderStatus != "" {
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "render_status",
+							Value:              rc.RenderStatus,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+					}
+				}
+
+				// AR-CANON-011: Pagination next-page observations
+				if pr.page.PaginationDetected || htmlExtractionStatus == "complete" {
+					normalizedObservations = append(normalizedObservations,
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "pagination_detected",
+							Value:              strconv.FormatBool(pr.page.PaginationDetected),
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+						audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "has_next_page",
+							Value:              strconv.FormatBool(pr.page.HasNextPage),
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						},
+					)
+					if pr.page.NextPageURL != "" {
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "next_page_url",
+							Value:              pr.page.NextPageURL,
+							DerivationType:     audit.DerivationNormalized,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+					}
+					if pr.page.NextPageElementTag != "" {
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "next_page_element_tag",
+							Value:              pr.page.NextPageElementTag,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+					}
+					if pr.page.NextPageHref != "" {
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "next_page_href",
+							Value:              pr.page.NextPageHref,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+					}
+				}
 			}
 		}
 
@@ -1771,6 +2230,53 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				ObservedAt:         al.obs.ObservedAt,
 			},
 		)
+
+		// 10e. AR-LINK-001 navigation candidate & element tag observations
+		if srcValid {
+			isNavCandidate := al.isInternal && (al.obs.LinkLocation == "NAV" || al.obs.LinkLocation == "HEADER")
+			normalizedObservations = append(normalizedObservations,
+				audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectLink,
+					SubjectRef:         string(al.obs.LinkID),
+					Field:              "navigation_candidate",
+					Value:              strconv.FormatBool(isNavCandidate),
+					DerivationType:     audit.DerivationNormalized,
+					SourceEvidenceRefs: []string{linkSrcRef},
+					ObservedAt:         al.obs.ObservedAt,
+				},
+				audit.NormalizedObservation{
+					ObservationID:      nextObsID(),
+					AuditRunID:         req.AuditRunID,
+					SnapshotID:         req.SnapshotID,
+					SubjectType:        audit.SubjectLink,
+					SubjectRef:         string(al.obs.LinkID),
+					Field:              "element_tag",
+					Value:              "a",
+					DerivationType:     audit.DerivationDirect,
+					SourceEvidenceRefs: []string{linkSrcRef},
+					ObservedAt:         al.obs.ObservedAt,
+				},
+			)
+			if al.obs.TargetURLResolved != "" {
+				normalizedObservations = append(normalizedObservations,
+					audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectLink,
+						SubjectRef:         string(al.obs.LinkID),
+						Field:              "href",
+						Value:              al.obs.TargetURLResolved,
+						DerivationType:     audit.DerivationNormalized,
+						SourceEvidenceRefs: []string{linkSrcRef},
+						ObservedAt:         al.obs.ObservedAt,
+					},
+				)
+			}
+		}
 	}
 
 	// 10b. Site-level normalized observations for crawl completeness and stop reason

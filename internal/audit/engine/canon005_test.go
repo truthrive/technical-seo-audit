@@ -945,8 +945,8 @@ func TestAR_CANON_005_HermeticEndToEndPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
 	}
-	if got := len(eng.ImplementedRuleIDs()); got != 38 {
-		t.Fatalf("ImplementedRuleIDs count = %d, want 38", got)
+	if got := len(eng.ImplementedRuleIDs()); got != 47 {
+		t.Fatalf("ImplementedRuleIDs count = %d, want 47", got)
 	}
 
 	subjToURL := make(map[string]string)

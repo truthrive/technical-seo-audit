@@ -468,6 +468,14 @@ func (c *coordinator) absorb(r crawlResult) {
 	if r.robots.State == "" {
 		p.RobotsState = RobotsUnknown
 	}
+	p.RobotsTxtURL = r.robots.RobotsTxtURL
+	p.RobotsMatchedRule = r.robots.Rule
+	p.RobotsGooglebotState = r.robots.GooglebotState
+	p.RobotsGooglebotRule = r.robots.GooglebotRule
+	p.RobotsOAISearchBotState = r.robots.OAISearchBotState
+	p.RobotsOAISearchBotRule = r.robots.OAISearchBotRule
+	p.RobotsGPTBotState = r.robots.GPTBotState
+	p.RobotsGPTBotRule = r.robots.GPTBotRule
 
 	if r.item.Source == SourceSeed {
 		c.seedRobotsBlocked = r.robots.State == RobotsBlocked

@@ -56,6 +56,13 @@ type fetched struct {
 	Error       string
 	// Doc is nil unless the terminal response was HTML that we read.
 	Doc *document
+	// RawDoc preserves the raw server-rendered HTML document when maybeRender
+	// replaces Doc with the post-JS rendered DOM.
+	RawDoc *document
+	// RenderRequested records that the page was admitted by the renderGate.
+	RenderRequested bool
+	// RenderStatus records "complete" or "failed" when RenderRequested is true.
+	RenderStatus string
 	// ExtractionStatus records verifiable HTML extraction completeness
 	// ("complete", "truncated_size_limit", or "read_error").
 	ExtractionStatus string

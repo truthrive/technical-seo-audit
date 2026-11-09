@@ -392,14 +392,21 @@ func TestEngine_PolicyIntegration(t *testing.T) {
 		}
 	})
 
-	// 4e. Implemented rule set is 31 executable rules for Batch 2
-	t.Run("implemented rules are 31 executable rules", func(t *testing.T) {
+	// 4e. Implemented rule set is 47 executable rules
+	t.Run("implemented rules are 47 executable rules", func(t *testing.T) {
 		ids := eng.ImplementedRuleIDs()
 		expected := []string{
 			"AR-ACC-001",
 			"AR-ACC-002",
 			"AR-ACC-003",
 			"AR-ACC-004",
+			"AR-ACC-005",
+			"AR-ACC-006",
+			"AR-ACC-007",
+			"AR-ACC-008",
+			"AR-AI-001",
+			"AR-AI-002",
+			"AR-AI-003",
 			"AR-CANON-001",
 			"AR-CANON-002",
 			"AR-CANON-003",
@@ -410,6 +417,7 @@ func TestEngine_PolicyIntegration(t *testing.T) {
 			"AR-CANON-008",
 			"AR-CANON-009",
 			"AR-CANON-010",
+			"AR-CANON-011",
 			"AR-DISC-001",
 			"AR-DISC-002",
 			"AR-DISC-003",
@@ -423,6 +431,7 @@ func TestEngine_PolicyIntegration(t *testing.T) {
 			"AR-INDEX-004",
 			"AR-INDEX-005",
 			"AR-INDEX-006",
+			"AR-LINK-001",
 			"AR-LINK-002",
 			"AR-LINK-003",
 			"AR-LINK-004",

@@ -1016,6 +1016,13 @@ func TestAdapter_Link_Regression_ExecutableRules(t *testing.T) {
 		"AR-ACC-002",
 		"AR-ACC-003",
 		"AR-ACC-004",
+		"AR-ACC-005",
+		"AR-ACC-006",
+		"AR-ACC-007",
+		"AR-ACC-008",
+		"AR-AI-001",
+		"AR-AI-002",
+		"AR-AI-003",
 		"AR-CANON-001",
 		"AR-CANON-002",
 		"AR-CANON-003",
@@ -1026,6 +1033,7 @@ func TestAdapter_Link_Regression_ExecutableRules(t *testing.T) {
 		"AR-CANON-008",
 		"AR-CANON-009",
 		"AR-CANON-010",
+		"AR-CANON-011",
 		"AR-DISC-001",
 		"AR-DISC-002",
 		"AR-DISC-003",
@@ -1039,6 +1047,7 @@ func TestAdapter_Link_Regression_ExecutableRules(t *testing.T) {
 		"AR-INDEX-004",
 		"AR-INDEX-005",
 		"AR-INDEX-006",
+		"AR-LINK-001",
 		"AR-LINK-002",
 		"AR-LINK-003",
 		"AR-LINK-004",
@@ -1052,8 +1061,8 @@ func TestAdapter_Link_Regression_ExecutableRules(t *testing.T) {
 		"AR-RENDER-006",
 	}
 
-	if len(implementedIDs) != 38 {
-		t.Fatalf("expected exactly 38 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
+	if len(implementedIDs) != 47 {
+		t.Fatalf("expected exactly 47 implemented rules, got %d: %v", len(implementedIDs), implementedIDs)
 	}
 	if !reflect.DeepEqual(implementedIDs, expectedIDs) {
 		t.Fatalf("expected implemented IDs %v, got %v", expectedIDs, implementedIDs)

@@ -255,16 +255,21 @@ func maybeRender(ctx context.Context, r renderer, gate *renderGate, res *fetched
 	if !gate.admit(res.FinalURL) {
 		return false
 	}
+	res.RenderRequested = true
 	html, err := r.render(ctx, res.FinalURL)
 	if err != nil || strings.TrimSpace(html) == "" {
+		res.RenderStatus = "failed"
 		gate.release() // a failed render should not eat the cap
 		return false
 	}
 	base, err := url.Parse(res.FinalURL)
 	if err != nil || base.Host == "" {
+		res.RenderStatus = "failed"
 		gate.release()
 		return false
 	}
+	res.RawDoc = res.Doc
 	res.Doc = extractDocument(strings.NewReader(html), base)
+	res.RenderStatus = "complete"
 	return true
 }

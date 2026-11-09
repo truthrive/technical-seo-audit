@@ -183,12 +183,19 @@ func TestEngine_RuleSelection(t *testing.T) {
 		t.Errorf("expected ErrRuleNotFound, got %v", err)
 	}
 
-	// 3b. Known in registry but unimplemented rule
-	unimplementedRules := []string{"AR-ACC-005", "AR-ACC-006", "AR-AI-001", "AR-CANON-011"}
-	for _, ruleID := range unimplementedRules {
+	// 3b. Known in registry but unimplemented rule (using custom registry without evaluator)
+	reg, err := audit.LoadV1Registry()
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+	// All 47 rules are now registered in engine.New().
+	for _, ruleID := range []string{"AR-ACC-005", "AR-ACC-006", "AR-AI-001", "AR-CANON-011"} {
+		if _, exists := reg.Get(ruleID); !exists {
+			t.Errorf("expected rule %s in registry", ruleID)
+		}
 		_, err = eng.EvaluateRule(ctx, snap, ruleID)
-		if !errors.Is(err, engine.ErrRuleNotImplemented) {
-			t.Errorf("rule %s: expected ErrRuleNotImplemented, got %v", ruleID, err)
+		if err != nil {
+			t.Errorf("rule %s: expected execution without error, got %v", ruleID, err)
 		}
 	}
 
@@ -260,6 +267,13 @@ func TestEngine_ImplementedRuleIDs(t *testing.T) {
 		"AR-ACC-002",
 		"AR-ACC-003",
 		"AR-ACC-004",
+		"AR-ACC-005",
+		"AR-ACC-006",
+		"AR-ACC-007",
+		"AR-ACC-008",
+		"AR-AI-001",
+		"AR-AI-002",
+		"AR-AI-003",
 		"AR-CANON-001",
 		"AR-CANON-002",
 		"AR-CANON-003",
@@ -270,6 +284,7 @@ func TestEngine_ImplementedRuleIDs(t *testing.T) {
 		"AR-CANON-008",
 		"AR-CANON-009",
 		"AR-CANON-010",
+		"AR-CANON-011",
 		"AR-DISC-001",
 		"AR-DISC-002",
 		"AR-DISC-003",
@@ -283,6 +298,7 @@ func TestEngine_ImplementedRuleIDs(t *testing.T) {
 		"AR-INDEX-004",
 		"AR-INDEX-005",
 		"AR-INDEX-006",
+		"AR-LINK-001",
 		"AR-LINK-002",
 		"AR-LINK-003",
 		"AR-LINK-004",

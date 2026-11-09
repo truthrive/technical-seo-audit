@@ -1180,8 +1180,8 @@ func TestAdapter_V19c_CanonicalSyntaxAndProvenanceContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("engine.New failed: %v", err)
 		}
-		if gotImpl := len(eng.ImplementedRuleIDs()); gotImpl != 38 {
-			t.Fatalf("expected executable rule count to be 38 in MVP Batch 3, got %d", gotImpl)
+		if gotImpl := len(eng.ImplementedRuleIDs()); gotImpl != 47 {
+			t.Fatalf("expected executable rule count to be 47 in MVP Batch 4, got %d", gotImpl)
 		}
 
 		evalStatusMap := func(ruleID string) map[string]audit.RuleResultStatus {
