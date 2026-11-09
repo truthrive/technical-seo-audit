@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -2004,5 +2005,357 @@ Disallow: /wildcard-blocked
 		if r, ok := mR[srv.URL+"/"]; !ok || r.Status != audit.StatusWarning {
 			t.Errorf("expected real headless-rendered Home under %s to be WARNING, got %v", ruleID, r)
 		}
+	}
+
+	// 5. Verify QA-01 & QA-02: Raw HTML evidence preservation on the SAME rendered page ("/")!
+	// Even though JS mutated canonical to "/rendered-canonical" and meta robots to "noindex, follow",
+	// the raw HTTP response had <link rel="canonical" href="%s/"> and <meta name="robots" content="index, follow">.
+	// Therefore, raw-HTML Indexing & Canonical rules must evaluate from the preserved raw HTTP HTML (PASS),
+	// NOT return UNKNOWN and NOT be contaminated by the JS-mutated DOM!
+	policies, err := engine.NewPolicyIndex([]audit.ProjectPolicyAssignment{
+		{
+			PolicyAssignmentID: "pol:expected_indexable:home",
+			AuditRunID:         auditRunID,
+			PolicyKey:          audit.PolicyKeyExpectedIndexable,
+			PolicyValue:        "true",
+			Scope:              audit.PolicyScopeURL,
+			TargetRef:          "url:audit:run:batch4_qa_headless:1",
+			Source:             audit.PolicyProvenanceUserInput,
+			SuppliedAt:         time.Now().UTC(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicyIndex: %v", err)
+	}
+	evalCtx := engine.EvaluationContext{Snapshot: snap, Policies: policies}
+	for _, rawRuleID := range []string{
+		"AR-INDEX-001",
+		"AR-INDEX-002",
+		"AR-INDEX-003",
+		"AR-INDEX-005",
+		"AR-CANON-003",
+		"AR-CANON-004",
+		"AR-CANON-005",
+		"AR-CANON-006",
+		"AR-CANON-007",
+	} {
+		resRaw, err := eng.EvaluateRuleWithContext(ctx, evalCtx, rawRuleID)
+		if err != nil {
+			t.Fatalf("EvaluateRule %s: %v", rawRuleID, err)
+		}
+		mRaw := mapByURL(resRaw)
+		if r, ok := mRaw[srv.URL+"/"]; !ok || r.Status != audit.StatusPass {
+			t.Errorf("expected rendered Home %s/ to PASS raw-HTML rule %s from preserved pre-render HTML, got %+v", srv.URL, rawRuleID, r)
+		}
+	}
+}
+
+// TestEngine_Batch4_RawVsRenderedDualChannelAndLegacyProtection tests:
+// 1. A rendered page with preserved raw HTML provenance where raw HTML and rendered DOM differ across
+//    title, canonical, meta robots, H1, main text, and internal links:
+//    - Raw observations retain pre-render HTTP values.
+//    - Rendered observations retain post-JS DOM values.
+//    - Raw-HTML rules (AR-INDEX-001..005, AR-CANON-003..007) evaluate from raw HTML without JS contamination.
+//    - Render comparison rules (AR-RENDER-001..006) detect the raw-vs-rendered differences (WARNING).
+// 2. A rendered page with preserved raw HTML that has NO raw canonical (canonical injected only by JS):
+//    - AR-CANON-003 evaluates to WARNING (raw HTML missing canonical), NOT PASS (from JS canonical) and NOT UNKNOWN!
+//    - AR-RENDER-002 evaluates to WARNING (canonical added by JS).
+// 3. A legacy rendered SQLite row (rendered = 1, RenderComparison == nil / no raw extraction provenance):
+//    - Raw-HTML rules (AR-INDEX-001, AR-INDEX-005, AR-CANON-003, AR-CANON-005) remain protected and return UNKNOWN.
+func TestEngine_Batch4_RawVsRenderedDualChannelAndLegacyProtection(t *testing.T) {
+	db, err := standalone.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	runner := sitecrawl.NewRunner(db)
+	if err := runner.EnsureSchema(); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+
+	runID := "crawl-dual-channel-test"
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	_, err = db.Exec(`INSERT INTO sitecrawl_runs (id, seed_url, host, state, stop_reason, options, started_at, finished_at, found, crawled) VALUES (?, ?, 'example.com', ?, '', '{}', ?, ?, 3, 3)`,
+		runID, "https://example.com/", sitecrawl.StateCompleted, nowStr, nowStr)
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	insertPage := func(urlID int, pageURL string, rendered int, p sitecrawl.Page) {
+		_, err := db.Exec(`INSERT INTO sitecrawl_urls (id, run_id, url) VALUES (?, ?, ?)`,
+			urlID, runID, pageURL)
+		if err != nil {
+			t.Fatalf("insert url %d: %v", urlID, err)
+		}
+		b, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("marshal page %d: %v", urlID, err)
+		}
+		_, err = db.Exec(`INSERT INTO sitecrawl_pages (url_id, run_id, url, data, kind, is_internal, depth, discovered_by, status, content_type, size_bytes, response_ms, redirect_to, redirect_hops, error_type, title, meta_desc, h1, lang, canonical, meta_robots, x_robots, rendered, crawled_at, robots_state) VALUES (?, ?, ?, ?, 'html', 1, 0, 'seed', 200, 'text/html; charset=utf-8', 512, 10, '', 0, '', ?, ?, '', '', ?, ?, '', ?, ?, 'allowed')`,
+			urlID, runID, pageURL, string(b), p.Title, p.MetaDesc, p.Canonical, p.MetaRobots, rendered, nowStr)
+		if err != nil {
+			t.Fatalf("insert page %d: %v", urlID, err)
+		}
+	}
+
+	// Page 1: Dual-channel rendered page where raw HTML is indexable + self-canonical,
+	// while rendered DOM was mutated by JS to noindex + different canonical.
+	dualURL := "https://example.com/dual"
+	insertPage(1, dualURL, 1, sitecrawl.Page{
+		URL:                 dualURL,
+		Status:              200,
+		ContentType:         "text/html; charset=utf-8",
+		Kind:                sitecrawl.KindHTML,
+		Rendered:            true,
+		ExtractionStatus:    sitecrawl.ExtractionStatusComplete,
+		Title:               "Rendered Title (JS Mutated)",
+		Canonicals:          []string{"https://example.com/js-canonical"},
+		Canonical:           "https://example.com/js-canonical",
+		CanonicalTotalCount: 1,
+		RawCanonicals:       []string{"https://example.com/js-canonical"},
+		MetaRobots:          "noindex, nofollow",
+		RobotsMetaExtracted: true,
+		RawRobotsMeta: []sitecrawl.RawMetaDirective{
+			{Name: "robots", ContentRaw: "noindex, nofollow", HasContentAttr: true},
+		},
+		H1: []string{"Rendered H1"},
+		RenderComparison: &sitecrawl.RenderComparisonData{
+			RenderRequested:         true,
+			RenderStatus:            "complete",
+			RawExtractionStatus:     sitecrawl.ExtractionStatusComplete,
+			TitleRaw:                "Raw HTTP Title",
+			TitleRendered:           "Rendered Title (JS Mutated)",
+			MetaDescRaw:             "Raw HTTP Description",
+			WordCountRaw:            42,
+			CanonicalRaw:            dualURL,
+			CanonicalRendered:       "https://example.com/js-canonical",
+			CanonicalsRawResolved:   []string{dualURL},
+			RawCanonicalsUntrimmed:  []string{dualURL},
+			CanonicalTotalCountRaw:  1,
+			MetaRobotsRaw:           "index, follow",
+			MetaRobotsRendered:      "noindex, nofollow",
+			RobotsMetaExtractedRaw:  true,
+			RobotsMetaTotalCountRaw: 1,
+			RawRobotsMeta: []sitecrawl.RawMetaDirective{
+				{Name: "robots", ContentRaw: "index, follow", HasContentAttr: true},
+			},
+			DataNosnippetCountRaw: 0,
+			H1Raw:                 []string{"Raw HTTP H1"},
+			H1Rendered:            []string{"Rendered H1"},
+			MainTextPresentRaw:    false,
+			MainTextPresentRend:   true,
+			InternalLinksRaw:      []string{"https://example.com/raw-link"},
+			InternalLinksRend:     []string{"https://example.com/raw-link", "https://example.com/js-link"},
+		},
+	})
+
+	// Page 2: Rendered page with preserved raw HTML where raw HTML had 0 canonicals,
+	// and JavaScript injected a self-canonical in the rendered DOM.
+	jsOnlyCanonURL := "https://example.com/js-only-canon"
+	insertPage(2, jsOnlyCanonURL, 1, sitecrawl.Page{
+		URL:                 jsOnlyCanonURL,
+		Status:              200,
+		ContentType:         "text/html; charset=utf-8",
+		Kind:                sitecrawl.KindHTML,
+		Rendered:            true,
+		ExtractionStatus:    sitecrawl.ExtractionStatusComplete,
+		Title:               "JS Canon Page",
+		Canonicals:          []string{jsOnlyCanonURL},
+		Canonical:           jsOnlyCanonURL,
+		CanonicalTotalCount: 1,
+		RawCanonicals:       []string{jsOnlyCanonURL},
+		RobotsMetaExtracted: true,
+		RenderComparison: &sitecrawl.RenderComparisonData{
+			RenderRequested:        true,
+			RenderStatus:           "complete",
+			RawExtractionStatus:    sitecrawl.ExtractionStatusComplete,
+			TitleRaw:               "JS Canon Page",
+			TitleRendered:          "JS Canon Page",
+			CanonicalRaw:           "",
+			CanonicalRendered:      jsOnlyCanonURL,
+			CanonicalsRawResolved:  nil,
+			RawCanonicalsUntrimmed: nil,
+			CanonicalTotalCountRaw: 0,
+			RobotsMetaExtractedRaw: true,
+			MainTextPresentRaw:     true,
+			MainTextPresentRend:    true,
+		},
+	})
+
+	// Page 3: Legacy rendered SQLite row without RenderComparison (no preserved raw HTML provenance).
+	legacyRenderedURL := "https://example.com/legacy-rendered"
+	insertPage(3, legacyRenderedURL, 1, sitecrawl.Page{
+		URL:                 legacyRenderedURL,
+		Status:              200,
+		ContentType:         "text/html; charset=utf-8",
+		Kind:                sitecrawl.KindHTML,
+		Rendered:            true,
+		Title:               "Legacy Rendered Title",
+		Canonicals:          []string{legacyRenderedURL},
+		Canonical:           legacyRenderedURL,
+		CanonicalTotalCount: 1,
+		RawCanonicals:       []string{legacyRenderedURL},
+		MetaRobots:          "index, follow",
+		RenderComparison:    nil,
+	})
+
+	ctx := context.Background()
+	buildRes, err := adapter.Build(ctx, db, adapter.BuildRequest{
+		CrawlRunID: runID,
+		AuditRunID: "audit:run:dual_channel",
+		SnapshotID: "snap:run:dual_channel",
+	})
+	if err != nil {
+		t.Fatalf("adapter.Build: %v", err)
+	}
+	snap := buildRes.EvidenceSnapshot
+
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+
+	policies, err := engine.NewPolicyIndex([]audit.ProjectPolicyAssignment{
+		{
+			PolicyAssignmentID: "pol:expected_indexable:dual",
+			AuditRunID:         "audit:run:dual_channel",
+			PolicyKey:          audit.PolicyKeyExpectedIndexable,
+			PolicyValue:        "true",
+			Scope:              audit.PolicyScopeURL,
+			TargetRef:          "url:audit:run:dual_channel:1",
+			Source:             audit.PolicyProvenanceUserInput,
+			SuppliedAt:         time.Now().UTC(),
+		},
+		{
+			PolicyAssignmentID: "pol:expected_indexable:legacy",
+			AuditRunID:         "audit:run:dual_channel",
+			PolicyKey:          audit.PolicyKeyExpectedIndexable,
+			PolicyValue:        "true",
+			Scope:              audit.PolicyScopeURL,
+			TargetRef:          "url:audit:run:dual_channel:3",
+			Source:             audit.PolicyProvenanceUserInput,
+			SuppliedAt:         time.Now().UTC(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicyIndex: %v", err)
+	}
+	evalCtx := engine.EvaluationContext{Snapshot: snap, Policies: policies}
+
+	evalURL := func(ruleID, targetURL string) audit.RuleResult {
+		t.Helper()
+		res, err := eng.EvaluateRuleWithContext(ctx, evalCtx, ruleID)
+		if err != nil {
+			t.Fatalf("EvaluateRule(%s): %v", ruleID, err)
+		}
+		for _, r := range res {
+			for _, ref := range r.EvidenceRefs {
+				if ref.Field == "url" && ref.ObservedValue == targetURL {
+					return r
+				}
+			}
+		}
+		t.Fatalf("no result found for rule %s on URL %s", ruleID, targetURL)
+		return audit.RuleResult{}
+	}
+
+	// Verify Page 1 (dualURL):
+	// Raw HTML rules evaluate from raw HTML ("index, follow" and self-canonical) -> PASS!
+	for _, ruleID := range []string{
+		"AR-INDEX-001", "AR-INDEX-002", "AR-INDEX-003", "AR-INDEX-005",
+		"AR-CANON-003", "AR-CANON-004", "AR-CANON-005", "AR-CANON-006", "AR-CANON-007",
+	} {
+		if r := evalURL(ruleID, dualURL); r.Status != audit.StatusPass {
+			t.Errorf("Page 1 (%s) rule %s: expected PASS from preserved raw HTML, got %s (%s)", dualURL, ruleID, r.Status, r.ObservedSummary)
+		}
+	}
+	// Render comparison rules detect JS mutations -> WARNING!
+	for _, ruleID := range []string{
+		"AR-RENDER-001", "AR-RENDER-002", "AR-RENDER-003", "AR-RENDER-004", "AR-RENDER-005", "AR-RENDER-006",
+	} {
+		if r := evalURL(ruleID, dualURL); r.Status != audit.StatusWarning {
+			t.Errorf("Page 1 (%s) rule %s: expected WARNING from JS mutation, got %s (%s)", dualURL, ruleID, r.Status, r.ObservedSummary)
+		}
+	}
+
+	// Verify Page 2 (jsOnlyCanonURL):
+	// Raw HTML had 0 canonicals, JS injected one -> AR-CANON-003 must be WARNING (missing in raw HTML),
+	// AR-CANON-005 must be NOT_APPLICABLE (0 raw canonicals), and AR-RENDER-002 must be WARNING!
+	if r := evalURL("AR-CANON-003", jsOnlyCanonURL); r.Status != audit.StatusWarning {
+		t.Errorf("Page 2 (%s) AR-CANON-003: expected WARNING (missing in raw HTML), got %s (%s)", jsOnlyCanonURL, r.Status, r.ObservedSummary)
+	}
+	if r := evalURL("AR-CANON-005", jsOnlyCanonURL); r.Status != audit.StatusNotApplicable {
+		t.Errorf("Page 2 (%s) AR-CANON-005: expected NOT_APPLICABLE (0 raw canonicals), got %s (%s)", jsOnlyCanonURL, r.Status, r.ObservedSummary)
+	}
+	if r := evalURL("AR-RENDER-002", jsOnlyCanonURL); r.Status != audit.StatusWarning {
+		t.Errorf("Page 2 (%s) AR-RENDER-002: expected WARNING (canonical added by JS), got %s (%s)", jsOnlyCanonURL, r.Status, r.ObservedSummary)
+	}
+
+	// Verify Page 3 (legacyRenderedURL):
+	// Legacy rendered row without preserved raw HTML provenance must remain protected -> UNKNOWN!
+	for _, ruleID := range []string{"AR-INDEX-001", "AR-INDEX-005", "AR-CANON-003", "AR-CANON-005", "AR-RENDER-001", "AR-RENDER-002"} {
+		if r := evalURL(ruleID, legacyRenderedURL); r.Status != audit.StatusUnknown {
+			t.Errorf("Page 3 (%s) legacy rendered row under %s: expected UNKNOWN, got %s (%s)", legacyRenderedURL, ruleID, r.Status, r.ObservedSummary)
+		}
+	}
+}
+
+// TestEngine_ManifestAndRegistryLedgerReconciliation programmatically verifies QA-03:
+// - All 47 frozen atomic rules in rules_v1.json are registered in the engine.
+// - No extra or missing rules exist between rules_v1.json and engine.New().
+// - Exactly 40 rules are E2E operational with standard SiteCrawl + Adapter acquisition,
+//   and 7 rules are explicitly acquisition-gated on active multi-profile/synthetic probing.
+func TestEngine_ManifestAndRegistryLedgerReconciliation(t *testing.T) {
+	reg, err := audit.LoadV1Registry()
+	if err != nil {
+		t.Fatalf("LoadV1Registry: %v", err)
+	}
+	defs := reg.All()
+	if len(defs) != 47 {
+		t.Fatalf("expected 47 frozen rules in rules_v1.json, got %d", len(defs))
+	}
+
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+
+	now := time.Now().UTC()
+	snap := &audit.EvidenceSnapshot{
+		SnapshotID:           "snap:reconcile",
+		AuditRunID:           "audit:reconcile",
+		SnapshotStatus:       audit.SnapshotFrozen,
+		NormalizationVersion: "v1.11.0",
+		CrawlComplete:        true,
+		CreatedAt:            now.Add(-1 * time.Minute),
+		FrozenAt:             &now,
+	}
+
+	acquisitionGated := map[string]bool{
+		"AR-CANON-001": true, // Requires active origin-variant probing (http/https, www/non-www)
+		"AR-INDEX-004": true, // Requires active synthetic missing-URL probing
+		"AR-INDEX-006": true, // Requires active known-404 template fingerprint probing
+		"AR-ACC-006":   true, // Requires active multi-profile Googlebot comparison fetch
+		"AR-ACC-007":   true, // Requires subresource CSS/JS dependency & robots impact acquisition
+		"AR-ACC-008":   true, // Requires active multi-profile search bot comparison fetch
+		"AR-AI-002":    true, // Requires active multi-profile OAI-SearchBot comparison fetch
+	}
+
+	operationalCount := 0
+	gatedCount := 0
+	for _, def := range defs {
+		if _, err := eng.EvaluateRule(context.Background(), snap, def.RuleID); err != nil {
+			t.Errorf("rule %s in rules_v1.json is not registered or failed evaluation: %v", def.RuleID, err)
+		}
+		if acquisitionGated[def.RuleID] {
+			gatedCount++
+		} else {
+			operationalCount++
+		}
+	}
+
+	if operationalCount != 40 || gatedCount != 7 {
+		t.Errorf("expected 40 operational rules and 7 acquisition-gated rules, got %d operational and %d gated", operationalCount, gatedCount)
 	}
 }

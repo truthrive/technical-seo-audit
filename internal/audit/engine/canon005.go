@@ -495,7 +495,7 @@ func evaluateCANON005(
 			}
 			evidenceRefs = append(evidenceRefs, buildRenderedRefs(audit.EvidenceRoleContext)...)
 			evidenceRefs = append(evidenceRefs, buildExtractRefs(audit.EvidenceRoleContext)...)
-		} else if isRendered {
+		} else if isRendered && (!extractUsable || extractStatus != "complete") {
 			evalStatus = audit.StatusUnknown
 			observedSummary = "Page was rendered via headless browser without retained raw server HTML; static canonical syntax cannot be verified."
 			evidenceRefs = append(evidenceRefs, buildRenderedRefs(audit.EvidenceRolePrimary)...)

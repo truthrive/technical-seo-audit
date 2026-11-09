@@ -424,20 +424,32 @@ type NavCandidate struct {
 // RenderComparisonData preserves dual raw-HTML and post-JS rendered-DOM signals
 // when a page undergoes JavaScript rendering.
 type RenderComparisonData struct {
-	RenderRequested      bool     `json:"render_requested"`
-	RenderStatus         string   `json:"render_status"` // "complete" or "failed"
-	TitleRaw             string   `json:"title_raw"`
-	TitleRendered        string   `json:"title_rendered"`
-	CanonicalRaw         string   `json:"canonical_raw"`
-	CanonicalRendered    string   `json:"canonical_rendered"`
-	MetaRobotsRaw        string   `json:"meta_robots_raw"`
-	MetaRobotsRendered   string   `json:"meta_robots_rendered"`
-	H1Raw                []string `json:"h1_raw"`
-	H1Rendered           []string `json:"h1_rendered"`
-	MainTextPresentRaw   bool     `json:"main_text_present_raw"`
-	MainTextPresentRend  bool     `json:"main_text_present_rendered"`
-	InternalLinksRaw     []string `json:"internal_links_raw"`
-	InternalLinksRend    []string `json:"internal_links_rendered"`
+	RenderRequested         bool               `json:"render_requested"`
+	RenderStatus            string             `json:"render_status"` // "complete" or "failed"
+	TitleRaw                string             `json:"title_raw"`
+	TitleRendered           string             `json:"title_rendered"`
+	MetaDescRaw             string             `json:"meta_desc_raw,omitempty"`
+	WordCountRaw            int                `json:"word_count_raw,omitempty"`
+	CanonicalRaw            string             `json:"canonical_raw"`
+	CanonicalRendered       string             `json:"canonical_rendered"`
+	CanonicalsRawResolved   []string           `json:"canonicals_raw_resolved,omitempty"`
+	RawCanonicalsUntrimmed  []string           `json:"raw_canonicals_untrimmed,omitempty"`
+	CanonicalTotalCountRaw  int                `json:"canonical_total_count_raw,omitempty"`
+	BaseHrefRaw             string             `json:"base_href_raw,omitempty"`
+	BaseHrefCountRaw        int                `json:"base_href_count_raw,omitempty"`
+	MetaRobotsRaw           string             `json:"meta_robots_raw"`
+	MetaRobotsRendered      string             `json:"meta_robots_rendered"`
+	RobotsMetaExtractedRaw  bool               `json:"robots_meta_extracted_raw,omitempty"`
+	RobotsMetaTotalCountRaw int                `json:"robots_meta_total_count_raw,omitempty"`
+	RawRobotsMeta           []RawMetaDirective `json:"raw_robots_meta,omitempty"`
+	DataNosnippetCountRaw   int                `json:"data_nosnippet_count_raw,omitempty"`
+	H1Raw                   []string           `json:"h1_raw"`
+	H1Rendered              []string           `json:"h1_rendered"`
+	MainTextPresentRaw      bool               `json:"main_text_present_raw"`
+	MainTextPresentRend     bool               `json:"main_text_present_rendered"`
+	InternalLinksRaw        []string           `json:"internal_links_raw"`
+	InternalLinksRend       []string           `json:"internal_links_rendered"`
+	RawExtractionStatus     string             `json:"raw_extraction_status,omitempty"`
 }
 
 // Page is everything known about one crawled URL. It is stored as a JSON blob;

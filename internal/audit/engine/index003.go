@@ -465,9 +465,11 @@ func evaluateINDEX003(
 
 		channel2Complete := true
 		if isHTML {
+			rawStatusComplete := !hasConflict(htmlStatusObs) && firstVal(htmlStatusObs) == "complete"
+			renderedWithoutRaw := firstVal(renderedObs) == "true" && !rawStatusComplete
 			channel2Complete = statusCode >= 200 && statusCode < 300 &&
-				firstVal(renderedObs) != "true" &&
-				!hasConflict(htmlStatusObs) && firstVal(htmlStatusObs) == "complete" &&
+				!renderedWithoutRaw &&
+				rawStatusComplete &&
 				!hasConflict(metaTruncObs) && firstVal(metaTruncObs) == "false"
 		}
 

@@ -470,8 +470,9 @@ func evaluateINDEX005(
 			renderedObs := idx.GetObservations(audit.SubjectURL, subjectRef, "rendered")
 
 			channelIncomplete := false
+			rawHTMLComplete := len(htmlStatusObs) == 1 && strings.TrimSpace(htmlStatusObs[0].Value) == "complete"
 			for _, o := range renderedObs {
-				if strings.EqualFold(strings.TrimSpace(o.Value), "true") {
+				if strings.EqualFold(strings.TrimSpace(o.Value), "true") && !rawHTMLComplete {
 					channelIncomplete = true
 				}
 			}

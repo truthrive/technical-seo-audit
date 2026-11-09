@@ -1198,6 +1198,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 		metaTruncated := false
 		if isHTML {
 			isRendered := (pr.rendered == 1 || pr.page.Rendered)
+			preservedRawHTML := hasPreservedRawHTML(pr, isRendered)
 			htmlExtractionStatus = classifyHTMLExtractionStatus(pr, isRendered)
 			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
 				ObservationID:      nextObsID(),
@@ -1212,8 +1213,21 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 				ObservedAt:         obsTime,
 			})
 
-			if pr.page.RobotsMetaExtracted {
-				metaTruncated = pr.page.RobotsMetaTotalCount > len(pr.page.RawRobotsMeta)
+			robotsMetaExtracted := pr.page.RobotsMetaExtracted
+			robotsMetaTotalCount := pr.page.RobotsMetaTotalCount
+			rawRobotsMetaCount := len(pr.page.RawRobotsMeta)
+			if isRendered {
+				if preservedRawHTML {
+					robotsMetaExtracted = pr.page.RenderComparison.RobotsMetaExtractedRaw
+					robotsMetaTotalCount = pr.page.RenderComparison.RobotsMetaTotalCountRaw
+					rawRobotsMetaCount = len(pr.page.RenderComparison.RawRobotsMeta)
+				} else {
+					robotsMetaExtracted = false
+				}
+			}
+
+			if robotsMetaExtracted {
+				metaTruncated = robotsMetaTotalCount > rawRobotsMetaCount
 				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
 					ObservationID:      nextObsID(),
 					AuditRunID:         req.AuditRunID,
@@ -1472,23 +1486,359 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 						},
 					)
 				}
+				var rawCanonSlice []string
+				if len(rc.RawCanonicalsUntrimmed) > 0 {
+					rawCanonSlice = append([]string(nil), rc.RawCanonicalsUntrimmed...)
+				} else if rc.CanonicalRaw != "" {
+					rawCanonSlice = []string{rc.CanonicalRaw}
+				}
+				var metaRobotsRawSlice []string
+				if rc.MetaRobotsRaw != "" {
+					metaRobotsRawSlice = []string{rc.MetaRobotsRaw}
+				}
+				var contentFingerprint string
+				if preservedRawHTML && (rc.TitleRaw != "" || rc.MetaDescRaw != "" || len(rc.H1Raw) > 0 || rc.WordCountRaw > 0) {
+					h := sha256.New()
+					h.Write([]byte(fmt.Sprintf("%s|%s|%s|%d", rc.TitleRaw, rc.MetaDescRaw, strings.Join(rc.H1Raw, ","), rc.WordCountRaw)))
+					contentFingerprint = fmt.Sprintf("%x", h.Sum(nil))
+				}
+
 				htmlObs := audit.HtmlObservation{
 					HTMLObservationID:   audit.HtmlObservationID(fmt.Sprintf("html:%s:%d", req.AuditRunID, urlID)),
 					AuditRunID:          req.AuditRunID,
 					URLID:               urlIDStr,
 					FetchID:             fetchID,
 					Title:               rc.TitleRaw,
-					MetaDescription:     "",
+					MetaDescription:     rc.MetaDescRaw,
 					H1Values:            rc.H1Raw,
-					MetaRobotsRaw:       nil,
+					MetaRobotsRaw:       metaRobotsRawSlice,
 					XRobotsRaw:          xRobotsRaw,
-					CanonicalRawValues:  nil,
+					CanonicalRawValues:  rawCanonSlice,
 					MainTextPresent:     &rc.MainTextPresentRaw,
 					MainTextFingerprint: "",
-					ContentFingerprint:  "",
+					ContentFingerprint:  contentFingerprint,
 					ObservedAt:          obsTime,
 				}
 				htmlObservations = append(htmlObservations, htmlObs)
+
+				// When preserved raw HTML provenance exists on a rendered page, also emit the
+				// raw-HTML normalized observations so raw-HTML Indexing/Canonical rules can evaluate
+				// from the pre-render HTTP response HTML without contamination by rendered DOM.
+				if preservedRawHTML {
+					if rc.TitleRaw != "" {
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "title",
+							Value:              rc.TitleRaw,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+					}
+					if rc.MetaDescRaw != "" {
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "meta_description",
+							Value:              rc.MetaDescRaw,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+					}
+					for _, h1 := range rc.H1Raw {
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "h1",
+							Value:              h1,
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+					}
+					if contentFingerprint != "" {
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "content_fingerprint",
+							Value:              contentFingerprint,
+							DerivationType:     audit.DerivationNormalized,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+					}
+
+					canonicals := rc.CanonicalsRawResolved
+					totalCount := rc.CanonicalTotalCountRaw
+					if len(rc.RawCanonicalsUntrimmed) > totalCount {
+						totalCount = len(rc.RawCanonicalsUntrimmed)
+					}
+					if len(canonicals) > totalCount {
+						totalCount = len(canonicals)
+					}
+
+					normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+						ObservationID:      nextObsID(),
+						AuditRunID:         req.AuditRunID,
+						SnapshotID:         req.SnapshotID,
+						SubjectType:        audit.SubjectURL,
+						SubjectRef:         string(urlIDStr),
+						Field:              "canonical_count",
+						Value:              strconv.Itoa(totalCount),
+						DerivationType:     audit.DerivationNormalized,
+						SourceEvidenceRefs: []string{pageSrcRef},
+						ObservedAt:         obsTime,
+					})
+
+					if totalCount > 0 {
+						var targetIDs []audit.URLID
+						for _, c := range canonicals {
+							if tid, ok := idsByURL[c]; ok {
+								targetIDs = append(targetIDs, audit.URLID(fmt.Sprintf("url:%s:%d", req.AuditRunID, tid)))
+							}
+						}
+
+						sampleTruncated := totalCount > len(rc.RawCanonicalsUntrimmed) && len(rc.RawCanonicalsUntrimmed) > 0
+						if totalCount > 5 && len(rc.RawCanonicalsUntrimmed) <= 5 {
+							sampleTruncated = true
+						}
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "canonical_sample_truncated",
+							Value:              strconv.FormatBool(sampleTruncated),
+							DerivationType:     audit.DerivationDirect,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+						if sampleTruncated {
+							evidenceGaps = append(evidenceGaps, EvidenceGap{
+								GapCode:         GapCanonicalSampleCapped,
+								SubjectRef:      string(urlIDStr),
+								Field:           "canonical_raw",
+								Reason:          fmt.Sprintf("Page declared %d canonical tags, exceeding the 5-item sample cap; only the first %d raw/resolved declarations were retained.", totalCount, len(rc.RawCanonicalsUntrimmed)),
+								SourceComponent: "sitecrawl_pages",
+							})
+						}
+
+						// Note: "canonical_raw" was already emitted once above from rc.CanonicalRaw
+						// to preserve single-observation parity with AR-RENDER-002 and AR-CANON-005.
+						for _, c := range canonicals {
+							normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+								ObservationID:      nextObsID(),
+								AuditRunID:         req.AuditRunID,
+								SnapshotID:         req.SnapshotID,
+								SubjectType:        audit.SubjectURL,
+								SubjectRef:         string(urlIDStr),
+								Field:              "canonical_resolved",
+								Value:              c,
+								DerivationType:     audit.DerivationNormalized,
+								SourceEvidenceRefs: []string{pageSrcRef},
+								ObservedAt:         obsTime,
+							})
+						}
+
+						var (
+							allNormalized    = true
+							normTargets      []string
+							seenDistinctNorm = make(map[string]struct{})
+							distinctTargets  []string
+							parseErrors      []string
+						)
+
+						if totalCount == 1 && len(rc.RawCanonicalsUntrimmed) == 1 {
+							syntaxStatus, parseErr, normTarget := classifySingleCanonical(
+								rc.RawCanonicalsUntrimmed[0],
+								rc.BaseHrefRaw,
+								rc.BaseHrefCountRaw,
+								pr.url,
+							)
+							normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+								ObservationID:      nextObsID(),
+								AuditRunID:         req.AuditRunID,
+								SnapshotID:         req.SnapshotID,
+								SubjectType:        audit.SubjectURL,
+								SubjectRef:         string(urlIDStr),
+								Field:              "canonical_syntax_status",
+								Value:              syntaxStatus,
+								DerivationType:     audit.DerivationNormalized,
+								SourceEvidenceRefs: []string{pageSrcRef},
+								ObservedAt:         obsTime,
+							})
+							if parseErr != "" {
+								parseErrors = append(parseErrors, parseErr)
+								normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+									ObservationID:      nextObsID(),
+									AuditRunID:         req.AuditRunID,
+									SnapshotID:         req.SnapshotID,
+									SubjectType:        audit.SubjectURL,
+									SubjectRef:         string(urlIDStr),
+									Field:              "canonical_parse_error",
+									Value:              parseErr,
+									DerivationType:     audit.DerivationNormalized,
+									SourceEvidenceRefs: []string{pageSrcRef},
+									ObservedAt:         obsTime,
+								})
+							}
+							if syntaxStatus == "valid" && normTarget != "" {
+								normTargets = append(normTargets, normTarget)
+								distinctTargets = append(distinctTargets, normTarget)
+								normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+									ObservationID:      nextObsID(),
+									AuditRunID:         req.AuditRunID,
+									SnapshotID:         req.SnapshotID,
+									SubjectType:        audit.SubjectURL,
+									SubjectRef:         string(urlIDStr),
+									Field:              "canonical_normalized_target",
+									Value:              normTarget,
+									DerivationType:     audit.DerivationNormalized,
+									SourceEvidenceRefs: []string{pageSrcRef},
+									ObservedAt:         obsTime,
+								})
+							} else {
+								allNormalized = false
+							}
+						} else if len(rc.RawCanonicalsUntrimmed) > 0 {
+							for _, rawC := range rc.RawCanonicalsUntrimmed {
+								status, parseErr, normTarget := classifySingleCanonical(
+									rawC,
+									rc.BaseHrefRaw,
+									rc.BaseHrefCountRaw,
+									pr.url,
+								)
+								if parseErr != "" {
+									parseErrors = append(parseErrors, parseErr)
+								}
+								if status != "valid" || normTarget == "" {
+									allNormalized = false
+									continue
+								}
+								normTargets = append(normTargets, normTarget)
+								normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+									ObservationID:      nextObsID(),
+									AuditRunID:         req.AuditRunID,
+									SnapshotID:         req.SnapshotID,
+									SubjectType:        audit.SubjectURL,
+									SubjectRef:         string(urlIDStr),
+									Field:              "canonical_normalized_target",
+									Value:              normTarget,
+									DerivationType:     audit.DerivationNormalized,
+									SourceEvidenceRefs: []string{pageSrcRef},
+									ObservedAt:         obsTime,
+								})
+								if _, exists := seenDistinctNorm[normTarget]; !exists {
+									seenDistinctNorm[normTarget] = struct{}{}
+									distinctTargets = append(distinctTargets, normTarget)
+								}
+							}
+						} else {
+							for _, c := range canonicals {
+								normTarget, err := normalizeCanonicalTarget(c, pr.url)
+								if err != nil {
+									allNormalized = false
+									continue
+								}
+								normTargets = append(normTargets, normTarget)
+								normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+									ObservationID:      nextObsID(),
+									AuditRunID:         req.AuditRunID,
+									SnapshotID:         req.SnapshotID,
+									SubjectType:        audit.SubjectURL,
+									SubjectRef:         string(urlIDStr),
+									Field:              "canonical_normalized_target",
+									Value:              normTarget,
+									DerivationType:     audit.DerivationNormalized,
+									SourceEvidenceRefs: []string{pageSrcRef},
+									ObservedAt:         obsTime,
+								})
+								if _, exists := seenDistinctNorm[normTarget]; !exists {
+									seenDistinctNorm[normTarget] = struct{}{}
+									distinctTargets = append(distinctTargets, normTarget)
+								}
+							}
+						}
+
+						canonicalObservations = append(canonicalObservations, audit.CanonicalObservation{
+							CanonicalObservationID: audit.CanonicalObservationID(fmt.Sprintf("canon:%s:%d", req.AuditRunID, urlID)),
+							AuditRunID:             req.AuditRunID,
+							URLID:                  urlIDStr,
+							CanonicalCount:         totalCount,
+							RawValues:              rawCanonSlice,
+							NormalizedValues:       canonicals,
+							ResolvedTargetURLIDs:   targetIDs,
+							ParseErrors:            parseErrors,
+							ObservedAt:             obsTime,
+						})
+
+						completeVal := "false"
+						if !sampleTruncated && allNormalized && len(normTargets) == totalCount {
+							completeVal = "true"
+						}
+						normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+							ObservationID:      nextObsID(),
+							AuditRunID:         req.AuditRunID,
+							SnapshotID:         req.SnapshotID,
+							SubjectType:        audit.SubjectURL,
+							SubjectRef:         string(urlIDStr),
+							Field:              "canonical_normalization_complete",
+							Value:              completeVal,
+							DerivationType:     audit.DerivationNormalized,
+							SourceEvidenceRefs: []string{pageSrcRef},
+							ObservedAt:         obsTime,
+						})
+
+						if completeVal == "true" {
+							normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+								ObservationID:      nextObsID(),
+								AuditRunID:         req.AuditRunID,
+								SnapshotID:         req.SnapshotID,
+								SubjectType:        audit.SubjectURL,
+								SubjectRef:         string(urlIDStr),
+								Field:              "canonical_distinct_normalized_count",
+								Value:              strconv.Itoa(len(distinctTargets)),
+								DerivationType:     audit.DerivationNormalized,
+								SourceEvidenceRefs: []string{pageSrcRef},
+								ObservedAt:         obsTime,
+							})
+
+							if len(distinctTargets) == 1 {
+								targetNorm := distinctTargets[0]
+								matchingSubjects := normURLToSubjectRefs[targetNorm]
+								if len(matchingSubjects) == 1 {
+									normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
+										ObservationID:      nextObsID(),
+										AuditRunID:         req.AuditRunID,
+										SnapshotID:         req.SnapshotID,
+										SubjectType:        audit.SubjectURL,
+										SubjectRef:         string(urlIDStr),
+										Field:              "canonical_target_subject_ref",
+										Value:              matchingSubjects[0],
+										DerivationType:     audit.DerivationNormalized,
+										SourceEvidenceRefs: []string{pageSrcRef},
+										ObservedAt:         obsTime,
+									})
+								}
+							}
+						}
+					}
+				}
 			} else {
 				// Non-rendered page: extract verified raw HTML fields
 				h1Values := pr.page.H1
@@ -2292,7 +2642,22 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 
 		// 9h. Robots directive observations for all pages (both HTML and non-HTML)
 		isRendered := (pr.rendered == 1 || pr.page.Rendered)
+		preservedRawHTML := hasPreservedRawHTML(pr, isRendered)
 		isDiscreteHeaders := len(pr.page.RawXRobotsTags) > 0
+		dirDataNosnippet := pr.page.DataNosnippetCount
+		dirRobotsMetaExtracted := pr.page.RobotsMetaExtracted
+		dirRawRobotsMeta := pr.page.RawRobotsMeta
+		dirMetaTags := pr.page.MetaTags
+		dirMetaRobots := pr.page.MetaRobots
+		dirColMetaRobots := pr.metaRobots
+		if isRendered && preservedRawHTML {
+			dirDataNosnippet = pr.page.RenderComparison.DataNosnippetCountRaw
+			dirRobotsMetaExtracted = pr.page.RenderComparison.RobotsMetaExtractedRaw
+			dirRawRobotsMeta = pr.page.RenderComparison.RawRobotsMeta
+			dirMetaTags = nil
+			dirMetaRobots = pr.page.RenderComparison.MetaRobotsRaw
+			dirColMetaRobots = ""
+		}
 		pageDirectives, dirNorms, dirGaps := processPageDirectives(
 			req,
 			urlID,
@@ -2301,15 +2666,16 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			obsTime,
 			isHTML,
 			isRendered,
+			preservedRawHTML,
 			httpHeaderStatus,
 			htmlExtractionStatus,
 			metaTruncated,
-			pr.page.DataNosnippetCount,
-			pr.page.RobotsMetaExtracted,
-			pr.page.RawRobotsMeta,
-			pr.page.MetaTags,
-			pr.page.MetaRobots,
-			pr.metaRobots,
+			dirDataNosnippet,
+			dirRobotsMetaExtracted,
+			dirRawRobotsMeta,
+			dirMetaTags,
+			dirMetaRobots,
+			dirColMetaRobots,
 			xRobotsRaw,
 			isDiscreteHeaders,
 			nextObsID,
@@ -2882,11 +3248,48 @@ func normalizeCanonicalTarget(rawCanon string, baseURL string) (string, error) {
 	return normURL, nil
 }
 
+// hasPreservedRawHTML reports whether a rendered page retains verified pre-render
+// raw HTTP HTML extraction provenance on its RenderComparisonData.
+func hasPreservedRawHTML(pr *rawPageRecord, isRendered bool) bool {
+	if !isRendered || pr == nil || pr.page.RenderComparison == nil {
+		return false
+	}
+	rc := pr.page.RenderComparison
+	if rc.RenderStatus != "complete" {
+		return false
+	}
+	return rc.RawExtractionStatus != "" ||
+		rc.RobotsMetaExtractedRaw ||
+		rc.CanonicalTotalCountRaw > 0 ||
+		len(rc.RawCanonicalsUntrimmed) > 0 ||
+		len(rc.CanonicalsRawResolved) > 0 ||
+		len(rc.RawRobotsMeta) > 0
+}
+
 // classifyHTMLExtractionStatus maps persisted SiteCrawl page transport/extraction state
 // to the four-value html_extraction_status vocabulary ("complete", "truncated_size_limit",
 // "read_error", "missing_legacy").
 func classifyHTMLExtractionStatus(pr *rawPageRecord, isRendered bool) string {
-	if isRendered || len(pr.page.Redirects) > 0 || pr.redirectHops > 0 {
+	if len(pr.page.Redirects) > 0 || pr.redirectHops > 0 {
+		return "missing_legacy"
+	}
+	if isRendered {
+		if !hasPreservedRawHTML(pr, isRendered) {
+			return "missing_legacy"
+		}
+		rawStatus := pr.page.RenderComparison.RawExtractionStatus
+		if pr.errorType == sitecrawl.ErrTooLarge || rawStatus == sitecrawl.ExtractionStatusTruncatedSizeLimit {
+			return "truncated_size_limit"
+		}
+		if pr.errorType != "" || rawStatus == sitecrawl.ExtractionStatusReadError {
+			return "read_error"
+		}
+		if pr.status < 200 || pr.status >= 300 {
+			return "missing_legacy"
+		}
+		if rawStatus == sitecrawl.ExtractionStatusComplete {
+			return "complete"
+		}
 		return "missing_legacy"
 	}
 	if pr.errorType == sitecrawl.ErrTooLarge || pr.page.ExtractionStatus == sitecrawl.ExtractionStatusTruncatedSizeLimit {
@@ -3793,6 +4196,7 @@ func processPageDirectives(
 	obsTime time.Time,
 	isHTML bool,
 	isRendered bool,
+	preservedRawHTML bool,
 	httpHeaderStatus string,
 	htmlExtractionStatus string,
 	metaTruncated bool,
@@ -3815,9 +4219,10 @@ func processPageDirectives(
 		genericMetaRaw string
 		agentMetaRaw   = make(map[string]string)
 	)
+	allowMetaDirectives := isHTML && (!isRendered || preservedRawHTML)
 
-	// 1. Meta directives (suppressed on rendered pages or non-HTML)
-	if isHTML && !isRendered {
+	// 1. Meta directives (suppressed on legacy rendered pages without preserved raw HTML or non-HTML)
+	if allowMetaDirectives {
 		if robotsMetaExtracted {
 			// V1.10b+ encounter-order extraction
 			for _, rm := range rawRobotsMeta {
@@ -4405,7 +4810,7 @@ func processPageDirectives(
 		})
 	}
 
-	if !isRendered {
+	if allowMetaDirectives {
 		var agentMetaKeys []string
 		for k := range agentMetaRaw {
 			agentMetaKeys = append(agentMetaKeys, k)
@@ -4480,7 +4885,7 @@ func processPageDirectives(
 		}
 
 		canProveNoindex := hasGooglebotNoindex
-		canProveIndexable := !isRendered && !hasAmbiguousDirective && !hasGooglebotNoindex && (hasGooglebotApplicableDirective || pageMetaTags != nil || robotsMetaExtracted)
+		canProveIndexable := allowMetaDirectives && !hasAmbiguousDirective && !hasGooglebotNoindex && (hasGooglebotApplicableDirective || pageMetaTags != nil || robotsMetaExtracted)
 
 		if canProveNoindex || canProveIndexable {
 			noindexVal := "false"
@@ -4548,7 +4953,7 @@ func processPageDirectives(
 		snippetRefs = append(snippetRefs, pageSrcRef)
 
 		headerChannelComplete := (httpHeaderStatus == "complete")
-		htmlChannelComplete := !isRendered && !metaTruncated && (htmlExtractionStatus == "complete" || robotsMetaExtracted || pageMetaTags != nil)
+		htmlChannelComplete := allowMetaDirectives && !metaTruncated && (htmlExtractionStatus == "complete" || robotsMetaExtracted || pageMetaTags != nil)
 		canProveNoSnippetRestriction := headerChannelComplete && htmlChannelComplete && !hasAmbiguousDirective && !hasSnippetParseError && !hasNosnippet && !hasRestrictiveMaxSnippet
 
 		if hasNosnippet || canProveNoSnippetRestriction {
@@ -4581,7 +4986,7 @@ func processPageDirectives(
 			})
 		}
 
-		if htmlChannelComplete || (!isRendered && dataNosnippetCount > 0) {
+		if htmlChannelComplete || (allowMetaDirectives && dataNosnippetCount > 0) {
 			normalized = append(normalized, audit.NormalizedObservation{
 				ObservationID:      nextObsID(),
 				AuditRunID:         req.AuditRunID,

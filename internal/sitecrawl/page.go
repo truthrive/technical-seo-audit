@@ -129,10 +129,27 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 			rawDoc := res.RawDoc
 			rc.TitleRaw = first(rawDoc.Titles)
 			rc.TitleRendered = first(d.Titles)
+			rc.MetaDescRaw = first(rawDoc.MetaDescs)
+			rc.WordCountRaw = rawDoc.WordCount
 			rc.CanonicalRaw = formatComparisonCanonicals(rawDoc)
 			rc.CanonicalRendered = formatComparisonCanonicals(d)
+			if len(rawDoc.Canonicals) > 0 {
+				rc.CanonicalsRawResolved = append([]string(nil), rawDoc.Canonicals...)
+			}
+			if len(rawDoc.RawCanonicals) > 0 {
+				rc.RawCanonicalsUntrimmed = append([]string(nil), rawDoc.RawCanonicals...)
+			}
+			rc.CanonicalTotalCountRaw = rawDoc.CanonicalTotalCount
+			rc.BaseHrefRaw = rawDoc.BaseHrefRaw
+			rc.BaseHrefCountRaw = rawDoc.BaseHrefCount
 			rc.MetaRobotsRaw = formatComparisonMetaRobots(rawDoc)
 			rc.MetaRobotsRendered = formatComparisonMetaRobots(d)
+			rc.RobotsMetaExtractedRaw = true
+			rc.RobotsMetaTotalCountRaw = rawDoc.RobotsMetaTotalCount
+			if len(rawDoc.RawRobotsMeta) > 0 {
+				rc.RawRobotsMeta = append([]RawMetaDirective(nil), rawDoc.RawRobotsMeta...)
+			}
+			rc.DataNosnippetCountRaw = rawDoc.DataNosnippetCount
 			rc.H1Raw = append([]string(nil), rawDoc.H1...)
 			rc.H1Rendered = append([]string(nil), d.H1...)
 			rc.MainTextPresentRaw = rawDoc.MainWordCount > 0
@@ -147,6 +164,7 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 					rc.InternalLinksRend = append(rc.InternalLinksRend, l.Href)
 				}
 			}
+			rc.RawExtractionStatus = res.ExtractionStatus
 		}
 		p.RenderComparison = rc
 	}

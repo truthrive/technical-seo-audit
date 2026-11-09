@@ -314,8 +314,10 @@ func evaluateCANON003(
 				}
 			} else {
 				// No canonical declaration found
-				if isRendered || renderedUnreliable {
-					// Rendered page with no raw canonical -> UNKNOWN
+				extractObs := idx.GetObservations(audit.SubjectURL, subjectRef, "html_extraction_status")
+				rawHeadProvenComplete := len(extractObs) == 1 && strings.TrimSpace(extractObs[0].Value) == "complete"
+				if renderedUnreliable || (isRendered && !rawHeadProvenComplete) {
+					// Rendered page without preserved raw HTML provenance -> UNKNOWN
 					evalStatus = audit.StatusUnknown
 					if renderedUnreliable {
 						observedSummary = "Rendered state evidence is conflicting or malformed, head extraction completeness is unknown."
@@ -323,7 +325,7 @@ func evaluateCANON003(
 						observedSummary = "Page was rendered via headless browser and raw head evidence is unavailable; canonical extraction completeness is unknown."
 					}
 				} else {
-					// Unrendered 2xx HTML with verified extraction completeness and no canonical -> WARNING
+					// 2xx HTML with verified raw head extraction completeness and no canonical -> WARNING
 					evalStatus = audit.StatusWarning
 					observedSummary = "2xx HTML response has no canonical declaration."
 					// WARNING has no synthetic "canonical missing" observation.
