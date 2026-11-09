@@ -778,3 +778,121 @@ func TestRobotsAcquisition_MidStreamReadError_PreservesPreErrorEvidence(t *testi
 		t.Errorf("p.RawRobotsMeta[0] = %+v, unexpected content", p.RawRobotsMeta[0])
 	}
 }
+
+// 27. Multi-agent robots.txt evaluation: specific User-agent group overrides wildcard *,
+// longest pattern wins, equal-length Allow beats Disallow, 4xx allows all, 5xx is unknown.
+func TestRobotsTxtMultiAgent_SpecificityAndPrecedence(t *testing.T) {
+	robotsTxt := `
+User-agent: Googlebot
+Disallow: /google-only
+
+User-agent: OAI-SearchBot
+Disallow: /ai
+Allow: /ai/search
+
+User-agent: GPTBot
+Disallow: /equal
+Allow: /equal
+
+User-agent: *
+Disallow: /wildcard-blocked
+`
+	lines := strings.Split(robotsTxt, "\n")
+
+	// When User-agent: Googlebot exists, wildcard Disallow: /wildcard-blocked must be ignored for googlebot
+	if got := matchedRuleDirective(lines, "googlebot", "/wildcard-blocked"); got != "" {
+		t.Errorf("matchedRuleDirective(googlebot, /wildcard-blocked) = %q, want empty (named group ignores *)", got)
+	}
+	if got := matchedDisallow(lines, "googlebot", "/wildcard-blocked"); got != "" {
+		t.Errorf("matchedDisallow(googlebot, /wildcard-blocked) = %q, want empty", got)
+	}
+	// Specific Googlebot Disallow still matches
+	if got := matchedRuleDirective(lines, "googlebot", "/google-only/page"); got != "Disallow: /google-only" {
+		t.Errorf("matchedRuleDirective(googlebot, /google-only/page) = %q, want 'Disallow: /google-only'", got)
+	}
+	// Longest pattern wins for OAI-SearchBot (/ai/search > /ai)
+	if got := matchedRuleDirective(lines, "oai-searchbot", "/ai/search/doc"); got != "Allow: /ai/search" {
+		t.Errorf("matchedRuleDirective(oai-searchbot, /ai/search/doc) = %q, want 'Allow: /ai/search'", got)
+	}
+	// Equal-length tie: Allow wins over Disallow for GPTBot
+	if got := matchedRuleDirective(lines, "gptbot", "/equal"); got != "Allow: /equal" {
+		t.Errorf("matchedRuleDirective(gptbot, /equal) = %q, want 'Allow: /equal'", got)
+	}
+	// Agent without specific group (1scoutsitecrawl) falls back to wildcard *
+	if got := matchedRuleDirective(lines, "1scoutsitecrawl", "/wildcard-blocked"); got != "Disallow: /wildcard-blocked" {
+		t.Errorf("matchedRuleDirective(1scoutsitecrawl, /wildcard-blocked) = %q, want 'Disallow: /wildcard-blocked'", got)
+	}
+
+	// Verify 404 robots.txt -> RobotsAllowed for all agents; 500 -> RobotsUnknown for all agents
+	srv404 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv404.Close()
+
+	rc404 := newRobotsCache(srv404.Client(), presetFor("sitecrawl"), 5e9)
+	v404 := rc404.Check(context.Background(), srv404.URL+"/any")
+	if v404.State != RobotsAllowed || v404.GooglebotState != RobotsAllowed || v404.OAISearchBotState != RobotsAllowed || v404.GPTBotState != RobotsAllowed {
+		t.Errorf("expected 404 robots.txt to allow all agents, got %+v", v404)
+	}
+
+	srv500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv500.Close()
+
+	rc500 := newRobotsCache(srv500.Client(), presetFor("sitecrawl"), 5e9)
+	v500 := rc500.Check(context.Background(), srv500.URL+"/any")
+	if v500.State != RobotsUnknown || v500.GooglebotState != RobotsUnknown || v500.OAISearchBotState != RobotsUnknown || v500.GPTBotState != RobotsUnknown {
+		t.Errorf("expected 500 robots.txt to report RobotsUnknown for all agents, got %+v", v500)
+	}
+}
+
+// 28. Dual raw/rendered comparison preserves multi-canonical sets and flags empty canonical hrefs.
+func TestRenderComparison_PreservesMultipleCanonicalsAndMainText(t *testing.T) {
+	rawHTML := `<!doctype html><html><head>
+		<title>Raw Title</title>
+		<link rel="canonical" href="/a">
+		<meta name="robots" content="index, follow">
+	</head><body><nav><a href="/nav">Menu</a></nav></body></html>`
+	rendHTML := `<!doctype html><html><head>
+		<title>Rendered Title</title>
+		<link rel="canonical" href="/a">
+		<link rel="canonical" href="/b">
+		<meta name="robots" content="noindex, follow">
+	</head><body><nav><a href="/nav">Menu</a></nav><main><p>Injected main content words</p></main></body></html>`
+
+	rawDoc := parse(t, "https://example.com/", rawHTML)
+	rendDoc := parse(t, "https://example.com/", rendHTML)
+
+	p := buildPage(
+		frontierItem{URL: "https://example.com/"},
+		fetched{
+			Status:          200,
+			FinalStatus:     200,
+			FinalURL:        "https://example.com/",
+			Kind:            KindHTML,
+			Doc:             rendDoc,
+			RawDoc:          rawDoc,
+			RenderRequested: true,
+			RenderStatus:    "complete",
+		},
+		"example.com",
+		Options{},
+	)
+	if p.RenderComparison == nil {
+		t.Fatal("expected RenderComparison to be populated")
+	}
+	if p.RenderComparison.CanonicalRaw != "https://example.com/a" {
+		t.Errorf("CanonicalRaw = %q, want 'https://example.com/a'", p.RenderComparison.CanonicalRaw)
+	}
+	wantRendCanon := "https://example.com/a\nhttps://example.com/b"
+	if p.RenderComparison.CanonicalRendered != wantRendCanon {
+		t.Errorf("CanonicalRendered = %q, want %q", p.RenderComparison.CanonicalRendered, wantRendCanon)
+	}
+	if p.RenderComparison.MainTextPresentRaw {
+		t.Errorf("MainTextPresentRaw = true, want false (only <nav> text was present in raw HTML)")
+	}
+	if !p.RenderComparison.MainTextPresentRend {
+		t.Errorf("MainTextPresentRend = false, want true (<main> text was injected in rendered DOM)")
+	}
+}

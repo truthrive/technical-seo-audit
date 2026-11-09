@@ -97,6 +97,8 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 	p.NextPageURL = d.NextPageURL
 	p.NextPageElementTag = d.NextPageElementTag
 	p.NextPageHref = d.NextPageHref
+	p.PaginationConflict = d.PaginationConflict
+	p.NavCandidates = d.NavCandidates
 	p.Author = d.Author
 	p.Keywords = d.Keywords
 	p.Generator = d.Generator
@@ -127,14 +129,14 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 			rawDoc := res.RawDoc
 			rc.TitleRaw = first(rawDoc.Titles)
 			rc.TitleRendered = first(d.Titles)
-			rc.CanonicalRaw = first(rawDoc.Canonicals)
-			rc.CanonicalRendered = first(d.Canonicals)
-			rc.MetaRobotsRaw = rawDoc.MetaRobots
-			rc.MetaRobotsRendered = d.MetaRobots
+			rc.CanonicalRaw = formatComparisonCanonicals(rawDoc)
+			rc.CanonicalRendered = formatComparisonCanonicals(d)
+			rc.MetaRobotsRaw = formatComparisonMetaRobots(rawDoc)
+			rc.MetaRobotsRendered = formatComparisonMetaRobots(d)
 			rc.H1Raw = append([]string(nil), rawDoc.H1...)
 			rc.H1Rendered = append([]string(nil), d.H1...)
-			rc.MainTextPresentRaw = rawDoc.WordCount > 0
-			rc.MainTextPresentRend = d.WordCount > 0
+			rc.MainTextPresentRaw = rawDoc.MainWordCount > 0
+			rc.MainTextPresentRend = d.MainWordCount > 0
 			for _, l := range rawDoc.Links {
 				if u, err := url.Parse(l.Href); err == nil && sameSite(seedHost, u.Hostname(), opts.crawlSubdomains()) {
 					rc.InternalLinksRaw = append(rc.InternalLinksRaw, l.Href)
@@ -149,6 +151,36 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 		p.RenderComparison = rc
 	}
 	return p
+}
+
+func formatComparisonCanonicals(doc *document) string {
+	if doc == nil {
+		return ""
+	}
+	if doc.CanonicalTotalCount > len(doc.Canonicals) {
+		return strings.Join(doc.Canonicals, "\n") + "\n<malformed-empty-canonical>"
+	}
+	return strings.Join(doc.Canonicals, "\n")
+}
+
+func formatComparisonMetaRobots(doc *document) string {
+	if doc == nil {
+		return ""
+	}
+	var parts []string
+	for _, rm := range doc.RawRobotsMeta {
+		if rm.Name != "robots" && rm.Name != "googlebot" {
+			continue
+		}
+		if !rm.HasContentAttr || strings.TrimSpace(rm.ContentRaw) == "" {
+			return ";"
+		}
+		parts = append(parts, strings.TrimSpace(rm.ContentRaw))
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, ", ")
+	}
+	return doc.MetaRobots
 }
 
 // pageRow is the promoted-column projection written alongside the JSON blob.

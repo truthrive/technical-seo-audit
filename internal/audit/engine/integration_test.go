@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1719,6 +1720,289 @@ Allow: /
 		}
 		if len(results) == 0 && !emptyAllowed[ruleID] {
 			t.Errorf("expected non-empty results for %s on Batch 4 crawl", ruleID)
+		}
+	}
+}
+
+// TestEngine_Batch4_QARemediationAndHeadlessRender verifies:
+// 1. Real headless browser JavaScript rendering (AR-RENDER-001..006) mutating title, canonical,
+//    meta robots, H1, main text, and internal links end-to-end (SiteCrawl -> Adapter -> Engine).
+// 2. Redirected URL (301) is NOT marked rendered when EnableJavaScript is true (AR-RENDER-001..006 -> NOT_APPLICABLE).
+// 3. Multi-agent robots.txt specificity: when a specific User-agent group (e.g. Googlebot) exists,
+//    wildcard User-agent: * Disallow rules do NOT contaminate Googlebot's matched_robots_rule or verdict,
+//    and default-crawler matched_robots_rule does NOT contaminate Googlebot/OAI-SearchBot/GPTBot evidence.
+// 4. Pagination edge cases (AR-CANON-011):
+//    - <link rel="next"> in <head> with matching body <a href> -> PASS
+//    - <link rel="next"> in <head> with NO body <a href> -> WARNING
+//    - Conflicting <a rel="next"> targets on the same page -> UNKNOWN
+//    - Ordinary non-pagination UI button (<button aria-label="Next slide">) -> NOT_APPLICABLE
+// 5. Navigation link edge cases (AR-LINK-001):
+//    - Non-crawlable <button data-href="/internal"> and <a href="javascript:navigate('/internal')"> in <nav> -> WARNING
+//    - Ordinary UI <button type="button">Toggle Menu</button> in <nav> without target -> NOT emitted as WARNING
+func TestEngine_Batch4_QARemediationAndHeadlessRender(t *testing.T) {
+	mux := http.NewServeMux()
+	var srvURL string
+
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		// Googlebot has its own specific group blocking ONLY /only-google-blocked.
+		// Wildcard * blocks /wildcard-blocked (which Googlebot must IGNORE per RFC 9309,
+		// while OAI-SearchBot inherits the wildcard block).
+		// Default crawler 1ScoutSiteCrawl has Allow: / so it can crawl all test pages.
+		fmt.Fprintf(w, `User-agent: 1ScoutSiteCrawl
+Allow: /
+
+User-agent: Googlebot
+Disallow: /only-google-blocked
+
+User-agent: GPTBot
+Disallow: /gpt-blocked
+Allow: /gpt-blocked/allowed-subpath
+
+User-agent: *
+Disallow: /wildcard-blocked
+`)
+	})
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head>
+<title>Raw Home Title</title>
+<link rel="canonical" href="%s/">
+<meta name="robots" content="index, follow">
+</head>
+<body>
+<nav>
+  <a href="%s/wildcard-blocked">Wildcard Blocked</a>
+  <a href="%s/head-rel-next-with-anchor">Head Rel Next With Anchor</a>
+  <a href="%s/head-rel-next-only">Head Rel Next Only</a>
+  <a href="%s/conflict-next">Conflict Next</a>
+  <a href="%s/redirect-start">Redirect Start</a>
+  <button type="button" aria-label="Toggle Menu">Menu</button>
+  <button type="button" data-href="/nav-button-target">Button Nav</button>
+  <a href="javascript:navigate('/nav-js-target')">JS Nav</a>
+</nav>
+<div id="carousel"><button type="button" aria-label="Next slide">Next Slide</button></div>
+<div id="app"></div>
+<script>
+  document.title = "Rendered Home Title";
+  var canon = document.querySelector('link[rel="canonical"]');
+  if (canon) { canon.setAttribute("href", "%s/rendered-canonical"); }
+  var robots = document.querySelector('meta[name="robots"]');
+  if (robots) { robots.setAttribute("content", "noindex, follow"); }
+  document.getElementById("app").innerHTML =
+    '<h1>Rendered Dynamic H1</h1>' +
+    '<p>This main body text was injected by client-side JavaScript during headless rendering.</p>' +
+    '<a href="%s/js-discovered">JS Discovered Link</a>';
+</script>
+</body></html>`, srvURL, srvURL, srvURL, srvURL, srvURL, srvURL, srvURL, srvURL)
+	})
+
+	mux.HandleFunc("/wildcard-blocked", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Wildcard Blocked</title></head><body><h1>Wildcard</h1><p>Body text</p></body></html>`)
+	})
+
+	mux.HandleFunc("/head-rel-next-with-anchor", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head>
+<title>Head Rel Next With Body Anchor</title>
+<link rel="next" href="%s/wildcard-blocked">
+</head><body>
+<h1>Paginated With Body Link</h1>
+<a href="%s/wildcard-blocked">Page 2</a>
+</body></html>`, srvURL, srvURL)
+	})
+
+	mux.HandleFunc("/head-rel-next-only", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head>
+<title>Head Rel Next Only</title>
+<link rel="next" href="%s/unlinked-page-2">
+</head><body>
+<h1>Paginated Without Body Anchor</h1>
+</body></html>`, srvURL)
+	})
+
+	mux.HandleFunc("/conflict-next", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Conflicting Next</title></head><body>
+<h1>Conflicting Next Links</h1>
+<a rel="next" href="%s/page-a">Next A</a>
+<a rel="next" href="%s/page-b">Next B</a>
+</body></html>`, srvURL, srvURL)
+	})
+
+	mux.HandleFunc("/redirect-start", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, srvURL+"/wildcard-blocked", http.StatusMovedPermanently)
+	})
+
+	mux.HandleFunc("/js-discovered", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>JS Discovered</title></head><body><h1>JS Discovered</h1><p>Text</p></body></html>`)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	srvURL = srv.URL
+
+	db, err := standalone.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	runner := sitecrawl.NewRunner(db)
+	if err := runner.EnsureSchema(); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+
+	opts := sitecrawl.Options{
+		Mode:             sitecrawl.ModeSpider,
+		MaxDepth:         3,
+		MaxURLs:          30,
+		Concurrency:      2,
+		FollowRedirects:  true,
+		RespectRobots:    true,
+		EnableJavaScript: true,
+		JSPatterns:       []string{`^` + srvURL + `/$`},
+		JSMaxPages:       5,
+		JSWaitMs:         400,
+		JSTimeoutSec:     25,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	started, err := runner.Crawl(ctx, []string{srv.URL + "/"}, opts)
+	if err != nil {
+		t.Fatalf("Crawl failed: %v", err)
+	}
+
+	auditRunID := audit.AuditRunID("audit:run:batch4_qa_headless")
+	snapID := audit.SnapshotID("snap:run:batch4_qa_headless")
+	buildRes, err := adapter.Build(ctx, db, adapter.BuildRequest{
+		CrawlRunID: started.ID,
+		AuditRunID: auditRunID,
+		SnapshotID: snapID,
+	})
+	if err != nil {
+		t.Fatalf("adapter.Build failed: %v", err)
+	}
+	snap := buildRes.EvidenceSnapshot
+
+	eng, err := engine.New()
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+
+	mapByURL := func(res []audit.RuleResult) map[string]audit.RuleResult {
+		m := make(map[string]audit.RuleResult)
+		for _, r := range res {
+			for _, ref := range r.EvidenceRefs {
+				if ref.Field == "url" {
+					m[ref.ObservedValue] = r
+					break
+				}
+			}
+		}
+		return m
+	}
+
+	// 1. Verify QA-A: Googlebot ignores wildcard Disallow when User-agent: Googlebot group exists,
+	// and does not attach wildcard/default Disallow rule as supporting evidence.
+	resAcc005, err := eng.EvaluateRule(ctx, snap, "AR-ACC-005")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-ACC-005: %v", err)
+	}
+	mAcc005 := mapByURL(resAcc005)
+	if r, ok := mAcc005[srv.URL+"/wildcard-blocked"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected /wildcard-blocked to PASS AR-ACC-005 for Googlebot (specific group overrides *), got %v", r)
+	} else {
+		for _, ref := range r.EvidenceRefs {
+			if ref.Field == "matched_robots_rule" && strings.Contains(ref.ObservedValue, "Disallow") {
+				t.Errorf("unexpected Disallow rule attached to Googlebot ALLOWED result: %+v", ref)
+			}
+		}
+	}
+
+	// Meanwhile OAI-SearchBot has no specific group so it inherits User-agent: * Disallow: /wildcard-blocked -> WARNING
+	resAI001, err := eng.EvaluateRule(ctx, snap, "AR-AI-001")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-AI-001: %v", err)
+	}
+	mAI001 := mapByURL(resAI001)
+	if r, ok := mAI001[srv.URL+"/wildcard-blocked"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("expected /wildcard-blocked to WARNING AR-AI-001 for OAI-SearchBot (inherits *), got %v", r)
+	}
+
+	// 2. Verify QA-C: AR-CANON-011 pagination edge cases
+	resCanon011, err := eng.EvaluateRule(ctx, snap, "AR-CANON-011")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-CANON-011: %v", err)
+	}
+	mCanon011 := mapByURL(resCanon011)
+	// Home page has <button aria-label="Next slide"> which must NOT trigger pagination
+	if r, ok := mCanon011[srv.URL+"/"]; !ok || r.Status != audit.StatusNotApplicable {
+		t.Errorf("expected Home with carousel 'Next slide' button to be NOT_APPLICABLE under AR-CANON-011, got %v", r)
+	}
+	// <link rel="next"> + matching body <a href> -> PASS
+	if r, ok := mCanon011[srv.URL+"/head-rel-next-with-anchor"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected /head-rel-next-with-anchor to PASS AR-CANON-011, got %v", r)
+	}
+	// <link rel="next"> only in <head> with no body <a href> -> WARNING
+	if r, ok := mCanon011[srv.URL+"/head-rel-next-only"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("expected /head-rel-next-only to WARNING AR-CANON-011, got %v", r)
+	}
+	// Conflicting <a rel="next"> targets -> UNKNOWN
+	if r, ok := mCanon011[srv.URL+"/conflict-next"]; !ok || r.Status != audit.StatusUnknown {
+		t.Errorf("expected /conflict-next to be UNKNOWN under AR-CANON-011, got %v", r)
+	}
+
+	// 3. Verify QA-C: AR-LINK-001 navigation candidates
+	resLink001, err := eng.EvaluateRule(ctx, snap, "AR-LINK-001")
+	if err != nil {
+		t.Fatalf("EvaluateRule AR-LINK-001: %v", err)
+	}
+	warningTargets := make(map[string]bool)
+	for _, r := range resLink001 {
+		if r.Status == audit.StatusWarning {
+			for _, ref := range r.EvidenceRefs {
+				if ref.Field == "resolved_internal_target" {
+					warningTargets[ref.ObservedValue] = true
+				}
+			}
+		}
+	}
+	if !warningTargets[srv.URL+"/nav-button-target"] {
+		t.Errorf("expected <button data-href='/nav-button-target'> in <nav> to emit AR-LINK-001 WARNING, got %v", warningTargets)
+	}
+	if !warningTargets[srv.URL+"/nav-js-target"] {
+		t.Errorf("expected <a href=\"javascript:navigate('/nav-js-target')\"> in <nav> to emit AR-LINK-001 WARNING, got %v", warningTargets)
+	}
+	if len(warningTargets) != 2 {
+		t.Errorf("expected exactly 2 AR-LINK-001 WARNING targets (ordinary menu button excluded), got %v", warningTargets)
+	}
+
+	// 4. Verify QA-B: Real headless browser render on Home ("/") and non-rendered 301 ("/redirect-start")
+	for _, ruleID := range []string{"AR-RENDER-001", "AR-RENDER-002", "AR-RENDER-003", "AR-RENDER-004", "AR-RENDER-005", "AR-RENDER-006"} {
+		resR, err := eng.EvaluateRule(ctx, snap, ruleID)
+		if err != nil {
+			t.Fatalf("EvaluateRule %s: %v", ruleID, err)
+		}
+		mR := mapByURL(resR)
+		// Redirecting URL must be NOT_APPLICABLE (never marked rendered)
+		if r, ok := mR[srv.URL+"/redirect-start"]; !ok || r.Status != audit.StatusNotApplicable {
+			t.Errorf("expected 301 /redirect-start under %s to be NOT_APPLICABLE, got %v", ruleID, r)
+		}
+		// Home page underwent real headless Chrome/Edge rendering where JS mutated title, canonical,
+		// meta robots, H1, main text, and internal links -> all 6 rules must emit WARNING!
+		if r, ok := mR[srv.URL+"/"]; !ok || r.Status != audit.StatusWarning {
+			t.Errorf("expected real headless-rendered Home under %s to be WARNING, got %v", ruleID, r)
 		}
 	}
 }

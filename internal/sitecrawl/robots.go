@@ -341,6 +341,17 @@ func parseCrawlDelay(raw []byte, tokens []string) time.Duration {
 	return time.Duration(best * float64(time.Second))
 }
 
+// robotsAgentMatches reports whether a User-agent line value matches token
+// using RFC 9309 / temoto/robotstxt prefix semantics.
+func robotsAgentMatches(agent, token string) bool {
+	agent = strings.ToLower(strings.TrimSpace(agent))
+	token = strings.ToLower(strings.TrimSpace(token))
+	if agent == "" || token == "" || agent == "*" {
+		return false
+	}
+	return strings.HasPrefix(token, agent)
+}
+
 // matchedDisallow finds the Disallow line that most likely produced a block, so
 // the UI can say *which* rule blocked the URL.
 //
@@ -350,77 +361,67 @@ func parseCrawlDelay(raw []byte, tokens []string) time.Duration {
 // most specific group, mirroring how the real matcher breaks ties.
 // lines is the robots.txt already split, cached on the entry — see robotsEntry.
 func matchedDisallow(lines []string, token, path string) string {
-	if len(lines) == 0 {
-		return ""
+	rule := matchedRuleDirective(lines, token, path)
+	if strings.HasPrefix(rule, "Disallow: ") {
+		return rule
 	}
-	token = strings.ToLower(token)
-
-	var (
-		best      string
-		bestLen   = -1
-		inGroup   bool
-		groupStar bool
-		// bestSpecific records whether `best` came from a named group, which
-		// always outranks a rule from the "*" group.
-		bestSpecific bool
-	)
-
-	for _, line := range lines {
-		if i := strings.IndexByte(line, '#'); i >= 0 {
-			line = line[:i]
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		colon := strings.IndexByte(line, ':')
-		if colon < 0 {
-			continue
-		}
-		field := strings.ToLower(strings.TrimSpace(line[:colon]))
-		value := strings.TrimSpace(line[colon+1:])
-
-		switch field {
-		case "user-agent":
-			agent := strings.ToLower(value)
-			inGroup = agent == "*" || strings.HasPrefix(token, agent)
-			groupStar = agent == "*"
-		case "disallow":
-			if !inGroup || value == "" {
-				continue
-			}
-			if !robotsPatternMatches(value, path) {
-				continue
-			}
-			specific := !groupStar
-			if (specific && !bestSpecific) || (specific == bestSpecific && len(value) > bestLen) {
-				best, bestLen, bestSpecific = value, len(value), specific
-			}
-		}
-	}
-	if best == "" {
-		return ""
-	}
-	return "Disallow: " + best
+	return ""
 }
 
 // matchedRuleDirective finds the most specific Allow or Disallow line that
 // matched path for token (or wildcard "*"), with Allow winning equal-length ties.
+// Per RFC 9309 and temoto/robotstxt semantics:
+//  1. If one or more named User-agent groups match token, only the group(s) with
+//     the longest matching User-agent prefix are eligible; wildcard "*" groups
+//     are ignored completely for that token.
+//  2. Only when no named User-agent group matches token are wildcard "*" groups
+//     evaluated.
 func matchedRuleDirective(lines []string, token, path string) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	token = strings.ToLower(token)
+	token = strings.ToLower(strings.TrimSpace(token))
 
+	// Pass 1: find the longest named User-agent prefix that matches token.
+	maxAgentLen := 0
+	for _, line := range lines {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		colon := strings.IndexByte(line, ':')
+		if colon < 0 {
+			continue
+		}
+		field := strings.ToLower(strings.TrimSpace(line[:colon]))
+		if field != "user-agent" {
+			continue
+		}
+		agent := strings.ToLower(strings.TrimSpace(line[colon+1:]))
+		if robotsAgentMatches(agent, token) && len(agent) > maxAgentLen {
+			maxAgentLen = len(agent)
+		}
+	}
+
+	// Pass 2: evaluate rules only from groups that match the winning specificity
+	// (either named groups of length maxAgentLen, or "*" groups when maxAgentLen == 0).
 	var (
-		bestKind     string
-		bestVal      string
-		bestLen      = -1
-		bestSpecific bool
-		inGroup      bool
-		groupStar    bool
-		hadRules     bool
+		bestKind string
+		bestVal  string
+		bestLen  = -1
+		inGroup  bool
+		hadRules bool
 	)
+
+	groupMatches := func(agent string) bool {
+		if maxAgentLen > 0 {
+			return robotsAgentMatches(agent, token) && len(agent) == maxAgentLen
+		}
+		return agent == "*"
+	}
 
 	for _, line := range lines {
 		if i := strings.IndexByte(line, '#'); i >= 0 {
@@ -440,20 +441,12 @@ func matchedRuleDirective(lines []string, token, path string) string {
 		switch field {
 		case "user-agent":
 			agent := strings.ToLower(value)
-			matchAgent := agent == "*" || (token != "" && strings.HasPrefix(token, agent))
+			matchAgent := groupMatches(agent)
 			if hadRules {
 				inGroup = matchAgent
-				groupStar = agent == "*"
 				hadRules = false
-			} else {
-				if matchAgent {
-					if !inGroup {
-						inGroup = true
-						groupStar = agent == "*"
-					} else if agent != "*" {
-						groupStar = false
-					}
-				}
+			} else if matchAgent {
+				inGroup = true
 			}
 		case "allow", "disallow":
 			hadRules = true
@@ -463,15 +456,12 @@ func matchedRuleDirective(lines []string, token, path string) string {
 			if !robotsPatternMatches(value, path) {
 				continue
 			}
-			specific := !groupStar
 			kind := "Disallow"
 			if field == "allow" {
 				kind = "Allow"
 			}
-			if (specific && !bestSpecific) ||
-				(specific == bestSpecific && len(value) > bestLen) ||
-				(specific == bestSpecific && len(value) == bestLen && kind == "Allow" && bestKind == "Disallow") {
-				bestKind, bestVal, bestLen, bestSpecific = kind, value, len(value), specific
+			if len(value) > bestLen || (len(value) == bestLen && kind == "Allow" && bestKind == "Disallow") {
+				bestKind, bestVal, bestLen = kind, value, len(value)
 			}
 		default:
 			if inGroup {

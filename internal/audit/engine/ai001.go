@@ -42,6 +42,7 @@ func evaluateAI001(
 
 		urlIdentityObs := idx.GetObservations(audit.SubjectURL, subjectRef, "url_identity")
 		robotsOAIObs := idx.GetObservations(audit.SubjectURL, subjectRef, "robots_allowed_oai_searchbot")
+		robotsDefaultObs := idx.GetObservations(audit.SubjectURL, subjectRef, "robots_allowed_default")
 		matchedRuleOAIObs := idx.GetObservations(audit.SubjectURL, subjectRef, "matched_robots_rule_oai_searchbot")
 		matchedRuleDefaultObs := idx.GetObservations(audit.SubjectURL, subjectRef, "matched_robots_rule")
 		robotsTxtURLObs := idx.GetObservations(audit.SubjectURL, subjectRef, "robots_txt_url")
@@ -51,7 +52,7 @@ func evaluateAI001(
 			refs = append(refs, buildEvidenceRefs(ruleResultID, urlIdentityObs, "url", audit.EvidenceRoleContext)...)
 			if len(matchedRuleOAIObs) > 0 {
 				refs = append(refs, buildEvidenceRefs(ruleResultID, matchedRuleOAIObs, "matched_robots_rule", audit.EvidenceRoleSupporting)...)
-			} else if len(matchedRuleDefaultObs) > 0 {
+			} else if len(matchedRuleDefaultObs) > 0 && len(robotsDefaultObs) == 0 {
 				refs = append(refs, buildEvidenceRefs(ruleResultID, matchedRuleDefaultObs, "matched_robots_rule", audit.EvidenceRoleSupporting)...)
 			}
 			refs = append(refs, buildEvidenceRefs(ruleResultID, robotsTxtURLObs, "robots_txt_url", audit.EvidenceRoleContext)...)

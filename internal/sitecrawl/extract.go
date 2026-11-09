@@ -65,6 +65,8 @@ type document struct {
 	NextPageURL         string
 	NextPageElementTag  string
 	NextPageHref        string
+	PaginationConflict  bool
+	NavCandidates       []NavCandidate
 
 	TokenizerErr error
 
@@ -80,9 +82,10 @@ type document struct {
 	Stylesheets []string
 	Scripts     []string
 
-	WordCount  int
-	TextBytes  int
-	TotalBytes int
+	WordCount     int
+	MainWordCount int
+	TextBytes     int
+	TotalBytes    int
 
 	DataNosnippetCount int
 
@@ -210,7 +213,11 @@ func extractDocument(r io.Reader, base *url.URL) *document {
 				continue
 			}
 			d.TextBytes += len(text)
-			d.WordCount += len(wordRe.FindAllString(text, -1))
+			words := len(wordRe.FindAllString(text, -1))
+			d.WordCount += words
+			if !titleOpen && !isButtonStack(stack) && placementOf(stack) == PlacementBody {
+				d.MainWordCount += words
+			}
 			if anchorOpen {
 				anchor.WriteString(text)
 			}
@@ -282,16 +289,19 @@ func extractDocument(r io.Reader, base *url.URL) *document {
 				if tt == html.StartTagToken {
 					anchorOpen = true
 					anchor.Reset()
+					pl := placementOf(stack)
 					anchorLink = rawLink{
 						Href:      strings.TrimSpace(attrs["href"]),
 						Rel:       strings.ToLower(strings.TrimSpace(attrs["rel"])),
 						Target:    strings.TrimSpace(attrs["target"]),
-						Placement: placementOf(stack),
+						Placement: pl,
 					}
 					d.checkPaginationElement("a", attrs)
+					d.checkNavCandidate("a", attrs, pl)
 				}
-			case "button", "span", "div":
+			case "button", "span", "div", "li":
 				d.checkPaginationElement(name, attrs)
+				d.checkNavCandidate(name, attrs, placementOf(stack))
 			case "img":
 				img := Image{
 					Src:    strings.TrimSpace(attrs["src"]),
@@ -621,6 +631,8 @@ func (d *document) readLink(attrs map[string]string) {
 		case "next":
 			if d.RelNext == "" {
 				d.RelNext = href
+			} else if d.RelNext != href {
+				d.PaginationConflict = true
 			}
 			d.PaginationDetected = true
 			d.HasNextPage = true
@@ -700,9 +712,9 @@ func (d *document) resolve(base *url.URL) {
 		if !strings.HasPrefix(lowerHref, "#") && !strings.HasPrefix(lowerHref, "javascript:") {
 			d.NextPageURL = absolutize(effective, trimmedHref)
 		}
-	} else if d.NextPageURL == "" && d.RelNext != "" && d.NextPageElementTag == "" {
-		// Only <link rel="next"> was present without a body next-page element
-		d.NextPageURL = d.RelNext
+	}
+	if d.RelNext != "" && d.NextPageURL != "" && d.RelNext != d.NextPageURL {
+		d.PaginationConflict = true
 	}
 
 	out := d.Links[:0]
@@ -713,6 +725,32 @@ func (d *document) resolve(base *url.URL) {
 		}
 	}
 	d.Links = out
+
+	if d.RelNext != "" && d.NextPageElementTag == "" {
+		// <link rel="next"> was present without an explicit rel="next" body element.
+		// Check whether any resolved body <a href> link targets d.RelNext.
+		matchedBodyAnchor := false
+		for _, l := range d.Links {
+			if l.Href == d.RelNext {
+				matchedBodyAnchor = true
+				break
+			}
+		}
+		d.NextPageURL = d.RelNext
+		if matchedBodyAnchor {
+			d.NextPageElementTag = "a"
+			d.NextPageHref = d.RelNext
+		} else {
+			d.NextPageElementTag = "link"
+		}
+	}
+
+	for i := range d.NavCandidates {
+		nc := &d.NavCandidates[i]
+		if abs := resolveLink(effective, nc.TargetHint); abs != "" {
+			nc.ResolvedTarget = abs
+		}
+	}
 }
 
 func absolutize(base *url.URL, raw string) string {
@@ -724,6 +762,15 @@ func absolutize(base *url.URL, raw string) string {
 		return raw
 	}
 	return base.ResolveReference(ref).String()
+}
+
+func isButtonStack(stack []elem) bool {
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i].tag == "button" {
+			return true
+		}
+	}
+	return false
 }
 
 // placementOf walks the ancestor stack to classify where a link sits.
@@ -808,7 +855,7 @@ func (d *document) checkPaginationElement(tag string, attrs map[string]string) {
 	}
 	_, hasDataNext := attrs["data-next-page"]
 	ariaLabel := strings.ToLower(strings.TrimSpace(attrs["aria-label"]))
-	hasAriaNext := ariaLabel == "next" || ariaLabel == "next page" || strings.HasPrefix(ariaLabel, "next page")
+	hasAriaNext := ariaLabel == "next page" || ariaLabel == "go to next page"
 
 	if !hasRelNext && !hasDataNext && !hasAriaNext {
 		return
@@ -817,10 +864,64 @@ func (d *document) checkPaginationElement(tag string, attrs map[string]string) {
 	d.PaginationDetected = true
 	d.HasNextPage = true
 
-	// Prefer a crawlable <a href> if multiple next-page elements exist, otherwise record first observed
 	rawHref := strings.TrimSpace(attrs["href"])
-	if d.NextPageElementTag == "" || (d.NextPageElementTag != "a" && tag == "a") {
+	if d.NextPageElementTag == "" {
+		d.NextPageElementTag = tag
+		d.NextPageHref = rawHref
+		return
+	}
+	// Detect conflicting next-page href declarations across multiple next-page elements
+	if tag == "a" && d.NextPageElementTag == "a" && rawHref != "" && d.NextPageHref != "" && rawHref != d.NextPageHref {
+		d.PaginationConflict = true
+		return
+	}
+	if d.NextPageElementTag != "a" && tag == "a" {
 		d.NextPageElementTag = tag
 		d.NextPageHref = rawHref
 	}
+}
+
+var jsTargetRe = regexp.MustCompile(`['"](/[^'"\s]*|https?://[^'"\s]+)['"]`)
+
+// checkNavCandidate records navigation controls inside <nav> or header navigation
+// that declare an explicit navigation target via data-href/data-url/data-route/data-target
+// or javascript:/onclick handlers while lacking a crawlable <a href>.
+func (d *document) checkNavCandidate(tag string, attrs map[string]string, placement int) {
+	if placement != PlacementNav && placement != PlacementHeader {
+		return
+	}
+	rawHref := strings.TrimSpace(attrs["href"])
+	lowerHref := strings.ToLower(rawHref)
+	isUncrawlableHref := rawHref == "" || strings.HasPrefix(lowerHref, "#") || strings.HasPrefix(lowerHref, "javascript:")
+
+	// Crawl-eligible <a href> elements are already emitted via d.Links -> sitecrawl_links
+	if tag == "a" && !isUncrawlableHref {
+		return
+	}
+
+	targetHint := strings.TrimSpace(firstOf(attrs, "data-href", "data-url", "data-route", "data-target", "data-link"))
+	if targetHint == "" && strings.HasPrefix(lowerHref, "javascript:") {
+		if m := jsTargetRe.FindStringSubmatch(rawHref); len(m) > 1 {
+			targetHint = m[1]
+		}
+	}
+	if targetHint == "" {
+		if onclick := strings.TrimSpace(attrs["onclick"]); onclick != "" {
+			if m := jsTargetRe.FindStringSubmatch(onclick); len(m) > 1 {
+				targetHint = m[1]
+			}
+		}
+	}
+	// Do not classify ordinary interactive UI elements (e.g. menu toggle buttons)
+	// without an explicit navigation target as missing crawlable navigation links.
+	if targetHint == "" || strings.HasPrefix(targetHint, "#") {
+		return
+	}
+
+	d.NavCandidates = append(d.NavCandidates, NavCandidate{
+		ElementTag: tag,
+		RawHref:    rawHref,
+		TargetHint: targetHint,
+		Placement:  placement,
+	})
 }

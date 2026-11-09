@@ -410,6 +410,17 @@ type RawMetaDirective struct {
 	HasContentAttr bool   `json:"has_content_attr"`  // true iff the "content" attribute key existed on the <meta> token
 }
 
+// NavCandidate records an explicit non-crawlable navigation control observed
+// inside a <nav> or header navigation region that declares an intended target
+// via data-href, data-url, data-route, data-target, or javascript: navigation.
+type NavCandidate struct {
+	ElementTag     string `json:"element_tag"`
+	RawHref        string `json:"raw_href,omitempty"`
+	TargetHint     string `json:"target_hint"`
+	ResolvedTarget string `json:"resolved_target,omitempty"`
+	Placement      int    `json:"placement"`
+}
+
 // RenderComparisonData preserves dual raw-HTML and post-JS rendered-DOM signals
 // when a page undergoes JavaScript rendering.
 type RenderComparisonData struct {
@@ -522,6 +533,8 @@ type Page struct {
 	NextPageURL             string                `json:"next_page_url,omitempty"`
 	NextPageElementTag      string                `json:"next_page_element_tag,omitempty"`
 	NextPageHref            string                `json:"next_page_href,omitempty"`
+	PaginationConflict      bool                  `json:"pagination_conflict,omitempty"`
+	NavCandidates           []NavCandidate        `json:"nav_candidates,omitempty"`
 	Rendered                bool                  `json:"rendered"`
 	RenderComparison        *RenderComparisonData `json:"render_comparison,omitempty"`
 	Issues                  []string              `json:"issues"` // issue codes, for the detail pane

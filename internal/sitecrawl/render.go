@@ -249,7 +249,7 @@ func maybeRender(ctx context.Context, r renderer, gate *renderGate, res *fetched
 	if r == nil || gate == nil {
 		return false
 	}
-	if res.Kind != KindHTML || !internal || res.FinalStatus < 200 || res.FinalStatus >= 300 || res.Doc == nil {
+	if res.Kind != KindHTML || !internal || len(res.Hops) > 0 || res.FinalStatus < 200 || res.FinalStatus >= 300 || res.Doc == nil {
 		return false
 	}
 	if !gate.admit(res.FinalURL) {

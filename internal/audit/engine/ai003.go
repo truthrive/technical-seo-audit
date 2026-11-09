@@ -88,6 +88,7 @@ func evaluateAI003(
 		urlIdentityObs := idx.GetObservations(subjectType, subjectRef, "url_identity")
 		robotsGPTObs := idx.GetObservations(subjectType, subjectRef, "robots_allowed_gptbot")
 		robotsOAIObs := idx.GetObservations(subjectType, subjectRef, "robots_allowed_oai_searchbot")
+		robotsDefaultObs := idx.GetObservations(subjectType, subjectRef, "robots_allowed_default")
 		matchedRuleGPTObs := idx.GetObservations(subjectType, subjectRef, "matched_robots_rule_gptbot")
 		matchedRuleOAIObs := idx.GetObservations(subjectType, subjectRef, "matched_robots_rule_oai_searchbot")
 		matchedRuleDefaultObs := idx.GetObservations(subjectType, subjectRef, "matched_robots_rule")
@@ -103,7 +104,7 @@ func evaluateAI003(
 			}
 			if len(matchedRuleGPTObs) > 0 {
 				refs = append(refs, buildEvidenceRefs(ruleResultID, matchedRuleGPTObs, "matched_robots_rule", audit.EvidenceRoleSupporting)...)
-			} else if len(matchedRuleDefaultObs) > 0 {
+			} else if len(matchedRuleDefaultObs) > 0 && len(robotsDefaultObs) == 0 {
 				refs = append(refs, buildEvidenceRefs(ruleResultID, matchedRuleDefaultObs, "matched_robots_rule", audit.EvidenceRoleSupporting)...)
 			}
 			if len(matchedRuleOAIObs) > 0 {
