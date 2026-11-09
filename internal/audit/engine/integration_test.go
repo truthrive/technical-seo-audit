@@ -984,15 +984,53 @@ func TestEngine_Batch3_EndToEndIntegration(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, `<!doctype html><html><head><title>Unrestricted Home</title>
 <meta name="robots" content="index, follow">
-</head><body><nav><a href="/restricted">Restricted Page</a></nav><h1>Home Page</h1></body></html>`)
+</head><body><nav>
+<a href="/restricted">Restricted Page</a>
+<a href="/x-max-snippet">Header Max Snippet</a>
+<a href="/googlebot-zero">Googlebot Max Snippet Zero</a>
+<a href="/block-nosnippet">Block Data Nosnippet</a>
+<a href="/rendered-page">Rendered Page</a>
+</nav><h1>Home Page</h1></body></html>`)
 	})
 
-	// 2. Page with nosnippet directive
+	// 2. Page with meta robots nosnippet directive
 	mux.HandleFunc("/restricted", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, `<!doctype html><html><head><title>Restricted Page</title>
 <meta name="robots" content="index, nosnippet">
 </head><body><h1>Restricted Snippet</h1></body></html>`)
+	})
+
+	// 3. Page with X-Robots-Tag: max-snippet:50 HTTP header
+	mux.HandleFunc("/x-max-snippet", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Add("X-Robots-Tag", "max-snippet:50")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Header Max Snippet</title>
+</head><body><h1>Header Max Snippet 50</h1></body></html>`)
+	})
+
+	// 4. Page with googlebot meta max-snippet:0 and generic max-snippet:-1 (tests precedence)
+	mux.HandleFunc("/googlebot-zero", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Googlebot Zero</title>
+<meta name="robots" content="max-snippet:-1">
+<meta name="googlebot" content="max-snippet:0">
+</head><body><h1>Googlebot Max Snippet Zero</h1></body></html>`)
+	})
+
+	// 5. Page with block-level data-nosnippet elements only
+	mux.HandleFunc("/block-nosnippet", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Block Data Nosnippet</title>
+<meta name="robots" content="index, follow">
+</head><body><h1>Article</h1><div data-nosnippet>Sidebar disclaimer</div><span data-nosnippet="true">Promo</span></body></html>`)
+	})
+
+	// 6. Page that will be marked rendered=1 in SQLite (simulating SiteCrawl JS rendering overwriting raw HTML)
+	mux.HandleFunc("/rendered-page", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>Rendered Page</title>
+</head><body><h1>Rendered Content</h1></body></html>`)
 	})
 
 	srv := httptest.NewServer(mux)
@@ -1012,13 +1050,18 @@ func TestEngine_Batch3_EndToEndIntegration(t *testing.T) {
 	opts := sitecrawl.Options{
 		Mode:        sitecrawl.ModeSpider,
 		MaxDepth:    2,
-		MaxURLs:     10,
+		MaxURLs:     15,
 		Concurrency: 1,
 	}
 
 	started, err := runner.Crawl(context.Background(), []string{srv.URL}, opts)
 	if err != nil {
 		t.Fatalf("crawl execution failed: %v", err)
+	}
+
+	// Mark /rendered-page as rendered=1 in sitecrawl_pages to verify real adapter handling of rendered pages
+	if _, err := db.Exec(`UPDATE sitecrawl_pages SET rendered = 1 WHERE run_id = ? AND url = ?`, started.ID, srv.URL+"/rendered-page"); err != nil {
+		t.Fatalf("failed to mark /rendered-page as rendered=1: %v", err)
 	}
 
 	buildReq := adapter.BuildRequest{
@@ -1044,28 +1087,46 @@ func TestEngine_Batch3_EndToEndIntegration(t *testing.T) {
 
 	now := time.Now().UTC()
 
-	// Sub-test A: AR-INDEX-005 with unspecified snippet policy -> Home is PASS, /restricted is WARNING
+	// Helper to map rule results by URL
+	mapByURL := func(results []audit.RuleResult) map[string]audit.RuleResult {
+		m := make(map[string]audit.RuleResult, len(results))
+		for _, r := range results {
+			for _, ref := range r.EvidenceRefs {
+				if ref.Field == "url" {
+					m[ref.ObservedValue] = r
+					break
+				}
+			}
+		}
+		return m
+	}
+
+	// Sub-test A: AR-INDEX-005 with unspecified snippet policy
 	resIndex005Unspecified, err := eng.EvaluateRule(context.Background(), snap, "AR-INDEX-005")
 	if err != nil {
 		t.Fatalf("EvaluateRule AR-INDEX-005 unspecified failed: %v", err)
 	}
-	mIndex005 := make(map[string]audit.RuleResult)
-	for _, r := range resIndex005Unspecified {
-		for _, ref := range r.EvidenceRefs {
-			if ref.Field == "url" {
-				mIndex005[ref.ObservedValue] = r
-				break
-			}
-		}
-	}
+	mIndex005 := mapByURL(resIndex005Unspecified)
 	if r, ok := mIndex005[srv.URL+"/"]; !ok || r.Status != audit.StatusPass {
 		t.Errorf("expected Home to PASS AR-INDEX-005 with unspecified policy, got %v", r)
 	}
 	if r, ok := mIndex005[srv.URL+"/restricted"]; !ok || r.Status != audit.StatusWarning {
 		t.Errorf("expected /restricted to WARNING for AR-INDEX-005 with unspecified policy, got %v", r)
 	}
+	if r, ok := mIndex005[srv.URL+"/x-max-snippet"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("expected /x-max-snippet to WARNING for AR-INDEX-005 with unspecified policy, got %v", r)
+	}
+	if r, ok := mIndex005[srv.URL+"/googlebot-zero"]; !ok || r.Status != audit.StatusWarning {
+		t.Errorf("expected /googlebot-zero to WARNING for AR-INDEX-005 with unspecified policy, got %v", r)
+	}
+	if r, ok := mIndex005[srv.URL+"/block-nosnippet"]; !ok || r.Status != audit.StatusManualReview {
+		t.Errorf("expected /block-nosnippet to MANUAL_REVIEW for AR-INDEX-005 with unspecified policy, got %v", r)
+	}
+	if r, ok := mIndex005[srv.URL+"/rendered-page"]; !ok || r.Status != audit.StatusUnknown {
+		t.Errorf("expected /rendered-page to UNKNOWN for AR-INDEX-005 (raw HTML overwritten by render), got %v", r)
+	}
 
-	// Sub-test B: AR-INDEX-005 with policy allow_unrestricted -> /restricted is FAIL
+	// Sub-test B: AR-INDEX-005 with policy allow_unrestricted
 	polAllow, err := engine.NewPolicyIndex([]audit.ProjectPolicyAssignment{
 		{
 			PolicyAssignmentID: "pol:batch3:allow",
@@ -1085,20 +1146,24 @@ func TestEngine_Batch3_EndToEndIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluateRule AR-INDEX-005 allow failed: %v", err)
 	}
-	mIndex005Allow := make(map[string]audit.RuleResult)
-	for _, r := range resIndex005Allow {
-		for _, ref := range r.EvidenceRefs {
-			if ref.Field == "url" {
-				mIndex005Allow[ref.ObservedValue] = r
-				break
-			}
-		}
+	mIndex005Allow := mapByURL(resIndex005Allow)
+	if r, ok := mIndex005Allow[srv.URL+"/"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected Home to PASS for AR-INDEX-005 under allow_unrestricted policy, got %v", r)
 	}
 	if r, ok := mIndex005Allow[srv.URL+"/restricted"]; !ok || r.Status != audit.StatusFail {
 		t.Errorf("expected /restricted to FAIL for AR-INDEX-005 under allow_unrestricted policy, got %v", r)
 	}
+	if r, ok := mIndex005Allow[srv.URL+"/x-max-snippet"]; !ok || r.Status != audit.StatusFail {
+		t.Errorf("expected /x-max-snippet to FAIL for AR-INDEX-005 under allow_unrestricted policy, got %v", r)
+	}
+	if r, ok := mIndex005Allow[srv.URL+"/googlebot-zero"]; !ok || r.Status != audit.StatusFail {
+		t.Errorf("expected /googlebot-zero to FAIL for AR-INDEX-005 under allow_unrestricted policy, got %v", r)
+	}
+	if r, ok := mIndex005Allow[srv.URL+"/block-nosnippet"]; !ok || r.Status != audit.StatusFail {
+		t.Errorf("expected /block-nosnippet to FAIL for AR-INDEX-005 under allow_unrestricted policy, got %v", r)
+	}
 
-	// Sub-test C: AR-INDEX-005 with policy restrict -> /restricted is PASS
+	// Sub-test C: AR-INDEX-005 with policy restrict
 	polRestrict, err := engine.NewPolicyIndex([]audit.ProjectPolicyAssignment{
 		{
 			PolicyAssignmentID: "pol:batch3:restrict",
@@ -1118,20 +1183,21 @@ func TestEngine_Batch3_EndToEndIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluateRule AR-INDEX-005 restrict failed: %v", err)
 	}
-	mIndex005Restrict := make(map[string]audit.RuleResult)
-	for _, r := range resIndex005Restrict {
-		for _, ref := range r.EvidenceRefs {
-			if ref.Field == "url" {
-				mIndex005Restrict[ref.ObservedValue] = r
-				break
-			}
-		}
-	}
+	mIndex005Restrict := mapByURL(resIndex005Restrict)
 	if r, ok := mIndex005Restrict[srv.URL+"/restricted"]; !ok || r.Status != audit.StatusPass {
 		t.Errorf("expected /restricted to PASS for AR-INDEX-005 under restrict policy, got %v", r)
 	}
+	if r, ok := mIndex005Restrict[srv.URL+"/x-max-snippet"]; !ok || r.Status != audit.StatusPass {
+		t.Errorf("expected /x-max-snippet to PASS for AR-INDEX-005 under restrict policy, got %v", r)
+	}
+	if r, ok := mIndex005Restrict[srv.URL+"/block-nosnippet"]; !ok || r.Status != audit.StatusManualReview {
+		t.Errorf("expected /block-nosnippet to MANUAL_REVIEW for AR-INDEX-005 under restrict policy, got %v", r)
+	}
 
-	// Sub-test D: AR-RENDER-001 through AR-RENDER-006 evaluate to NOT_APPLICABLE for unrendered crawl
+	// Sub-test D: AR-RENDER-001 through AR-RENDER-006 on real adapter snapshot:
+	// - Unrendered pages evaluate to NOT_APPLICABLE
+	// - Rendered page (/rendered-page, rendered=1 in SQLite) evaluates to UNKNOWN because SiteCrawl
+	//   overwrites raw HTML fields and does not preserve raw vs rendered comparison pairs.
 	renderRuleIDs := []string{
 		"AR-RENDER-001",
 		"AR-RENDER-002",
@@ -1145,13 +1211,12 @@ func TestEngine_Batch3_EndToEndIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EvaluateRule %s failed: %v", ruleID, err)
 		}
-		if len(renderResults) == 0 {
-			t.Fatalf("expected results for %s, got 0", ruleID)
+		mRender := mapByURL(renderResults)
+		if r, ok := mRender[srv.URL+"/"]; !ok || r.Status != audit.StatusNotApplicable {
+			t.Errorf("expected unrendered Home to be NOT_APPLICABLE under %s, got %v", ruleID, r)
 		}
-		for _, rr := range renderResults {
-			if rr.Status != audit.StatusNotApplicable {
-				t.Errorf("expected NOT_APPLICABLE for unrendered page under %s, got %s", ruleID, rr.Status)
-			}
+		if r, ok := mRender[srv.URL+"/rendered-page"]; !ok || r.Status != audit.StatusUnknown {
+			t.Errorf("expected rendered /rendered-page to be UNKNOWN under %s (raw/rendered pair unavailable), got %v", ruleID, r)
 		}
 	}
 

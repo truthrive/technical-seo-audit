@@ -88,6 +88,7 @@ func buildPage(item frontierItem, res fetched, seedHost string, opts Options) *P
 	p.RobotsMetaExtracted = true
 	p.RobotsMetaTotalCount = d.RobotsMetaTotalCount
 	p.RawRobotsMeta = d.RawRobotsMeta
+	p.DataNosnippetCount = d.DataNosnippetCount
 	p.MetaRefresh = d.MetaRefresh
 	p.RelNext = d.RelNext
 	p.RelPrev = d.RelPrev

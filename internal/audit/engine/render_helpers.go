@@ -2,8 +2,8 @@ package engine
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/truthrive/technical-seo-audit/internal/audit"
@@ -69,42 +69,28 @@ func resolveRenderPrecondition(
 	renderedObs := idx.GetObservations(audit.SubjectURL, subjectRef, "rendered")
 	statusObs := idx.GetObservations(audit.SubjectURL, subjectRef, "render_status")
 
-	hasRenderSignal := false
-	if len(reqObs) > 0 {
-		for _, o := range reqObs {
-			res.renderContextRefs = append(res.renderContextRefs, audit.RuleEvidenceRef{
-				RuleEvidenceRefID: audit.RuleEvidenceRefID(fmt.Sprintf("ref:%s:%s:render_requested", ruleResultID, o.ObservationID)),
-				RuleResultID:      ruleResultID,
-				EvidenceType:      "NORMALIZED_OBSERVATION",
-				EvidenceRef:       string(o.ObservationID),
-				Field:             "render_requested",
-				ObservedValue:     o.Value,
-				Role:              audit.EvidenceRoleContext,
-			})
-			v := strings.ToLower(strings.TrimSpace(o.Value))
-			if v == "true" || v == "1" {
-				hasRenderSignal = true
-			}
-		}
-	} else if len(renderedObs) > 0 {
-		for _, o := range renderedObs {
-			res.renderContextRefs = append(res.renderContextRefs, audit.RuleEvidenceRef{
-				RuleEvidenceRefID: audit.RuleEvidenceRefID(fmt.Sprintf("ref:%s:%s:rendered", ruleResultID, o.ObservationID)),
-				RuleResultID:      ruleResultID,
-				EvidenceType:      "NORMALIZED_OBSERVATION",
-				EvidenceRef:       string(o.ObservationID),
-				Field:             "rendered",
-				ObservedValue:     o.Value,
-				Role:              audit.EvidenceRoleContext,
-			})
-			v := strings.ToLower(strings.TrimSpace(o.Value))
-			if v == "true" || v == "1" {
-				hasRenderSignal = true
-			}
-		}
+	for _, o := range reqObs {
+		res.renderContextRefs = append(res.renderContextRefs, audit.RuleEvidenceRef{
+			RuleEvidenceRefID: audit.RuleEvidenceRefID(fmt.Sprintf("ref:%s:%s:render_requested", ruleResultID, o.ObservationID)),
+			RuleResultID:      ruleResultID,
+			EvidenceType:      "NORMALIZED_OBSERVATION",
+			EvidenceRef:       string(o.ObservationID),
+			Field:             "render_requested",
+			ObservedValue:     o.Value,
+			Role:              audit.EvidenceRoleContext,
+		})
 	}
-
-	// Also check if render_status is explicitly present
+	for _, o := range renderedObs {
+		res.renderContextRefs = append(res.renderContextRefs, audit.RuleEvidenceRef{
+			RuleEvidenceRefID: audit.RuleEvidenceRefID(fmt.Sprintf("ref:%s:%s:rendered", ruleResultID, o.ObservationID)),
+			RuleResultID:      ruleResultID,
+			EvidenceType:      "NORMALIZED_OBSERVATION",
+			EvidenceRef:       string(o.ObservationID),
+			Field:             "rendered",
+			ObservedValue:     o.Value,
+			Role:              audit.EvidenceRoleContext,
+		})
+	}
 	for _, o := range statusObs {
 		res.renderContextRefs = append(res.renderContextRefs, audit.RuleEvidenceRef{
 			RuleEvidenceRefID: audit.RuleEvidenceRefID(fmt.Sprintf("ref:%s:%s:render_status", ruleResultID, o.ObservationID)),
@@ -115,38 +101,348 @@ func resolveRenderPrecondition(
 			ObservedValue:     o.Value,
 			Role:              audit.EvidenceRoleContext,
 		})
-		v := strings.ToLower(strings.TrimSpace(o.Value))
-		if v != "" {
-			hasRenderSignal = true
-			if v == "failed" || v == "error" || v == "timeout" {
-				res.renderFailed = true
-				res.renderFailedMsg = fmt.Sprintf("render execution status %q", v)
-			}
+	}
+
+	reqBool, reqUsable, reqConflict := resolveSingleBoolObservation(reqObs)
+	reqMalformed := len(reqObs) > 0 && !reqUsable && !reqConflict
+
+	renderedBool, renderedUsable, renderedConflict := resolveSingleBoolObservation(renderedObs)
+	renderedMalformed := len(renderedObs) > 0 && !renderedUsable && !renderedConflict
+
+	statusVal, statusUsable, statusConflict := resolveSingleStringObservation(statusObs)
+	statusLower := strings.ToLower(statusVal)
+	statusEmpty := len(statusObs) > 0 && statusUsable && statusLower == ""
+
+	hasAnyRenderObs := len(reqObs) > 0 || len(renderedObs) > 0 || len(statusObs) > 0
+	if !hasAnyRenderObs {
+		res.selectedForRender = false
+		return res
+	}
+
+	// Check for conflicts or malformed values in render state signals
+	if reqConflict || renderedConflict || statusConflict {
+		res.selectedForRender = true
+		res.renderFailed = true
+		res.renderFailedMsg = "conflicting render state observations"
+		return res
+	}
+	if reqMalformed || renderedMalformed || statusEmpty {
+		res.selectedForRender = true
+		res.renderFailed = true
+		res.renderFailedMsg = "malformed render state observation"
+		return res
+	}
+
+	// Validate render_status vocabulary if present
+	statusCompleted := false
+	statusFailedOrIncomplete := false
+	statusUnrecognized := false
+	if statusUsable {
+		switch statusLower {
+		case "complete", "completed", "succeeded", "success", "ok", "true":
+			statusCompleted = true
+		case "failed", "error", "timeout", "pending", "in_progress", "skipped", "incomplete", "aborted", "cancelled":
+			statusFailedOrIncomplete = true
+		case "not_requested", "none", "false":
+			//Explicitly not requested via status
+		default:
+			statusUnrecognized = true
 		}
 	}
 
+	if statusUnrecognized {
+		res.selectedForRender = true
+		res.renderFailed = true
+		res.renderFailedMsg = fmt.Sprintf("unrecognized render_status %q", statusVal)
+		return res
+	}
+
+	// Detect contradictory signals across render_requested, rendered, and render_status
+	if reqUsable && !reqBool {
+		if (renderedUsable && renderedBool) || statusCompleted || statusFailedOrIncomplete {
+			res.selectedForRender = true
+			res.renderFailed = true
+			res.renderFailedMsg = "contradictory render state signals (render_requested=false with active render state)"
+			return res
+		}
+		res.selectedForRender = false
+		return res
+	}
+
+	if renderedUsable && !renderedBool && statusCompleted {
+		res.selectedForRender = true
+		res.renderFailed = true
+		res.renderFailedMsg = "contradictory render state signals (rendered=false with completed render_status)"
+		return res
+	}
+
+	if reqUsable && reqBool && renderedUsable && !renderedBool && !statusFailedOrIncomplete {
+		res.selectedForRender = true
+		res.renderFailed = true
+		res.renderFailedMsg = "render was requested (render_requested=true) but rendered=false"
+		return res
+	}
+
+	// Determine if page was selected for rendering
+	hasRenderSignal := (reqUsable && reqBool) || (renderedUsable && renderedBool) || statusCompleted || statusFailedOrIncomplete
 	res.selectedForRender = hasRenderSignal
+
+	if statusFailedOrIncomplete {
+		res.renderFailed = true
+		res.renderFailedMsg = fmt.Sprintf("render execution status %q", statusLower)
+	}
+
 	return res
 }
 
-// splitAndNormalizeTokens parses a comma- or whitespace-separated string into a sorted, unique token slice.
-func splitAndNormalizeTokens(raw string) []string {
-	parts := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == '\n' || r == '\r'
-	})
-	tokenMap := make(map[string]struct{}, len(parts))
-	for _, p := range parts {
-		tok := strings.ToLower(strings.TrimSpace(p))
-		if tok != "" {
-			tokenMap[tok] = struct{}{}
+// collapseWhitespace collapses runs of whitespace into a single space and trims leading/trailing whitespace.
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// isRFCWeekdayPrefix checks whether a token ends with an RFC weekday prefix before a comma in unavailable_after.
+func isRFCWeekdayPrefix(segment string) bool {
+	lower := strings.ToLower(strings.TrimSpace(segment))
+	idx := strings.Index(lower, "unavailable_after")
+	if idx < 0 {
+		return false
+	}
+	after := strings.TrimSpace(lower[idx+len("unavailable_after"):])
+	if !strings.HasPrefix(after, ":") {
+		return false
+	}
+	day := strings.TrimSpace(strings.TrimPrefix(after, ":"))
+	switch day {
+	case "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+		"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday":
+		return true
+	default:
+		return false
+	}
+}
+
+// parseRobotsDirectiveSet parses a raw meta robots / X-Robots-Tag directive string
+// into normalized lowercase tokens, preserving RFC dates in unavailable_after and
+// returning ok=false if the string contains malformed directive syntax.
+func parseRobotsDirectiveSet(raw string) ([]string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, true
+	}
+	// Reject invalid directive delimiters (semicolons or pipes)
+	if strings.ContainsAny(trimmed, ";|") {
+		return nil, false
+	}
+
+	rawParts := strings.Split(trimmed, ",")
+	var mergedParts []string
+	for i := 0; i < len(rawParts); i++ {
+		part := strings.TrimSpace(rawParts[i])
+		if part == "" {
+			return nil, false
+		}
+		if isRFCWeekdayPrefix(part) && i+1 < len(rawParts) {
+			nextPart := strings.TrimSpace(rawParts[i+1])
+			if nextPart == "" {
+				return nil, false
+			}
+			part = part + ", " + nextPart
+			i++
+		}
+		mergedParts = append(mergedParts, part)
+	}
+
+	var tokens []string
+	for _, p := range mergedParts {
+		tok := collapseWhitespace(strings.ToLower(p))
+		if strings.Contains(tok, ":") {
+			colonIdx := strings.Index(tok, ":")
+			lhs := strings.TrimSpace(tok[:colonIdx])
+			rhs := strings.TrimSpace(tok[colonIdx+1:])
+			if lhs == "" || rhs == "" || strings.ContainsAny(lhs, " \t") {
+				return nil, false
+			}
+			tok = lhs + ":" + rhs
+		} else {
+			// Standalone directive token must not contain spaces
+			if strings.ContainsAny(tok, " \t") {
+				return nil, false
+			}
+		}
+		tokens = append(tokens, tok)
+	}
+
+	return tokens, true
+}
+
+// parseRobotsObservationSet parses a slice of meta_robots observations into a sorted, deduplicated token set.
+func parseRobotsObservationSet(obs []audit.NormalizedObservation) ([]string, bool) {
+	tokenMap := make(map[string]struct{})
+	for _, o := range obs {
+		toks, ok := parseRobotsDirectiveSet(o.Value)
+		if !ok {
+			return nil, false
+		}
+		for _, t := range toks {
+			tokenMap[t] = struct{}{}
 		}
 	}
-	tokens := make([]string, 0, len(tokenMap))
+	res := make([]string, 0, len(tokenMap))
 	for t := range tokenMap {
-		tokens = append(tokens, t)
+		res = append(res, t)
 	}
-	sort.Strings(tokens)
-	return tokens
+	sort.Strings(res)
+	return res, true
+}
+
+// normalizeRenderURL resolves rawURL against baseURL and normalizes scheme/host case,
+// default ports, and fragments while preserving case-sensitive path and query components.
+func normalizeRenderURL(rawURL string, baseURL string) (string, bool) {
+	s := strings.TrimSpace(rawURL)
+	if s == "" || strings.ContainsAny(s, " \t\r\n") {
+		return "", false
+	}
+
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", false
+	}
+
+	if baseURL != "" {
+		base, err := url.Parse(strings.TrimSpace(baseURL))
+		if err == nil && base.Scheme != "" && base.Host != "" {
+			u = base.ResolveReference(u)
+		}
+	}
+
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	if u.Host == "" {
+		return "", false
+	}
+
+	u.Scheme = scheme
+	host := strings.ToLower(u.Host)
+	if scheme == "http" && strings.HasSuffix(host, ":80") {
+		host = strings.TrimSuffix(host, ":80")
+	} else if scheme == "https" && strings.HasSuffix(host, ":443") {
+		host = strings.TrimSuffix(host, ":443")
+	}
+	u.Host = host
+	u.Fragment = ""
+	u.RawFragment = ""
+
+	if u.Path == "" {
+		u.Path = "/"
+	}
+
+	return u.String(), true
+}
+
+// splitURLListString splits an observation value that may contain one URL or multiple URLs
+// separated by newlines or commas (preserving commas inside a single URL path/query unless
+// the comma precedes a URL or path delimiter).
+func splitURLListString(raw string) ([]string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, true
+	}
+
+	lines := strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+
+	var candidates []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.Contains(line, ",") {
+			candidates = append(candidates, line)
+			continue
+		}
+		parts := strings.Split(line, ",")
+		// Determine if commas are acting as list delimiters between multiple URLs
+		// vs part of a single URL's path/query.
+		isMultiURLList := true
+		for idx, p := range parts {
+			pTrim := strings.TrimSpace(p)
+			if pTrim == "" {
+				return nil, false
+			}
+			if idx > 0 {
+				lowerP := strings.ToLower(pTrim)
+				hasCommaDelimiter := strings.HasPrefix( p, " ") ||
+					strings.HasPrefix(lowerP, "http://") ||
+					strings.HasPrefix(lowerP, "https://") ||
+					strings.HasPrefix(lowerP, "/")
+				if !hasCommaDelimiter {
+					isMultiURLList = false
+					break
+				}
+			}
+		}
+		if isMultiURLList {
+			for _, p := range parts {
+				candidates = append(candidates, strings.TrimSpace(p))
+			}
+		} else {
+			candidates = append(candidates, line)
+		}
+	}
+
+	return candidates, true
+}
+
+// parseNormalizedURLSet parses observations containing URLs, resolves and normalizes each URL,
+// and returns a sorted, deduplicated slice of normalized URLs. Returns ok=false if any URL is invalid.
+func parseNormalizedURLSet(obs []audit.NormalizedObservation, baseURL string) ([]string, bool) {
+	urlMap := make(map[string]struct{})
+	for _, o := range obs {
+		rawURLs, ok := splitURLListString(o.Value)
+		if !ok {
+			return nil, false
+		}
+		for _, r := range rawURLs {
+			norm, ok := normalizeRenderURL(r, baseURL)
+			if !ok {
+				return nil, false
+			}
+			urlMap[norm] = struct{}{}
+		}
+	}
+	res := make([]string, 0, len(urlMap))
+	for u := range urlMap {
+		res = append(res, u)
+	}
+	sort.Strings(res)
+	return res, true
+}
+
+// parseNormalizedH1Set parses H1 observations without splitting on commas (preserving commas
+// and case in H1 heading text while collapsing whitespace runs).
+func parseNormalizedH1Set(obs []audit.NormalizedObservation) []string {
+	h1Map := make(map[string]struct{})
+	for _, o := range obs {
+		lines := strings.FieldsFunc(o.Value, func(r rune) bool {
+			return r == '\n' || r == '\r'
+		})
+		for _, line := range lines {
+			norm := collapseWhitespace(line)
+			if norm != "" {
+				h1Map[norm] = struct{}{}
+			}
+		}
+	}
+	res := make([]string, 0, len(h1Map))
+	for h := range h1Map {
+		res = append(res, h)
+	}
+	sort.Strings(res)
+	return res
 }
 
 // slicesEqual returns true if two sorted slices of strings are identical.
@@ -192,15 +488,24 @@ func resolveSingleStringObservation(obs []audit.NormalizedObservation) (val stri
 	return first, true, false
 }
 
-// resolveSingleBoolObservation resolves a single boolean field, returning usable=false on conflict or unparseable.
+// resolveSingleBoolObservation resolves a single boolean field ("true" or "false"),
+// returning usable=false on conflict or non-boolean value.
 func resolveSingleBoolObservation(obs []audit.NormalizedObservation) (val bool, usable bool, conflict bool) {
-	s, ok, conf := resolveSingleStringObservation(obs)
-	if !ok || conf {
-		return false, ok, conf
-	}
-	b, err := strconv.ParseBool(s)
-	if err != nil {
+	if len(obs) == 0 {
 		return false, false, false
 	}
-	return b, true, false
+	first := strings.ToLower(strings.TrimSpace(obs[0].Value))
+	for _, o := range obs[1:] {
+		if strings.ToLower(strings.TrimSpace(o.Value)) != first {
+			return false, false, true
+		}
+	}
+	switch first {
+	case "true":
+		return true, true, false
+	case "false":
+		return false, true, false
+	default:
+		return false, false, false
+	}
 }

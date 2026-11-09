@@ -299,4 +299,145 @@ func TestEvaluateRENDER001_PassAndWarning(t *testing.T) {
 	if len(results) != 1 || results[0].Status != audit.StatusWarning {
 		t.Errorf("expected WARNING when raw and rendered titles differ, got %v", results)
 	}
+
+	// 3. Internal whitespace normalization -> PASS
+	snapWhitespace := newRenderSnapshot([]audit.NormalizedObservation{
+		{
+			ObservationID:      "obs:1",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "url_identity",
+			Value:              "https://example.com/page",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:2",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "render_requested",
+			Value:              "true",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:3",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "title_raw",
+			Value:              "  Welcome   to\n\tAcme  ",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:4",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "title_rendered",
+			Value:              "Welcome to Acme",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+	})
+	results, err = eng.EvaluateRule(context.Background(), snapWhitespace, "AR-RENDER-001")
+	if err != nil {
+		t.Fatalf("EvaluateRule failed: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != audit.StatusPass {
+		t.Errorf("expected PASS when titles match after collapsing whitespace, got %v", results)
+	}
+
+	// 4. Contradictory render state (render_requested=false with rendered=true) -> UNKNOWN
+	snapContradict := newRenderSnapshot([]audit.NormalizedObservation{
+		{
+			ObservationID:      "obs:1",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "url_identity",
+			Value:              "https://example.com/page",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:2",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "render_requested",
+			Value:              "false",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:3",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "rendered",
+			Value:              "true",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+	})
+	results, err = eng.EvaluateRule(context.Background(), snapContradict, "AR-RENDER-001")
+	if err != nil {
+		t.Fatalf("EvaluateRule failed: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != audit.StatusUnknown {
+		t.Errorf("expected UNKNOWN for contradictory render state signals, got %v", results)
+	}
+
+	// 5. Incomplete render_status="pending" -> UNKNOWN
+	snapPending := newRenderSnapshot([]audit.NormalizedObservation{
+		{
+			ObservationID:      "obs:1",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "url_identity",
+			Value:              "https://example.com/page",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:2",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "render_status",
+			Value:              "pending",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+	})
+	results, err = eng.EvaluateRule(context.Background(), snapPending, "AR-RENDER-001")
+	if err != nil {
+		t.Fatalf("EvaluateRule failed: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != audit.StatusUnknown {
+		t.Errorf("expected UNKNOWN for pending render_status, got %v", results)
+	}
 }

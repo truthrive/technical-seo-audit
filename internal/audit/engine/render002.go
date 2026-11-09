@@ -174,19 +174,33 @@ func evaluateRENDER002(
 			continue
 		}
 
-		// Collect canonical sets
-		var rawTokens []string
-		for _, o := range rawObs {
-			rawTokens = append(rawTokens, splitAndNormalizeTokens(o.Value)...)
+		// Collect and normalize canonical URL sets
+		rawSet, rawOK := parseNormalizedURLSet(rawObs, pre.urlVal)
+		renderedSet, renderedOK := parseNormalizedURLSet(renderedObs, pre.urlVal)
+		if !rawOK || !renderedOK {
+			rr := audit.RuleResult{
+				RuleResultID:    ruleResultID,
+				AuditRunID:      snapshot.AuditRunID,
+				SnapshotID:      snapshot.SnapshotID,
+				RuleID:          rule.RuleID,
+				ParentCheck:     rule.ParentCheck,
+				RuleVersion:     rule.RuleVersion,
+				SubjectType:     audit.SubjectURL,
+				SubjectRef:      subjectRef,
+				Status:          audit.StatusUnknown,
+				Severity:        rule.DefaultSeverity,
+				Scope:           audit.ScopeURL,
+				ObservedSummary: "Rendering requested but canonical raw/rendered URL evidence is malformed or unresolvable.",
+				ExpectedSummary: expectedSummaryRENDER002,
+				EvaluatedAt:     evalTime,
+				EvidenceRefs:    evidenceRefs,
+			}
+			if err := validateRuleResult(rr); err != nil {
+				return nil, fmt.Errorf("audit engine: invalid rule result for %s: %w", subjectRef, err)
+			}
+			results = append(results, rr)
+			continue
 		}
-		var renderedTokens []string
-		for _, o := range renderedObs {
-			renderedTokens = append(renderedTokens, splitAndNormalizeTokens(o.Value)...)
-		}
-
-		// Re-sort and deduplicate
-		rawSet := splitAndNormalizeTokens(strings.Join(rawTokens, ","))
-		renderedSet := splitAndNormalizeTokens(strings.Join(renderedTokens, ","))
 
 		// 5. Evaluate comparison
 		var (

@@ -174,18 +174,33 @@ func evaluateRENDER003(
 			continue
 		}
 
-		// Collect directive token sets
-		var rawTokens []string
-		for _, o := range rawObs {
-			rawTokens = append(rawTokens, splitAndNormalizeTokens(o.Value)...)
+		// Collect and validate directive token sets
+		rawSet, rawOK := parseRobotsObservationSet(rawObs)
+		renderedSet, renderedOK := parseRobotsObservationSet(renderedObs)
+		if !rawOK || !renderedOK {
+			rr := audit.RuleResult{
+				RuleResultID:    ruleResultID,
+				AuditRunID:      snapshot.AuditRunID,
+				SnapshotID:      snapshot.SnapshotID,
+				RuleID:          rule.RuleID,
+				ParentCheck:     rule.ParentCheck,
+				RuleVersion:     rule.RuleVersion,
+				SubjectType:     audit.SubjectURL,
+				SubjectRef:      subjectRef,
+				Status:          audit.StatusUnknown,
+				Severity:        rule.DefaultSeverity,
+				Scope:           audit.ScopeURL,
+				ObservedSummary: "Rendering requested but meta robots raw/rendered directive evidence is malformed.",
+				ExpectedSummary: expectedSummaryRENDER003,
+				EvaluatedAt:     evalTime,
+				EvidenceRefs:    evidenceRefs,
+			}
+			if err := validateRuleResult(rr); err != nil {
+				return nil, fmt.Errorf("audit engine: invalid rule result for %s: %w", subjectRef, err)
+			}
+			results = append(results, rr)
+			continue
 		}
-		var renderedTokens []string
-		for _, o := range renderedObs {
-			renderedTokens = append(renderedTokens, splitAndNormalizeTokens(o.Value)...)
-		}
-
-		rawSet := splitAndNormalizeTokens(strings.Join(rawTokens, ","))
-		renderedSet := splitAndNormalizeTokens(strings.Join(renderedTokens, ","))
 
 		// 5. Evaluate comparison
 		var (

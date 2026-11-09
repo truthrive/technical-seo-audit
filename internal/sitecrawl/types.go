@@ -459,6 +459,7 @@ type Page struct {
 	RobotsMetaExtracted  bool               `json:"robots_meta_extracted,omitempty"`
 	RobotsMetaTotalCount int                `json:"robots_meta_total_count,omitempty"`
 	RawRobotsMeta        []RawMetaDirective `json:"raw_robots_meta,omitempty"`
+	DataNosnippetCount   int                `json:"data_nosnippet_count,omitempty"`
 	XRobotsTag           string             `json:"xRobotsTag"`
 	XRobotsTagTotalCount int                `json:"x_robots_tag_total_count,omitempty"`
 	RawXRobotsTags       []string           `json:"raw_x_robots_tags,omitempty"`

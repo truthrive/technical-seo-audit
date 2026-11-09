@@ -174,18 +174,9 @@ func evaluateRENDER004(
 			continue
 		}
 
-		// Collect H1 sets
-		var rawH1s []string
-		for _, o := range rawObs {
-			rawH1s = append(rawH1s, splitAndNormalizeTokens(o.Value)...)
-		}
-		var renderedH1s []string
-		for _, o := range renderedObs {
-			renderedH1s = append(renderedH1s, splitAndNormalizeTokens(o.Value)...)
-		}
-
-		rawSet := splitAndNormalizeTokens(strings.Join(rawH1s, ","))
-		renderedSet := splitAndNormalizeTokens(strings.Join(renderedH1s, ","))
+		// Collect H1 sets (preserving commas and case within headings)
+		rawSet := parseNormalizedH1Set(rawObs)
+		renderedSet := parseNormalizedH1Set(renderedObs)
 
 		// 5. Evaluate comparison
 		var (

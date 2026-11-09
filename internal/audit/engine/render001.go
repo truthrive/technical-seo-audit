@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/truthrive/technical-seo-audit/internal/audit"
@@ -186,12 +185,14 @@ func evaluateRENDER001(
 			status     audit.RuleResultStatus
 			obsSummary string
 		)
-		if strings.TrimSpace(rawVal) == strings.TrimSpace(renderedVal) {
+		rawNorm := collapseWhitespace(rawVal)
+		renderedNorm := collapseWhitespace(renderedVal)
+		if rawNorm == renderedNorm {
 			status = audit.StatusPass
-			obsSummary = fmt.Sprintf("Title is unchanged after JavaScript rendering (%q).", rawVal)
+			obsSummary = fmt.Sprintf("Title is unchanged after JavaScript rendering (%q).", rawNorm)
 		} else {
 			status = audit.StatusWarning
-			obsSummary = fmt.Sprintf("Title changed after JavaScript rendering (raw: %q, rendered: %q).", rawVal, renderedVal)
+			obsSummary = fmt.Sprintf("Title changed after JavaScript rendering (raw: %q, rendered: %q).", rawNorm, renderedNorm)
 		}
 
 		rr := audit.RuleResult{

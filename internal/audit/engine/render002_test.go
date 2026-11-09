@@ -224,4 +224,181 @@ func TestEvaluateRENDER002_PassAndWarning(t *testing.T) {
 	if len(results) != 1 || results[0].Status != audit.StatusWarning {
 		t.Errorf("expected WARNING when canonicals differ, got %v", results)
 	}
+
+	// 3. Relative vs absolute canonical pointing to same URL -> PASS
+	snapRelAbs := newRenderSnapshot([]audit.NormalizedObservation{
+		{
+			ObservationID:      "obs:1",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "url_identity",
+			Value:              "https://example.com/dir/page",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:2",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "render_requested",
+			Value:              "true",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:3",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "canonical_raw",
+			Value:              "/dir/page",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:4",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "canonical_rendered",
+			Value:              "https://EXAMPLE.com:443/dir/page#section",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+	})
+	results, err = eng.EvaluateRule(context.Background(), snapRelAbs, "AR-RENDER-002")
+	if err != nil {
+		t.Fatalf("EvaluateRule failed: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != audit.StatusPass {
+		t.Errorf("expected PASS when relative raw canonical resolves to rendered canonical, got %v", results)
+	}
+
+	// 4. Case-sensitive path difference (/Page vs /page) -> WARNING
+	snapPathCase := newRenderSnapshot([]audit.NormalizedObservation{
+		{
+			ObservationID:      "obs:1",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "url_identity",
+			Value:              "https://example.com/Page",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:2",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "render_requested",
+			Value:              "true",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:3",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "canonical_raw",
+			Value:              "https://example.com/Page",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:4",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "canonical_rendered",
+			Value:              "https://example.com/page",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+	})
+	results, err = eng.EvaluateRule(context.Background(), snapPathCase, "AR-RENDER-002")
+	if err != nil {
+		t.Fatalf("EvaluateRule failed: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != audit.StatusWarning {
+		t.Errorf("expected WARNING when canonical paths differ by case, got %v", results)
+	}
+
+	// 5. Malformed canonical URL -> UNKNOWN
+	snapMalformed := newRenderSnapshot([]audit.NormalizedObservation{
+		{
+			ObservationID:      "obs:1",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "url_identity",
+			Value:              "https://example.com/page",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:2",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "render_requested",
+			Value:              "true",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:3",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "canonical_raw",
+			Value:              "://malformed-url",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+		{
+			ObservationID:      "obs:4",
+			AuditRunID:         "audit:render:run",
+			SnapshotID:         "snap:render:test",
+			SubjectType:        audit.SubjectURL,
+			SubjectRef:         "url:1",
+			Field:              "canonical_rendered",
+			Value:              "https://example.com/page",
+			DerivationType:     audit.DerivationDirect,
+			SourceEvidenceRefs: []string{"src:1"},
+			ObservedAt:         now,
+		},
+	})
+	results, err = eng.EvaluateRule(context.Background(), snapMalformed, "AR-RENDER-002")
+	if err != nil {
+		t.Fatalf("EvaluateRule failed: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != audit.StatusUnknown {
+		t.Errorf("expected UNKNOWN when canonical URL is malformed, got %v", results)
+	}
 }

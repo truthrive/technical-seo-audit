@@ -462,6 +462,7 @@ func (c *coordinator) absorb(r crawlResult) {
 		p.RobotsMetaExtracted = false
 		p.RobotsMetaTotalCount = 0
 		p.RawRobotsMeta = nil
+		p.DataNosnippetCount = 0
 	}
 	p.RobotsState = r.robots.State
 	if r.robots.State == "" {

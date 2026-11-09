@@ -403,3 +403,20 @@ func TestExtractCanonicalProvenanceAndUncappedCount(t *testing.T) {
 		}
 	})
 }
+
+func TestExtractDataNosnippetCount(t *testing.T) {
+	d := parse(t, "https://example.com/snippet", `
+<html><head><title>Snippet Test</title></head><body>
+  <div data-nosnippet>Excluded block 1</div>
+  <span data-nosnippet="true">Excluded inline 2</span>
+  <p>Normal paragraph</p>
+  <script><div data-nosnippet>Inside script ignored</div></script>
+  <noscript><div data-nosnippet>Inside noscript ignored</div></noscript>
+  <template><div data-nosnippet>Inside template ignored</div></template>
+  <section data-nosnippet="">Excluded section 3</section>
+</body></html>`)
+
+	if d.DataNosnippetCount != 3 {
+		t.Errorf("DataNosnippetCount = %d, want 3", d.DataNosnippetCount)
+	}
+}

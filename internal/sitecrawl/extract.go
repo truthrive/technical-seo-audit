@@ -79,6 +79,8 @@ type document struct {
 	TextBytes  int
 	TotalBytes int
 
+	DataNosnippetCount int
+
 	analyticsBuf strings.Builder
 }
 
@@ -221,6 +223,11 @@ func extractDocument(r io.Reader, base *url.URL) *document {
 			nameB, hasAttr := z.TagName()
 			name := string(nameB)
 			attrs := readAttrs(z, hasAttr)
+			if skipDepth == 0 {
+				if _, ok := attrs["data-nosnippet"]; ok {
+					d.DataNosnippetCount++
+				}
+			}
 
 			switch name {
 			case "script", "style", "noscript", "template":

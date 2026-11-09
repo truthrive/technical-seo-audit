@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/truthrive/technical-seo-audit/internal/audit"
@@ -174,18 +173,33 @@ func evaluateRENDER006(
 			continue
 		}
 
-		// Collect link sets
-		var rawLinks []string
-		for _, o := range rawObs {
-			rawLinks = append(rawLinks, splitAndNormalizeTokens(o.Value)...)
+		// Collect and normalize internal link sets
+		rawSet, rawOK := parseNormalizedURLSet(rawObs, pre.urlVal)
+		renderedSet, renderedOK := parseNormalizedURLSet(renderedObs, pre.urlVal)
+		if !rawOK || !renderedOK {
+			rr := audit.RuleResult{
+				RuleResultID:    ruleResultID,
+				AuditRunID:      snapshot.AuditRunID,
+				SnapshotID:      snapshot.SnapshotID,
+				RuleID:          rule.RuleID,
+				ParentCheck:     rule.ParentCheck,
+				RuleVersion:     rule.RuleVersion,
+				SubjectType:     audit.SubjectURL,
+				SubjectRef:      subjectRef,
+				Status:          audit.StatusUnknown,
+				Severity:        rule.DefaultSeverity,
+				Scope:           audit.ScopeURL,
+				ObservedSummary: "Rendering requested but internal links raw/rendered URL evidence is malformed or unresolvable.",
+				ExpectedSummary: expectedSummaryRENDER006,
+				EvaluatedAt:     evalTime,
+				EvidenceRefs:    evidenceRefs,
+			}
+			if err := validateRuleResult(rr); err != nil {
+				return nil, fmt.Errorf("audit engine: invalid rule result for %s: %w", subjectRef, err)
+			}
+			results = append(results, rr)
+			continue
 		}
-		var renderedLinks []string
-		for _, o := range renderedObs {
-			renderedLinks = append(renderedLinks, splitAndNormalizeTokens(o.Value)...)
-		}
-
-		rawSet := splitAndNormalizeTokens(strings.Join(rawLinks, ","))
-		renderedSet := splitAndNormalizeTokens(strings.Join(renderedLinks, ","))
 
 		added := setDifference(renderedSet, rawSet)
 		removed := setDifference(rawSet, renderedSet)

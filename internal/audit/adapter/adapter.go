@@ -1062,9 +1062,11 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 
 		// 9c. HTML Observations
 		isHTML := pr.kind == sitecrawl.KindHTML || strings.Contains(pr.contentType, "html")
+		htmlExtractionStatus := ""
+		metaTruncated := false
 		if isHTML {
 			isRendered := (pr.rendered == 1 || pr.page.Rendered)
-			htmlExtractionStatus := classifyHTMLExtractionStatus(pr, isRendered)
+			htmlExtractionStatus = classifyHTMLExtractionStatus(pr, isRendered)
 			normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
 				ObservationID:      nextObsID(),
 				AuditRunID:         req.AuditRunID,
@@ -1079,7 +1081,7 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			})
 
 			if pr.page.RobotsMetaExtracted {
-				metaTruncated := pr.page.RobotsMetaTotalCount > len(pr.page.RawRobotsMeta)
+				metaTruncated = pr.page.RobotsMetaTotalCount > len(pr.page.RawRobotsMeta)
 				normalizedObservations = append(normalizedObservations, audit.NormalizedObservation{
 					ObservationID:      nextObsID(),
 					AuditRunID:         req.AuditRunID,
@@ -1634,6 +1636,10 @@ func Build(ctx context.Context, db *sql.DB, req BuildRequest) (*BuildResult, err
 			obsTime,
 			isHTML,
 			isRendered,
+			httpHeaderStatus,
+			htmlExtractionStatus,
+			metaTruncated,
+			pr.page.DataNosnippetCount,
 			pr.page.RobotsMetaExtracted,
 			pr.page.RawRobotsMeta,
 			pr.page.MetaTags,
@@ -3075,6 +3081,10 @@ func processPageDirectives(
 	obsTime time.Time,
 	isHTML bool,
 	isRendered bool,
+	httpHeaderStatus string,
+	htmlExtractionStatus string,
+	metaTruncated bool,
+	dataNosnippetCount int,
 	robotsMetaExtracted bool,
 	rawRobotsMeta []sitecrawl.RawMetaDirective,
 	pageMetaTags map[string]string,
@@ -3783,27 +3793,53 @@ func processPageDirectives(
 		hasNosnippet := false
 		maxSnippetVal := -1
 		hasMaxSnippet := false
+		hasRestrictiveMaxSnippet := false
+		hasSnippetParseError := false
+		var snippetRefs []string
 
 		for _, d := range directives {
+			for _, pe := range d.ParseErrors {
+				if strings.Contains(pe, "max-snippet") || strings.Contains(pe, "nosnippet") {
+					hasSnippetParseError = true
+				}
+			}
 			if !d.ScopeUnknown && (d.Target == "*" || d.Target == "googlebot") {
+				contributed := false
 				if containsToken(d.ParsedTokens, "nosnippet") {
 					hasNosnippet = true
+					contributed = true
 				}
 				for _, tok := range d.ParsedTokens {
 					if strings.HasPrefix(tok, "max-snippet:") {
 						valStr := strings.TrimPrefix(tok, "max-snippet:")
 						if val, err := strconv.Atoi(valStr); err == nil {
-							if !hasMaxSnippet || val < maxSnippetVal {
-								maxSnippetVal = val
+							contributed = true
+							if val >= 0 {
+								if !hasRestrictiveMaxSnippet || val < maxSnippetVal {
+									maxSnippetVal = val
+									hasRestrictiveMaxSnippet = true
+								}
+								hasMaxSnippet = true
+							} else if val == -1 && !hasRestrictiveMaxSnippet {
+								maxSnippetVal = -1
 								hasMaxSnippet = true
 							}
 						}
 					}
 				}
+				if contributed {
+					snippetRefs = append(snippetRefs, string(d.RobotsDirectiveObservationID))
+				}
 			}
 		}
 
-		if pageMetaTags != nil || robotsMetaExtracted || len(directives) > 0 {
+		snippetRefs = append(snippetRefs, pageSrcRef)
+
+		headerChannelComplete := (httpHeaderStatus == "complete")
+		htmlChannelComplete := !isRendered && !metaTruncated && (htmlExtractionStatus == "complete" || robotsMetaExtracted || pageMetaTags != nil)
+		canProveNoSnippetRestriction := headerChannelComplete && htmlChannelComplete && !hasAmbiguousDirective && !hasSnippetParseError && !hasNosnippet && !hasRestrictiveMaxSnippet
+
+		if hasNosnippet || canProveNoSnippetRestriction {
 			normalized = append(normalized, audit.NormalizedObservation{
 				ObservationID:      nextObsID(),
 				AuditRunID:         req.AuditRunID,
@@ -3813,25 +3849,27 @@ func processPageDirectives(
 				Field:              "nosnippet",
 				Value:              strconv.FormatBool(hasNosnippet),
 				DerivationType:     audit.DerivationNormalized,
-				SourceEvidenceRefs: []string{pageSrcRef},
+				SourceEvidenceRefs: snippetRefs,
 				ObservedAt:         obsTime,
 			})
+		}
 
-			if hasMaxSnippet {
-				normalized = append(normalized, audit.NormalizedObservation{
-					ObservationID:      nextObsID(),
-					AuditRunID:         req.AuditRunID,
-					SnapshotID:         req.SnapshotID,
-					SubjectType:        audit.SubjectURL,
-					SubjectRef:         string(urlIDStr),
-					Field:              "max_snippet",
-					Value:              strconv.Itoa(maxSnippetVal),
-					DerivationType:     audit.DerivationNormalized,
-					SourceEvidenceRefs: []string{pageSrcRef},
-					ObservedAt:         obsTime,
-				})
-			}
+		if hasMaxSnippet {
+			normalized = append(normalized, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "max_snippet",
+				Value:              strconv.Itoa(maxSnippetVal),
+				DerivationType:     audit.DerivationNormalized,
+				SourceEvidenceRefs: snippetRefs,
+				ObservedAt:         obsTime,
+			})
+		}
 
+		if htmlChannelComplete || (!isRendered && dataNosnippetCount > 0) {
 			normalized = append(normalized, audit.NormalizedObservation{
 				ObservationID:      nextObsID(),
 				AuditRunID:         req.AuditRunID,
@@ -3839,9 +3877,77 @@ func processPageDirectives(
 				SubjectType:        audit.SubjectURL,
 				SubjectRef:         string(urlIDStr),
 				Field:              "data_nosnippet_count",
-				Value:              "0",
+				Value:              strconv.Itoa(dataNosnippetCount),
 				DerivationType:     audit.DerivationNormalized,
 				SourceEvidenceRefs: []string{pageSrcRef},
+				ObservedAt:         obsTime,
+			})
+		}
+	} else {
+		// Non-HTML URLs: HTTP header X-Robots-Tag snippet directives still apply if present
+		hasNosnippet := false
+		maxSnippetVal := -1
+		hasMaxSnippet := false
+		hasRestrictiveMaxSnippet := false
+		var snippetRefs []string
+
+		for _, d := range directives {
+			if !d.ScopeUnknown && (d.Target == "*" || d.Target == "googlebot") {
+				contributed := false
+				if containsToken(d.ParsedTokens, "nosnippet") {
+					hasNosnippet = true
+					contributed = true
+				}
+				for _, tok := range d.ParsedTokens {
+					if strings.HasPrefix(tok, "max-snippet:") {
+						valStr := strings.TrimPrefix(tok, "max-snippet:")
+						if val, err := strconv.Atoi(valStr); err == nil {
+							contributed = true
+							if val >= 0 {
+								if !hasRestrictiveMaxSnippet || val < maxSnippetVal {
+									maxSnippetVal = val
+									hasRestrictiveMaxSnippet = true
+								}
+								hasMaxSnippet = true
+							} else if val == -1 && !hasRestrictiveMaxSnippet {
+								maxSnippetVal = -1
+								hasMaxSnippet = true
+							}
+						}
+					}
+				}
+				if contributed {
+					snippetRefs = append(snippetRefs, string(d.RobotsDirectiveObservationID))
+				}
+			}
+		}
+
+		snippetRefs = append(snippetRefs, pageSrcRef)
+		if hasNosnippet {
+			normalized = append(normalized, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "nosnippet",
+				Value:              "true",
+				DerivationType:     audit.DerivationNormalized,
+				SourceEvidenceRefs: snippetRefs,
+				ObservedAt:         obsTime,
+			})
+		}
+		if hasMaxSnippet {
+			normalized = append(normalized, audit.NormalizedObservation{
+				ObservationID:      nextObsID(),
+				AuditRunID:         req.AuditRunID,
+				SnapshotID:         req.SnapshotID,
+				SubjectType:        audit.SubjectURL,
+				SubjectRef:         string(urlIDStr),
+				Field:              "max_snippet",
+				Value:              strconv.Itoa(maxSnippetVal),
+				DerivationType:     audit.DerivationNormalized,
+				SourceEvidenceRefs: snippetRefs,
 				ObservedAt:         obsTime,
 			})
 		}
